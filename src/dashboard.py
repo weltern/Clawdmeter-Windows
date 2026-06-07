@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -174,20 +173,6 @@ def _format_minutes(mins: int) -> str:
     return f"{days}d {h:02d}h"
 
 
-def _format_reset_clock(epoch: float, with_date: bool) -> str:
-    """Absolute wall-clock reset time, e.g. '9:40pm' or 'Jun 13, 9pm'.
-
-    Minutes are dropped when zero so weekly windows read tidily ('9pm').
-    """
-    dt = datetime.fromtimestamp(epoch)
-    hour = dt.hour % 12 or 12
-    ampm = "am" if dt.hour < 12 else "pm"
-    clock = f"{hour}:{dt.minute:02d}{ampm}" if dt.minute else f"{hour}{ampm}"
-    if with_date:
-        return f"{dt:%b} {dt.day}, {clock}"
-    return clock
-
-
 def _heat(pct: int) -> str:
     if pct >= 80:
         return "hot"
@@ -289,11 +274,15 @@ class CompactWidget(QWidget):
         return pct, reset
 
     def update_usage(self, session_pct: int, weekly_pct: int,
-                     session_reset_epoch: float, weekly_reset_epoch: float) -> None:
+                     session_reset_minutes: int, weekly_reset_minutes: int) -> None:
         self.session_pct.setText(f"{session_pct}%")
         self.weekly_pct.setText(f"{weekly_pct}%")
-        self.session_reset.setText("resets " + _format_reset_clock(session_reset_epoch, False))
-        self.weekly_reset.setText("resets " + _format_reset_clock(weekly_reset_epoch, True))
+        self.set_resets(session_reset_minutes, weekly_reset_minutes)
+
+    def set_resets(self, session_reset_minutes: int, weekly_reset_minutes: int) -> None:
+        """Reset labels in the same relative form as the main window."""
+        self.session_reset.setText(f"resets in {_format_minutes(session_reset_minutes)}")
+        self.weekly_reset.setText(f"resets in {_format_minutes(weekly_reset_minutes)}")
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
@@ -1181,6 +1170,7 @@ class Dashboard(QMainWindow):
         wr = max(0, s.weekly_reset_minutes - elapsed_min)
         self.session_reset.setText(f"resets in {_format_minutes(sr)}")
         self.weekly_reset.setText(f"resets in {_format_minutes(wr)}")
+        self.compact.set_resets(sr, wr)
         self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
 
     def _on_transcript(self, state: TranscriptState) -> None:
@@ -1214,12 +1204,11 @@ class Dashboard(QMainWindow):
             self._show_window()
 
     def _sync_compact(self, s: UsageSample) -> None:
-        """Push a usage sample into the compact widget, converting the relative
-        reset minutes into absolute wall-clock instants."""
+        """Push a usage sample into the compact widget. Reset times use the same
+        relative 'resets in 4h 56m' form as the main window."""
         self.compact.update_usage(
             s.session_pct, s.weekly_pct,
-            s.timestamp + s.session_reset_minutes * 60,
-            s.timestamp + s.weekly_reset_minutes * 60,
+            s.session_reset_minutes, s.weekly_reset_minutes,
         )
 
     def _enter_compact(self) -> None:
