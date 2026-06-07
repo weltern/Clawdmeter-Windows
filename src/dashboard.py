@@ -719,6 +719,7 @@ class Dashboard(QMainWindow):
 
         self._rate = RateGroupTracker()
         self._last_sample: UsageSample | None = None
+        self._last_tooltip = ""
         self._transcript_state: TranscriptState | None = None
 
         self._transcript = TranscriptWatcher(self)
@@ -954,6 +955,7 @@ class Dashboard(QMainWindow):
         if not s.ok:
             self._apply_status_badge(s.status)
             self._tray.setToolTip(f"Clawdmeter - {s.status}")
+            self._last_tooltip = ""  # force a fresh stats tooltip on recovery
             return
 
         self.session_pct.setText(f"{s.session_pct}%")
@@ -974,10 +976,21 @@ class Dashboard(QMainWindow):
         self._update_sprite_selection()
 
         self._apply_status_badge(s.status)
-        self._tray.setToolTip(
-            f"Clawdmeter\nSession {s.session_pct}% (resets {_format_minutes(s.session_reset_minutes)})\n"
-            f"Weekly {s.weekly_pct}% (resets {_format_minutes(s.weekly_reset_minutes)})"
+        self._set_tray_tooltip(s.session_pct, s.session_reset_minutes,
+                               s.weekly_pct, s.weekly_reset_minutes)
+
+    def _set_tray_tooltip(self, session_pct: int, session_reset: int,
+                          weekly_pct: int, weekly_reset: int) -> None:
+        """Tray hover tooltip with live session/weekly usage. Shared by the
+        60s poll and the 1s countdown tick so the reset times stay current."""
+        text = (
+            "Clawdmeter\n"
+            f"Session {session_pct}% (resets {_format_minutes(session_reset)})\n"
+            f"Weekly {weekly_pct}% (resets {_format_minutes(weekly_reset)})"
         )
+        if text != self._last_tooltip:
+            self._last_tooltip = text
+            self._tray.setToolTip(text)
 
     def _apply_status_badge(self, status: str) -> None:
         """Show/hide the bottom-left rate-limit badge and reflow the window.
@@ -1033,6 +1046,7 @@ class Dashboard(QMainWindow):
         wr = max(0, s.weekly_reset_minutes - elapsed_min)
         self.session_reset.setText(f"resets in {_format_minutes(sr)}")
         self.weekly_reset.setText(f"resets in {_format_minutes(wr)}")
+        self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
 
     def _on_transcript(self, state: TranscriptState) -> None:
         self._transcript_state = state
