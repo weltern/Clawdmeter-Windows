@@ -30,7 +30,11 @@ in near-real-time — read from the local transcript:
 | ![Coding](assets/Screenshot-4.png) | ![Reading](assets/Screenshot-3.png) |
 | **CODING** — editing, writing, running commands | **READING** — reading, grepping, globbing |
 | ![Searching](assets/Screenshot-7.png) | ![Planning](assets/Screenshot-9.png) |
-| **SEARCHING** — web fetch / search | **PLANNING** — todos & task management |
+| **SEARCHING** — web fetch / search | **PLANNING** — todos, sub-agents & task management |
+
+There's also an **INTEGRATING** mood for when Claude Code reaches out through an
+MCP server tool — the label shows which server it's talking to (e.g.
+`INTEGRATING — github/list_issues`).
 
 When Claude Code goes quiet, the mascot falls back to a mood driven by your
 usage rate — sleepy when you're idle, dancing when you're burning through

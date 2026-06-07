@@ -34,12 +34,17 @@ RESCAN_DIR_EVERY_N_POLLS = 10
 
 
 class Activity(Enum):
-    IDLE = "idle"           # transcript stale / not found -> rate-based fallback
-    CODING = "coding"       # tool that writes/runs (Bash, Edit, Write, ...)
-    READING = "reading"     # tool that observes (Read, Grep, Glob, ...)
-    SEARCHING = "searching" # web tools
-    PLANNING = "planning"   # task/todo management
-    THINKING = "thinking"   # text/thinking block, no tool
+    IDLE = "idle"               # transcript stale / not found -> rate-based fallback
+    CODING = "coding"           # tool that writes/runs (Bash, Edit, Write, ...)
+    READING = "reading"         # tool that observes (Read, Grep, Glob, ...)
+    SEARCHING = "searching"     # web tools
+    PLANNING = "planning"       # task/todo/sub-agent management
+    INTEGRATING = "integrating" # MCP server tool (mcp__<server>__<tool>)
+    THINKING = "thinking"       # text/thinking block, no tool
+
+
+# Prefix that Claude Code gives every MCP server tool: mcp__<server>__<tool>.
+MCP_TOOL_PREFIX = "mcp__"
 
 
 # Tool name -> activity. Names are matched case-insensitively. Unknown tools
@@ -53,11 +58,13 @@ TOOL_MAP: dict[str, Activity] = {
     "multiedit": Activity.CODING,
     "notebookedit": Activity.CODING,
     "killshell": Activity.CODING,
+    "senduserfile": Activity.CODING,
 
     "read": Activity.READING,
     "glob": Activity.READING,
     "grep": Activity.READING,
     "notebookread": Activity.READING,
+    "toolsearch": Activity.READING,
 
     "webfetch": Activity.SEARCHING,
     "websearch": Activity.SEARCHING,
@@ -70,26 +77,57 @@ TOOL_MAP: dict[str, Activity] = {
     "taskstop": Activity.PLANNING,
     "todowrite": Activity.PLANNING,
     "agent": Activity.PLANNING,
+    "task": Activity.PLANNING,
+    "sendmessage": Activity.PLANNING,
+    "exitplanmode": Activity.PLANNING,
+    "askuserquestion": Activity.PLANNING,
+    "skill": Activity.PLANNING,
+    "slashcommand": Activity.PLANNING,
 }
+
+
+def _activity_for_tool(name: str) -> Activity:
+    """Map a raw tool name to an Activity.
+
+    MCP server tools are recognised by their `mcp__` prefix before consulting
+    the static map; unknown tools fall through to CODING.
+    """
+    lower = name.lower()
+    if lower.startswith(MCP_TOOL_PREFIX):
+        return Activity.INTEGRATING
+    return TOOL_MAP.get(lower, Activity.CODING)
+
+
+def _pretty_tool_name(name: str) -> str:
+    """Shorten an MCP tool name for the label: mcp__github__get_pr -> github/get_pr."""
+    if name.lower().startswith(MCP_TOOL_PREFIX):
+        parts = name.split("__")
+        if len(parts) >= 3:
+            return f"{parts[1]}/{'__'.join(parts[2:])}"
+        if len(parts) == 2 and parts[1]:
+            return parts[1]
+    return name
 
 
 # Activity -> animation names (must exist in assets/sprites/manifest.json).
 ACTIVITY_ANIMS: dict[Activity, list[str]] = {
-    Activity.CODING:    ["work coding"],
-    Activity.READING:   ["work think"],
-    Activity.SEARCHING: ["idle look around"],
-    Activity.PLANNING:  ["idle look around"],
-    Activity.THINKING:  ["work think"],
+    Activity.CODING:      ["work coding"],
+    Activity.READING:     ["work think"],
+    Activity.SEARCHING:   ["idle look around"],
+    Activity.PLANNING:    ["idle blink", "idle look around"],
+    Activity.INTEGRATING: ["expression surprise", "idle look around"],
+    Activity.THINKING:    ["work think"],
     # IDLE has no entry — dashboard falls back to rate-based group.
 }
 
 ACTIVITY_LABELS: dict[Activity, str] = {
-    Activity.CODING:    "CODING",
-    Activity.READING:   "READING",
-    Activity.SEARCHING: "SEARCHING",
-    Activity.PLANNING:  "PLANNING",
-    Activity.THINKING:  "THINKING",
-    Activity.IDLE:      "IDLE",
+    Activity.CODING:      "CODING",
+    Activity.READING:     "READING",
+    Activity.SEARCHING:   "SEARCHING",
+    Activity.PLANNING:    "PLANNING",
+    Activity.INTEGRATING: "INTEGRATING",
+    Activity.THINKING:    "THINKING",
+    Activity.IDLE:        "IDLE",
 }
 
 
@@ -136,7 +174,7 @@ def _classify(content: list) -> tuple[Activity, str | None]:
         elif btype in ("thinking", "text"):
             has_thinking_or_text = True
     if last_tool is not None:
-        return TOOL_MAP.get(last_tool.lower(), Activity.CODING), last_tool
+        return _activity_for_tool(last_tool), _pretty_tool_name(last_tool)
     if has_thinking_or_text:
         return Activity.THINKING, None
     return Activity.IDLE, None
