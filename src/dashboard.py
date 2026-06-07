@@ -385,7 +385,7 @@ class SettingsPanel(QWidget):
         self._refresh_cred_status()
 
         layout.addSpacing(10)
-        layout.addWidget(QLabel("TOKEN  (beta)", objectName="sectionLabel"))
+        layout.addWidget(QLabel("TOKEN", objectName="sectionLabel"))
         self.token_status = QLabel(objectName="sectionHint")
         self.token_status.setWordWrap(True)
         layout.addWidget(self.token_status)
@@ -427,6 +427,21 @@ class SettingsPanel(QWidget):
         self.start_btn.clicked.connect(self._on_start_menu_toggled)
         layout.addWidget(self.start_btn)
         self._refresh_start_menu_btn()
+
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("ABOUT", objectName="sectionLabel"))
+        about = QLabel(
+            f"Clawdmeter-Windows  v{app_settings.APP_VERSION}\n"
+            "by Nick Welter (@weltern) & Claude\n"
+            "github.com/weltern/Clawdmeter-Windows\n\n"
+            "MIT licensed · the Clawd mascot is © Anthropic PBC and is "
+            "not covered by the MIT license · unofficial, not affiliated "
+            "with Anthropic.",
+            objectName="sectionHint",
+        )
+        about.setWordWrap(True)
+        about.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(about)
 
         layout.addStretch(1)
 

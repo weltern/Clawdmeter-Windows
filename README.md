@@ -88,7 +88,7 @@ Open the settings panel from the gear icon in the title bar.
 - **Credentials** — by default the app reads `~/.claude/.credentials.json`. Use
   **Use alternative credentials** (or set `CLAUDE_CREDENTIALS_PATH`) to point at
   a non-default `.credentials.json`.
-- **Token (beta)** — Claude's OAuth access token expires roughly every 8 hours,
+- **Token** — Claude's OAuth access token expires roughly every 8 hours,
   which would otherwise blank the dashboard. With **Auto-refresh when expired**
   on (the default), the app mints a fresh token automatically so it stays live.
   The **Refresh token now** button is a manual override and is enabled only when
