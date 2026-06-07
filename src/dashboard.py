@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -150,6 +151,14 @@ QCheckBox::indicator:checked {
     image: none;
 }
 QWidget#scrim { background-color: rgba(0, 0, 0, 60); }
+
+QWidget#compactRoot {
+    background-color: rgba(14, 17, 22, 204);
+    border: 1px solid #1f2937;
+}
+QLabel#compactPct { font-size: 15px; font-weight: 700; color: #e6edf3; }
+QLabel#compactPctSub { font-size: 12px; font-weight: 700; color: #9ca3af; }
+QLabel#compactReset { font-size: 11px; color: #9ca3af; }
 """
 
 
@@ -163,6 +172,20 @@ def _format_minutes(mins: int) -> str:
         return f"{hours}h {m:02d}m"
     days, h = divmod(hours, 24)
     return f"{days}d {h:02d}h"
+
+
+def _format_reset_clock(epoch: float, with_date: bool) -> str:
+    """Absolute wall-clock reset time, e.g. '9:40pm' or 'Jun 13, 9pm'.
+
+    Minutes are dropped when zero so weekly windows read tidily ('9pm').
+    """
+    dt = datetime.fromtimestamp(epoch)
+    hour = dt.hour % 12 or 12
+    ampm = "am" if dt.hour < 12 else "pm"
+    clock = f"{hour}:{dt.minute:02d}{ampm}" if dt.minute else f"{hour}{ampm}"
+    if with_date:
+        return f"{dt:%b} {dt.day}, {clock}"
+    return clock
 
 
 def _heat(pct: int) -> str:
@@ -191,6 +214,106 @@ def _tray_pixmap(pct: int) -> QPixmap:
     return pm
 
 
+class CompactWidget(QWidget):
+    """Tiny always-on-top floating readout: mini mascot + session/weekly bars.
+
+    A frameless, draggable tool window with no taskbar entry. Double-click (or
+    right-click -> Expand) returns to the full dashboard. The owning Dashboard
+    feeds it usage values and sprite animations so it mirrors the main window.
+    """
+
+    expand_requested = Signal()
+    quit_requested = Signal()
+
+    SPRITE = 34
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.setObjectName("compactRoot")
+        self.setWindowTitle("Clawdmeter")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(STYLESHEET)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setWindowFlags(
+            Qt.Window | Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+        )
+        icon_path = assets_root() / "icon.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+
+        self._drag_offset: QPoint | None = None
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(7, 4, 10, 4)
+        row.setSpacing(8)
+
+        self.sprite = SpritePlayer(size=self.SPRITE)
+        row.addWidget(self.sprite)
+
+        # Two stacked rows — session (bright) over weekly (dim). Each pairs a
+        # right-aligned percentage with a small absolute reset time so the
+        # rolling 5h / 7d windows are visible at a glance.
+        stack = QVBoxLayout()
+        stack.setSpacing(2)
+        self.session_pct, self.session_reset = self._row(stack, "compactPct")
+        self.weekly_pct, self.weekly_reset = self._row(stack, "compactPctSub")
+        row.addLayout(stack, 1)
+
+        menu = QMenu(self)
+        act_expand = QAction("Expand", self)
+        act_expand.triggered.connect(self.expand_requested.emit)
+        act_quit = QAction("Quit", self)
+        act_quit.triggered.connect(self.quit_requested.emit)
+        menu.addAction(act_expand)
+        menu.addSeparator()
+        menu.addAction(act_quit)
+        self._menu = menu
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(
+            lambda pos: self._menu.exec(self.mapToGlobal(pos))
+        )
+        self.setToolTip("Session (top) · Weekly (bottom)\nDouble-click to expand · drag to move")
+
+    def _row(self, parent_layout: QVBoxLayout, pct_object: str):
+        line = QHBoxLayout()
+        line.setSpacing(6)
+        pct = QLabel("-", objectName=pct_object)
+        pct.setMinimumWidth(38)
+        pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        reset = QLabel("", objectName="compactReset")
+        reset.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        line.addWidget(pct)
+        line.addWidget(reset)
+        line.addStretch(1)
+        parent_layout.addLayout(line)
+        return pct, reset
+
+    def update_usage(self, session_pct: int, weekly_pct: int,
+                     session_reset_epoch: float, weekly_reset_epoch: float) -> None:
+        self.session_pct.setText(f"{session_pct}%")
+        self.weekly_pct.setText(f"{weekly_pct}%")
+        self.session_reset.setText("resets " + _format_reset_clock(session_reset_epoch, False))
+        self.weekly_reset.setText("resets " + _format_reset_clock(weekly_reset_epoch, True))
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            self._drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            e.accept()
+
+    def mouseMoveEvent(self, e) -> None:
+        if (e.buttons() & Qt.LeftButton) and self._drag_offset is not None:
+            self.move(e.globalPosition().toPoint() - self._drag_offset)
+            e.accept()
+
+    def mouseReleaseEvent(self, e) -> None:
+        self._drag_offset = None
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            self.expand_requested.emit()
+            e.accept()
+
+
 class Scrim(QWidget):
     """Click-to-dismiss overlay shown behind the settings panel."""
 
@@ -216,7 +339,7 @@ class TitleBar(QWidget):
     HEIGHT = 48
     ICON_SIZE = 36
 
-    def __init__(self, window: QMainWindow, on_settings) -> None:
+    def __init__(self, window: QMainWindow, on_settings, on_compact) -> None:
         super().__init__(window)
         self.setObjectName("titleBar")
         # Allow vertical animation: min=0, max=HEIGHT. Auto-hide animates
@@ -253,6 +376,10 @@ class TitleBar(QWidget):
         self.settings_btn.setObjectName("settingsBtn")
         self.settings_btn.clicked.connect(on_settings)
         row.addWidget(self.settings_btn)
+
+        self.compact_btn = self._tool_btn("", "Compact mode")  # BackToWindow
+        self.compact_btn.clicked.connect(on_compact)
+        row.addWidget(self.compact_btn)
 
         self.min_btn = self._tool_btn("", "Minimize")        # ChromeMinimize
         self.min_btn.clicked.connect(self._win.showMinimized)
@@ -627,7 +754,8 @@ class Dashboard(QMainWindow):
         self._outer.setContentsMargins(0, 0, 0, 0)
         self._outer.setSpacing(0)
 
-        self.title_bar = TitleBar(self, on_settings=self._toggle_settings)
+        self.title_bar = TitleBar(self, on_settings=self._toggle_settings,
+                                  on_compact=self._enter_compact)
         self._outer.addWidget(self.title_bar)
 
         content = QWidget()
@@ -741,6 +869,11 @@ class Dashboard(QMainWindow):
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.setToolTip("Clawdmeter - starting…")
         self._tray.show()
+
+        # Compact mode: a tiny always-on-top floating widget mirroring usage.
+        self.compact = CompactWidget()
+        self.compact.expand_requested.connect(self._exit_compact)
+        self.compact.quit_requested.connect(self._real_quit)
 
         self._countdown = QTimer(self)
         self._countdown.setInterval(1000)
@@ -938,7 +1071,7 @@ class Dashboard(QMainWindow):
                 error=None,
                 timestamp=time.time(),
             ))
-            self.sprite.set_anims(f"mock:{self._mock_group}", GROUP_ANIMS[self._mock_group])
+            self._set_sprite_anims(f"mock:{self._mock_group}", GROUP_ANIMS[self._mock_group])
             self.group_label.setText(GROUP_NAMES[self._mock_group].upper() + "  (mock)")
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
@@ -971,6 +1104,8 @@ class Dashboard(QMainWindow):
         self.weekly_bar.style().unpolish(self.weekly_bar)
         self.weekly_bar.style().polish(self.weekly_bar)
         self.weekly_reset.setText(f"resets in {_format_minutes(s.weekly_reset_minutes)}")
+
+        self._sync_compact(s)
 
         self._rate.observe(s.session_pct)
         self._update_sprite_selection()
@@ -1052,13 +1187,18 @@ class Dashboard(QMainWindow):
         self._transcript_state = state
         self._update_sprite_selection()
 
+    def _set_sprite_anims(self, key: str, names) -> None:
+        """Drive both the full-window and compact mascots in lockstep."""
+        self.sprite.set_anims(key, names)
+        self.compact.sprite.set_anims(key, names)
+
     def _update_sprite_selection(self) -> None:
         """Transcript-driven activity takes precedence; rate-based when idle."""
         ts = self._transcript_state
         if ts and ts.activity != TranscriptActivity.IDLE:
             anims = ACTIVITY_ANIMS.get(ts.activity)
             if anims:
-                self.sprite.set_anims(f"transcript:{ts.activity.value}", anims)
+                self._set_sprite_anims(f"transcript:{ts.activity.value}", anims)
                 label = ACTIVITY_LABELS[ts.activity]
                 if ts.tool_name:
                     label = f"{label} — {ts.tool_name}"
@@ -1066,14 +1206,57 @@ class Dashboard(QMainWindow):
                 return
 
         group_id = self._rate.group()
-        self.sprite.set_anims(f"group:{group_id}", GROUP_ANIMS[group_id])
+        self._set_sprite_anims(f"group:{group_id}", GROUP_ANIMS[group_id])
         self.group_label.setText(GROUP_NAMES[group_id].upper())
 
     def _on_tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.Trigger:
             self._show_window()
 
+    def _sync_compact(self, s: UsageSample) -> None:
+        """Push a usage sample into the compact widget, converting the relative
+        reset minutes into absolute wall-clock instants."""
+        self.compact.update_usage(
+            s.session_pct, s.weekly_pct,
+            s.timestamp + s.session_reset_minutes * 60,
+            s.timestamp + s.weekly_reset_minutes * 60,
+        )
+
+    def _enter_compact(self) -> None:
+        """Hide the full window and show the tiny floating widget."""
+        if self.settings_panel.is_open():
+            self._close_settings()
+
+        pos = app_settings.get_compact_pos()
+        self.compact.adjustSize()
+        if pos is None:
+            scr = self.screen() or QGuiApplication.primaryScreen()
+            geo = scr.availableGeometry()
+            x = geo.right() - self.compact.width() - 24
+            y = geo.bottom() - self.compact.height() - 24
+            self.compact.move(x, y)
+        else:
+            self.compact.move(pos[0], pos[1])
+
+        s = self._last_sample
+        if s and s.ok:
+            self._sync_compact(s)
+
+        self.hide()
+        self.compact.show()
+        self.compact.raise_()
+        self.compact.activateWindow()
+
+    def _exit_compact(self) -> None:
+        if self.compact.isVisible():
+            app_settings.set_compact_pos(self.compact.x(), self.compact.y())
+            self.compact.hide()
+        self._show_window()
+
     def _show_window(self) -> None:
+        if self.compact.isVisible():
+            app_settings.set_compact_pos(self.compact.x(), self.compact.y())
+            self.compact.hide()
         self.showNormal()
         self.raise_()
         self.activateWindow()
@@ -1094,5 +1277,9 @@ class Dashboard(QMainWindow):
             self._poller.wait(2000)
         self._transcript.stop()
         self.sprite.stop()
+        if self.compact.isVisible():
+            app_settings.set_compact_pos(self.compact.x(), self.compact.y())
+        self.compact.sprite.stop()
+        self.compact.close()
         self._tray.hide()
         QGuiApplication.quit()
