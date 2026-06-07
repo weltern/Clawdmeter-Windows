@@ -15,7 +15,10 @@ port of [HermannBjorgvin/Clawdmeter](https://github.com/HermannBjorgvin/Clawdmet
 - **Weekly (7d) %** with reset countdown
 - A live label + Clawd animation showing what Claude Code is doing, falling back
   to a usage-rate mood when idle
-- A system-tray icon whose fill arc tracks session %
+- A system-tray icon whose fill arc tracks session % — **hover it for a quick
+  session & weekly readout**
+
+![Hover the tray icon for a session and weekly usage readout](assets/Screenshot-6.png)
 
 ## The mascot reacts to what Claude Code is doing
 
