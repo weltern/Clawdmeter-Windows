@@ -33,6 +33,7 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QFileDialog,
     QFrame,
@@ -56,6 +57,7 @@ import token_refresh
 import winutil
 from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
+from reset_notify import ResetNotifier
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
     ACTIVITY_ANIMS,
@@ -193,6 +195,21 @@ def _tray_pixmap(pct: int) -> QPixmap:
     p.setBrush(QColor(fill))
     span = int(360 * 16 * max(0, min(pct, 100)) / 100)
     p.drawPie(2, 2, 28, 28, 90 * 16, -span)
+    p.setBrush(QColor("#0e1116"))
+    p.drawEllipse(9, 9, 14, 14)
+    p.end()
+    return pm
+
+
+def _tray_alert_pixmap() -> QPixmap:
+    """High-contrast green "go / resume" variant used by the reset-flash."""
+    pm = QPixmap(32, 32)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(QColor("#22c55e"))
+    p.setPen(Qt.NoPen)
+    p.drawEllipse(2, 2, 28, 28)
     p.setBrush(QColor("#0e1116"))
     p.drawEllipse(9, 9, 14, 14)
     p.end()
@@ -534,6 +551,31 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.quit_on_close_check)
 
         layout.addSpacing(10)
+        layout.addWidget(QLabel("NOTIFICATIONS", objectName="sectionLabel"))
+        notify_hint = QLabel(
+            "Alert me when a usage limit resets and I can resume — only when I "
+            "was near the limit.",
+            objectName="sectionHint",
+        )
+        notify_hint.setWordWrap(True)
+        layout.addWidget(notify_hint)
+        self.notify_check = QCheckBox("Notify on limit reset")
+        self.notify_check.setChecked(app_settings.get_reset_notify())
+        self.notify_check.toggled.connect(self._on_notify_toggled)
+        layout.addWidget(self.notify_check)
+
+        self.notify_sound_check = QCheckBox("    Play a sound")
+        self.notify_sound_check.setChecked(app_settings.get_reset_notify_sound())
+        self.notify_sound_check.toggled.connect(self._on_notify_sound_toggled)
+        layout.addWidget(self.notify_sound_check)
+
+        self.notify_popup_check = QCheckBox("    Pop the window to front")
+        self.notify_popup_check.setChecked(app_settings.get_reset_notify_popup())
+        self.notify_popup_check.toggled.connect(self._on_notify_popup_toggled)
+        layout.addWidget(self.notify_popup_check)
+        self._sync_notify_subtoggles()
+
+        layout.addSpacing(10)
         layout.addWidget(QLabel("START MENU", objectName="sectionLabel"))
         hint = QLabel(
             "Adds a Start menu shortcut. Right-click it in Start to Pin to Start.",
@@ -630,6 +672,22 @@ class SettingsPanel(QWidget):
 
     def _on_quit_on_close_toggled(self, checked: bool) -> None:
         app_settings.set_quit_on_close(checked)
+
+    def _on_notify_toggled(self, checked: bool) -> None:
+        app_settings.set_reset_notify(checked)
+        self._sync_notify_subtoggles()
+
+    def _on_notify_sound_toggled(self, checked: bool) -> None:
+        app_settings.set_reset_notify_sound(checked)
+
+    def _on_notify_popup_toggled(self, checked: bool) -> None:
+        app_settings.set_reset_notify_popup(checked)
+
+    def _sync_notify_subtoggles(self) -> None:
+        """Grey out the per-method sub-toggles when the master switch is off."""
+        on = self.notify_check.isChecked()
+        self.notify_sound_check.setEnabled(on)
+        self.notify_popup_check.setEnabled(on)
 
     def _refresh_start_menu_btn(self) -> None:
         if start_menu.has_shortcut():
@@ -837,6 +895,7 @@ class Dashboard(QMainWindow):
         self._apply_auto_hide(app_settings.get_auto_hide_titlebar())
 
         self._rate = RateGroupTracker()
+        self._reset_notifier = ResetNotifier()
         self._last_sample: UsageSample | None = None
         self._last_tooltip = ""
         self._transcript_state: TranscriptState | None = None
@@ -860,6 +919,15 @@ class Dashboard(QMainWindow):
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.setToolTip("Clawdmeter - starting…")
         self._tray.show()
+
+        # Tray-flash state for the limit-reset notification.
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setInterval(400)
+        self._flash_timer.timeout.connect(self._flash_tick)
+        self._flash_alert_icon = QIcon(_tray_alert_pixmap())
+        self._flash_saved_icon: QIcon | None = None
+        self._flash_remaining = 0
+        self._flash_on = False
 
         # Compact mode: a tiny always-on-top floating widget mirroring usage.
         self.compact = CompactWidget()
@@ -1075,6 +1143,9 @@ class Dashboard(QMainWindow):
         sample_tick()
 
     def _on_sample(self, s: UsageSample) -> None:
+        # Feed every sample (incl. errors) so the notifier can ignore them
+        # without disturbing its baseline.
+        decision = self._reset_notifier.observe(s)
         self._last_sample = s
         if not s.ok:
             self._apply_status_badge(s.status)
@@ -1104,6 +1175,50 @@ class Dashboard(QMainWindow):
         self._apply_status_badge(s.status)
         self._set_tray_tooltip(s.session_pct, s.session_reset_minutes,
                                s.weekly_pct, s.weekly_reset_minutes)
+
+        # Fire last, so the UI already reflects the post-reset state before we
+        # (optionally) pop the window to the foreground.
+        if decision.notify and app_settings.get_reset_notify():
+            self._fire_reset_notification(decision)
+
+    def _fire_reset_notification(self, decision) -> None:
+        """Surface a gated limit reset via the user's chosen methods."""
+        which = " & ".join(r.capitalize() for r in decision.reasons) or "Usage"
+        title = "Claude limit reset"
+        body = f"{which} limit has reset — you can resume."
+
+        # Native OS toast + tray flash always accompany the master toggle.
+        if self._tray.isVisible() and self._tray.supportsMessages():
+            self._tray.showMessage(title, body, QSystemTrayIcon.Information, 8000)
+        self._start_tray_flash()
+
+        if app_settings.get_reset_notify_sound():
+            QApplication.beep()
+        if app_settings.get_reset_notify_popup():
+            self._show_window()
+
+    def _start_tray_flash(self, cycles: int = 6) -> None:
+        if self._flash_timer.isActive():  # already flashing — just extend it
+            self._flash_remaining = max(self._flash_remaining, cycles * 2)
+            return
+        self._flash_saved_icon = self._tray.icon()  # snapshot the real icon
+        self._flash_remaining = cycles * 2
+        self._flash_on = False
+        self._flash_timer.start()
+
+    def _flash_tick(self) -> None:
+        if self._flash_remaining <= 0:
+            self._flash_timer.stop()
+            if self._flash_saved_icon is not None:
+                self._tray.setIcon(self._flash_saved_icon)  # restore exactly
+                self._flash_saved_icon = None
+            return
+        self._flash_on = not self._flash_on
+        self._tray.setIcon(
+            self._flash_alert_icon if self._flash_on
+            else (self._flash_saved_icon or self._tray.icon())
+        )
+        self._flash_remaining -= 1
 
     def _set_tray_tooltip(self, session_pct: int, session_reset: int,
                           weekly_pct: int, weekly_reset: int) -> None:

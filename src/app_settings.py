@@ -14,6 +14,9 @@ KEY_AUTO_HIDE_TITLEBAR = "window/auto_hide_titlebar"
 KEY_QUIT_ON_CLOSE = "window/quit_on_close"
 KEY_COMPACT_POS = "window/compact_pos"
 KEY_AUTO_REFRESH = "token/auto_refresh"
+KEY_RESET_NOTIFY = "notify/reset_enabled"
+KEY_RESET_NOTIFY_SOUND = "notify/reset_sound"
+KEY_RESET_NOTIFY_POPUP = "notify/reset_popup"
 
 
 def _settings() -> QSettings:
@@ -87,3 +90,36 @@ def get_auto_refresh() -> bool:
 
 def set_auto_refresh(on: bool) -> None:
     _settings().setValue(KEY_AUTO_REFRESH, bool(on))
+
+
+def get_reset_notify() -> bool:
+    v = _settings().value(KEY_RESET_NOTIFY, True)  # on by default
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_reset_notify(on: bool) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY, bool(on))
+
+
+def get_reset_notify_sound() -> bool:
+    v = _settings().value(KEY_RESET_NOTIFY_SOUND, True)  # on by default
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_reset_notify_sound(on: bool) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_SOUND, bool(on))
+
+
+def get_reset_notify_popup() -> bool:
+    v = _settings().value(KEY_RESET_NOTIFY_POPUP, True)  # on by default
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_reset_notify_popup(on: bool) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_POPUP, bool(on))

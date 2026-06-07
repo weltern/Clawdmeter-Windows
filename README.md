@@ -109,6 +109,11 @@ Open the settings panel from the gear icon in the title bar.
   the token is actually expired.
 - **Window** — toggle **Always on top**, **Auto-hide title bar**, and **Quit on
   close** (closes the app instead of minimizing to the tray).
+- **Notifications** — **Notify on limit reset** pings you the moment a usage
+  limit resets so you know you can resume — but only when you were actually near
+  the limit (or already throttled), so it stays quiet otherwise. It shows a tray
+  notification and briefly flashes the tray icon; **Play a sound** and **Pop the
+  window to front** are optional extras you can switch off.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
   to pin).
 
