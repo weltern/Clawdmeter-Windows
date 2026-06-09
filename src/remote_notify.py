@@ -64,3 +64,35 @@ def send_ntfy(
     except Exception as exc:
         return False, f"ntfy push failed: {exc}"
     return True, "sent"
+
+
+def send_telegram(
+    token: str,
+    chat_id: str,
+    title: str,
+    body: str,
+    *,
+    timeout: float = 10.0,
+) -> tuple[bool, str]:
+    """POST a notification to a Telegram chat via the Bot API. Returns (ok, message).
+
+    Needs a bot token (from @BotFather) and the destination chat ID. The title
+    becomes the first line of the message. Errors are reported, never raised, so
+    a flaky push never disrupts the local notification path.
+    """
+    token = (token or "").strip()
+    chat_id = (chat_id or "").strip()
+    if not token or not chat_id:
+        return False, "Telegram bot token and chat ID are both required"
+
+    import httpx  # lazy, mirrors send_ntfy — keeps this Qt/httpx-free at import
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    text = f"{title}\n{body}" if title else body
+    try:
+        with httpx.Client(timeout=timeout) as http:
+            resp = http.post(url, json={"chat_id": chat_id, "text": text})
+            resp.raise_for_status()
+    except Exception as exc:
+        return False, f"Telegram push failed: {exc}"
+    return True, "sent"
