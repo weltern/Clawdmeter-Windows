@@ -455,6 +455,9 @@ class SettingsPanel(QWidget):
     WIDTH = 280
     ANIM_MS = 220
 
+    # Emitted from the push-test worker thread; delivered on the UI thread.
+    _push_test_result = Signal(bool, str)
+
     def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested,
                  on_refresh_token=None, on_auto_refresh_changed=None) -> None:
         super().__init__(parent)
@@ -636,6 +639,14 @@ class SettingsPanel(QWidget):
         self.notify_push_tg_hint.setWordWrap(True)
         layout.addWidget(self.notify_push_tg_hint)
 
+        self.notify_push_test_btn = QPushButton("Send test notification")
+        self.notify_push_test_btn.clicked.connect(self._on_test_push_clicked)
+        layout.addWidget(self.notify_push_test_btn)
+        self.notify_push_test_status = QLabel("", objectName="sectionHint")
+        self.notify_push_test_status.setWordWrap(True)
+        layout.addWidget(self.notify_push_test_status)
+        self._push_test_result.connect(self._on_test_push_result)
+
         self._sync_notify_subtoggles()
 
         layout.addSpacing(10)
@@ -763,6 +774,37 @@ class SettingsPanel(QWidget):
     def _on_notify_push_tg_chat_changed(self) -> None:
         app_settings.set_reset_notify_push_tg_chat(self.notify_push_tg_chat.text())
 
+    def _on_test_push_clicked(self) -> None:
+        """Send a one-off push with the current settings so the user can verify
+        their setup. Runs off the UI thread; the result returns via signal."""
+        provider = app_settings.get_reset_notify_push_provider()
+        title = "Clawdmeter test"
+        body = "If you can see this, your phone notifications are set up."
+        self.notify_push_test_btn.setEnabled(False)
+        self.notify_push_test_status.setText("Sending…")
+
+        def worker() -> None:
+            if provider == "telegram":
+                ok, msg = remote_notify.send_telegram(
+                    app_settings.get_reset_notify_push_tg_token(),
+                    app_settings.get_reset_notify_push_tg_chat(),
+                    title,
+                    body,
+                )
+            else:
+                ok, msg = remote_notify.send_ntfy(
+                    app_settings.get_reset_notify_push_topic(), title, body
+                )
+            self._push_test_result.emit(ok, msg)
+
+        threading.Thread(target=worker, name="push-test", daemon=True).start()
+
+    def _on_test_push_result(self, ok: bool, msg: str) -> None:
+        self._sync_notify_subtoggles()  # re-enables the button (clears status)
+        self.notify_push_test_status.setText(
+            "Sent — check your phone." if ok else f"Failed: {msg}"
+        )
+
     def _sync_notify_subtoggles(self) -> None:
         """Grey out the per-method sub-toggles when the master switch is off, and
         show only the selected push provider's credential fields."""
@@ -784,6 +826,9 @@ class SettingsPanel(QWidget):
         self.notify_push_topic.setEnabled(push_on)
         self.notify_push_tg_token.setEnabled(push_on)
         self.notify_push_tg_chat.setEnabled(push_on)
+        self.notify_push_test_btn.setEnabled(push_on)
+        if not push_on:
+            self.notify_push_test_status.clear()
 
     def _refresh_start_menu_btn(self) -> None:
         if start_menu.has_shortcut():
