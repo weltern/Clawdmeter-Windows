@@ -43,8 +43,8 @@ tokens (the same 4-group logic as the original firmware).
 ## Download
 
 Grab the latest `Clawdmeter.exe` from the
-[Releases](../../releases) page — it's a single self-contained file, no install
-needed. Just run it.
+[Releases](../../releases) page — it's a single self-contained file (~27 MB,
+bundling Python + Qt), no install needed. Just run it.
 
 > **Heads up:** the exe is not code-signed, so Windows SmartScreen may show a
 > "Windows protected your PC / unknown publisher" prompt the first time you run
@@ -84,7 +84,14 @@ Add `--mock` to drive the UI with synthetic data (no API calls):
 .\build.ps1
 ```
 
-Output: `dist\Clawdmeter.exe` — single-file, no console window.
+Output: `dist\Clawdmeter.exe` — single-file, no console window, ~27 MB.
+
+`Clawdmeter.spec` prunes the parts of PySide6/Qt the app doesn't use (the
+QML/Quick stack, the ~20 MB software-OpenGL fallback, unused image-format and
+platform plugins, and Qt's bundled translations) to keep the exe roughly half
+the size of an unpruned PySide6 build. If you start importing additional Qt
+modules, check the pruning block in the spec so you don't strip something you
+now need.
 
 ## Settings
 

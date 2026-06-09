@@ -41,6 +41,49 @@ a = Analysis(
     noarchive=False,
 )
 
+# --- Size pruning -----------------------------------------------------------
+# The `excludes` above drop the PySide6 *Python* binding modules, but PyInstaller's
+# PySide6 hook still collects the matching native Qt DLLs, every Qt plugin, and all
+# translations. The app only uses QtCore/QtGui/QtWidgets/QtNetwork, so we strip the
+# rest here. This takes the one-file exe from ~48 MB to ~27 MB. See the size notes
+# in README/NOTICE if you change the imported Qt modules.
+
+# 1. Native Qt DLLs the app never imports (QML/Quick/Pdf/OpenGL/Svg/VirtualKeyboard).
+#    opengl32sw.dll is Qt's ~20 MB software-OpenGL fallback, unneeded for a Widgets UI.
+_DROP_QT_DLL = (
+    'opengl32sw', 'Qt6Quick', 'Qt6Qml', 'Qt6Pdf', 'Qt6OpenGL',
+    'Qt6Svg', 'Qt6VirtualKeyboard', 'Qt6QmlModels', 'Qt6QmlMeta',
+    'Qt6QmlWorkerScript',
+)
+a.binaries = TOC([b for b in a.binaries
+                  if not any(x.lower() in b[0].lower() for x in _DROP_QT_DLL)])
+
+# 2. Accidental second OpenSSL build pulled from Git's mingw64\bin via PATH; it
+#    duplicates Python's own libcrypto-3.dll/libssl-3.dll which _ssl/httpx use.
+a.binaries = TOC([b for b in a.binaries
+                  if 'mingw64' not in (b[1] or '').lower()
+                  and b[0].split('\\')[-1].lower()
+                      not in ('libcrypto-3-x64.dll', 'libssl-3-x64.dll')])
+
+# 3. Image-format plugins the app never decodes. It loads PNG sprites/icons (PNG
+#    support is built into Qt6Gui) and uses the .ico window icon, so keep only qico.
+_DROP_IMG = (
+    'qjpeg', 'qtiff', 'qgif', 'qwebp', 'qwbmp', 'qtga', 'qicns',
+    'qsvg', 'qsvgicon', 'qpdf',
+)
+a.binaries = TOC([b for b in a.binaries
+                  if not any(x in b[0].split('\\')[-1].lower() for x in _DROP_IMG)])
+
+# 4. Extra Qt platform plugins; the Windows desktop build only needs qwindows.
+_DROP_PLAT = ('qdirect2d.dll', 'qminimal.dll', 'qoffscreen.dll')
+a.binaries = TOC([b for b in a.binaries
+                  if b[0].split('\\')[-1].lower() not in _DROP_PLAT])
+
+# 5. Qt's own UI translations (~6 MB of .qm). The app installs no QTranslator, so
+#    these are never loaded; its UI strings are hardcoded English.
+a.datas = [d for d in a.datas if 'translations' not in d[0].lower()]
+# ---------------------------------------------------------------------------
+
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
