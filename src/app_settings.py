@@ -18,7 +18,12 @@ KEY_RESET_NOTIFY = "notify/reset_enabled"
 KEY_RESET_NOTIFY_SOUND = "notify/reset_sound"
 KEY_RESET_NOTIFY_POPUP = "notify/reset_popup"
 KEY_RESET_NOTIFY_PUSH = "notify/reset_push"
+KEY_RESET_NOTIFY_PUSH_PROVIDER = "notify/reset_push_provider"
 KEY_RESET_NOTIFY_PUSH_TOPIC = "notify/reset_push_topic"
+KEY_RESET_NOTIFY_PUSH_TG_TOKEN = "notify/reset_push_tg_token"
+KEY_RESET_NOTIFY_PUSH_TG_CHAT = "notify/reset_push_tg_chat"
+
+PUSH_PROVIDERS = ("ntfy", "telegram")
 
 
 def _settings() -> QSettings:
@@ -138,6 +143,19 @@ def set_reset_notify_push(on: bool) -> None:
     _settings().setValue(KEY_RESET_NOTIFY_PUSH, bool(on))
 
 
+def get_reset_notify_push_provider() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_PROVIDER, "ntfy")
+    s = str(v).lower() if v else "ntfy"
+    return s if s in PUSH_PROVIDERS else "ntfy"
+
+
+def set_reset_notify_push_provider(provider: str) -> None:
+    p = (provider or "ntfy").lower()
+    _settings().setValue(
+        KEY_RESET_NOTIFY_PUSH_PROVIDER, p if p in PUSH_PROVIDERS else "ntfy"
+    )
+
+
 def get_reset_notify_push_topic() -> str:
     v = _settings().value(KEY_RESET_NOTIFY_PUSH_TOPIC, "")
     return str(v) if v else ""
@@ -145,3 +163,21 @@ def get_reset_notify_push_topic() -> str:
 
 def set_reset_notify_push_topic(topic: str) -> None:
     _settings().setValue(KEY_RESET_NOTIFY_PUSH_TOPIC, (topic or "").strip())
+
+
+def get_reset_notify_push_tg_token() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_TG_TOKEN, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_tg_token(token: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_TG_TOKEN, (token or "").strip())
+
+
+def get_reset_notify_push_tg_chat() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_TG_CHAT, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_tg_chat(chat: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_TG_CHAT, (chat or "").strip())

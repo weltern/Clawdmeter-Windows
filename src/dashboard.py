@@ -37,6 +37,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -576,11 +577,25 @@ class SettingsPanel(QWidget):
         self.notify_popup_check.toggled.connect(self._on_notify_popup_toggled)
         layout.addWidget(self.notify_popup_check)
 
-        self.notify_push_check = QCheckBox("    Send a push to my phone (ntfy)")
+        self.notify_push_check = QCheckBox("    Send a push to my phone")
         self.notify_push_check.setChecked(app_settings.get_reset_notify_push())
         self.notify_push_check.toggled.connect(self._on_notify_push_toggled)
         layout.addWidget(self.notify_push_check)
 
+        push_provider_row = QHBoxLayout()
+        push_provider_row.addWidget(QLabel("    via"))
+        self.notify_push_provider = QComboBox()
+        self.notify_push_provider.addItem("ntfy", "ntfy")
+        self.notify_push_provider.addItem("Telegram", "telegram")
+        idx = self.notify_push_provider.findData(app_settings.get_reset_notify_push_provider())
+        self.notify_push_provider.setCurrentIndex(max(0, idx))
+        self.notify_push_provider.currentIndexChanged.connect(
+            self._on_notify_push_provider_changed
+        )
+        push_provider_row.addWidget(self.notify_push_provider, 1)
+        layout.addLayout(push_provider_row)
+
+        # ntfy fields
         self.notify_push_topic = QLineEdit()
         self.notify_push_topic.setPlaceholderText(
             "ntfy topic (e.g. clawd-nick-7f3a) or full URL"
@@ -588,15 +603,39 @@ class SettingsPanel(QWidget):
         self.notify_push_topic.setText(app_settings.get_reset_notify_push_topic())
         self.notify_push_topic.editingFinished.connect(self._on_notify_push_topic_changed)
         layout.addWidget(self.notify_push_topic)
-
-        push_hint = QLabel(
-            "Subscribe to the same topic in the ntfy app (Android/iOS) to get "
-            "the reset alert on your phone. Pick a long, hard-to-guess topic — "
-            "anyone who knows it can read your alerts.",
+        self.notify_push_ntfy_hint = QLabel(
+            "Subscribe to the same topic in the ntfy app (Android/iOS). Pick a "
+            "long, hard-to-guess topic — anyone who knows it can read your alerts.",
             objectName="sectionHint",
         )
-        push_hint.setWordWrap(True)
-        layout.addWidget(push_hint)
+        self.notify_push_ntfy_hint.setWordWrap(True)
+        layout.addWidget(self.notify_push_ntfy_hint)
+
+        # Telegram fields
+        self.notify_push_tg_token = QLineEdit()
+        self.notify_push_tg_token.setPlaceholderText("Telegram bot token (from @BotFather)")
+        self.notify_push_tg_token.setEchoMode(QLineEdit.Password)
+        self.notify_push_tg_token.setText(app_settings.get_reset_notify_push_tg_token())
+        self.notify_push_tg_token.editingFinished.connect(
+            self._on_notify_push_tg_token_changed
+        )
+        layout.addWidget(self.notify_push_tg_token)
+        self.notify_push_tg_chat = QLineEdit()
+        self.notify_push_tg_chat.setPlaceholderText("Telegram chat ID (e.g. 123456789)")
+        self.notify_push_tg_chat.setText(app_settings.get_reset_notify_push_tg_chat())
+        self.notify_push_tg_chat.editingFinished.connect(
+            self._on_notify_push_tg_chat_changed
+        )
+        layout.addWidget(self.notify_push_tg_chat)
+        self.notify_push_tg_hint = QLabel(
+            "Message @BotFather to create a bot and copy its token, then DM your "
+            "bot and read your chat ID from "
+            "api.telegram.org/bot<token>/getUpdates. Keep the token private.",
+            objectName="sectionHint",
+        )
+        self.notify_push_tg_hint.setWordWrap(True)
+        layout.addWidget(self.notify_push_tg_hint)
+
         self._sync_notify_subtoggles()
 
         layout.addSpacing(10)
@@ -711,17 +750,40 @@ class SettingsPanel(QWidget):
         app_settings.set_reset_notify_push(checked)
         self._sync_notify_subtoggles()
 
+    def _on_notify_push_provider_changed(self) -> None:
+        app_settings.set_reset_notify_push_provider(self.notify_push_provider.currentData())
+        self._sync_notify_subtoggles()
+
     def _on_notify_push_topic_changed(self) -> None:
         app_settings.set_reset_notify_push_topic(self.notify_push_topic.text())
 
+    def _on_notify_push_tg_token_changed(self) -> None:
+        app_settings.set_reset_notify_push_tg_token(self.notify_push_tg_token.text())
+
+    def _on_notify_push_tg_chat_changed(self) -> None:
+        app_settings.set_reset_notify_push_tg_chat(self.notify_push_tg_chat.text())
+
     def _sync_notify_subtoggles(self) -> None:
-        """Grey out the per-method sub-toggles when the master switch is off."""
+        """Grey out the per-method sub-toggles when the master switch is off, and
+        show only the selected push provider's credential fields."""
         on = self.notify_check.isChecked()
         self.notify_sound_check.setEnabled(on)
         self.notify_popup_check.setEnabled(on)
         self.notify_push_check.setEnabled(on)
-        # The topic only matters when push is both available and turned on.
-        self.notify_push_topic.setEnabled(on and self.notify_push_check.isChecked())
+
+        push_on = on and self.notify_push_check.isChecked()
+        self.notify_push_provider.setEnabled(push_on)
+        is_ntfy = self.notify_push_provider.currentData() == "ntfy"
+
+        # Only the chosen provider's fields are shown; both enable with push.
+        self.notify_push_topic.setVisible(is_ntfy)
+        self.notify_push_ntfy_hint.setVisible(is_ntfy)
+        self.notify_push_tg_token.setVisible(not is_ntfy)
+        self.notify_push_tg_chat.setVisible(not is_ntfy)
+        self.notify_push_tg_hint.setVisible(not is_ntfy)
+        self.notify_push_topic.setEnabled(push_on)
+        self.notify_push_tg_token.setEnabled(push_on)
+        self.notify_push_tg_chat.setEnabled(push_on)
 
     def _refresh_start_menu_btn(self) -> None:
         if start_menu.has_shortcut():
@@ -1234,19 +1296,27 @@ class Dashboard(QMainWindow):
             self._send_push(title, body)
 
     def _send_push(self, title: str, body: str) -> None:
-        """Fire the ntfy phone push off the UI thread; a failure is logged, not raised."""
-        topic = app_settings.get_reset_notify_push_topic()
-        if not topic:
-            return
+        """Fire the phone push off the UI thread; a failure is logged, not raised."""
+        provider = app_settings.get_reset_notify_push_provider()
 
         def worker() -> None:
-            ok, msg = remote_notify.send_ntfy(topic, title, body)
+            if provider == "telegram":
+                ok, msg = remote_notify.send_telegram(
+                    app_settings.get_reset_notify_push_tg_token(),
+                    app_settings.get_reset_notify_push_tg_chat(),
+                    title,
+                    body,
+                )
+            else:
+                ok, msg = remote_notify.send_ntfy(
+                    app_settings.get_reset_notify_push_topic(), title, body
+                )
             # The frozen app runs windowed (console=False), where stderr is None
             # and print() would raise — guard so the failure stays silent-but-safe.
             if not ok and sys.stderr is not None:
                 sys.stderr.write(f"[clawdmeter] {msg}\n")
 
-        threading.Thread(target=worker, name="ntfy-push", daemon=True).start()
+        threading.Thread(target=worker, name="push-notify", daemon=True).start()
 
     def _start_tray_flash(self, cycles: int = 6) -> None:
         if self._flash_timer.isActive():  # already flashing — just extend it

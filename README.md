@@ -106,11 +106,12 @@ Open the settings panel from the gear icon in the title bar.
   limit resets so you know you can resume — but only when you were actually near
   the limit (or already throttled), so it stays quiet otherwise. It shows a tray
   notification and briefly flashes the tray icon; **Play a sound**, **Pop the
-  window to front**, and **Send a push to my phone (ntfy)** are optional extras
-  you can switch off. The phone push posts to an [ntfy](https://ntfy.sh) topic
-  of your choosing (no account or API key) — subscribe to the same topic in the
-  ntfy mobile app to get the reset alert on your phone; pick a long, hard-to-guess
-  topic since anyone who knows it can read your alerts.
+  window to front**, and **Send a push to my phone** are optional extras you can
+  switch off. The phone push reaches you via either **ntfy** or **Telegram**:
+  with [ntfy](https://ntfy.sh) (no account or API key) you subscribe to a topic
+  of your choosing in the ntfy app — pick a long, hard-to-guess topic since
+  anyone who knows it can read your alerts; with **Telegram** you create a bot
+  via @BotFather and enter its token and your chat ID. Keep both secret.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
   to pin).
 
