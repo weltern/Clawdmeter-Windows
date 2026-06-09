@@ -83,6 +83,15 @@ def test_status_gated_low_pct_still_notifies():
     assert d.session_reset and d.notify  # low pct but was being throttled
 
 
+def test_weekly_not_gated_by_session_status():
+    # `status` is the 5h (session) status only — a 5h throttle must NOT make a
+    # low-utilization weekly reset notify (no cross-axis false positive).
+    n = ResetNotifier()
+    n.observe(sample(10, 30, status="rejecting"))
+    d = n.observe(sample(10, 20))
+    assert d.weekly_reset and not d.notify and "weekly" not in d.reasons
+
+
 def test_first_sample_no_decision():
     n = ResetNotifier()
     d = n.observe(sample(90, 10))

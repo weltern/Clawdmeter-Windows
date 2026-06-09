@@ -1,14 +1,15 @@
-"""Send a usage-limit-reset push to your phone via ntfy (https://ntfy.sh).
+"""Send a usage-limit-reset push to your phone, via ntfy or Telegram.
 
-This is the optional "ping my phone" companion to the local reset toast. It's a
-single HTTPS POST to an ntfy topic, so no new dependency is needed — httpx
-already ships with the app — and there's no account or API key: you pick a
-hard-to-guess topic name, subscribe to it in the ntfy mobile app, and put the
-same string in Settings here.
+This is the optional "ping my phone" companion to the local reset toast. Each
+sender is a single HTTPS POST, so no new dependency is needed — httpx already
+ships with the app:
+  - ntfy (https://ntfy.sh): no account or API key; you pick a hard-to-guess
+    topic name and subscribe to it in the ntfy mobile app.
+  - Telegram: a bot token (from @BotFather) plus the destination chat ID.
 
-This module stays Qt-free and does the network call itself; the dashboard runs
-it off the UI thread. URL building is split out (resolve_url) so it can be
-tested without touching the network.
+This module stays Qt-free and does the network calls itself; the dashboard runs
+them off the UI thread. ntfy URL building is split out (resolve_url) so it can
+be tested without touching the network.
 """
 
 from __future__ import annotations

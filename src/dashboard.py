@@ -221,6 +221,31 @@ def _tray_alert_pixmap() -> QPixmap:
     return pm
 
 
+def _push_configured() -> bool:
+    """True if the selected push provider has the credentials it needs."""
+    if app_settings.get_reset_notify_push_provider() == "telegram":
+        return bool(
+            app_settings.get_reset_notify_push_tg_token()
+            and app_settings.get_reset_notify_push_tg_chat()
+        )
+    return bool(app_settings.get_reset_notify_push_topic())
+
+
+def _dispatch_push(title: str, body: str) -> tuple[bool, str]:
+    """Send a push via the configured provider. Shared by the reset
+    notification and the Settings test button so both exercise one code path."""
+    if app_settings.get_reset_notify_push_provider() == "telegram":
+        return remote_notify.send_telegram(
+            app_settings.get_reset_notify_push_tg_token(),
+            app_settings.get_reset_notify_push_tg_chat(),
+            title,
+            body,
+        )
+    return remote_notify.send_ntfy(
+        app_settings.get_reset_notify_push_topic(), title, body
+    )
+
+
 class CompactWidget(QWidget):
     """Tiny always-on-top floating readout: mini mascot + session/weekly bars.
 
@@ -777,24 +802,14 @@ class SettingsPanel(QWidget):
     def _on_test_push_clicked(self) -> None:
         """Send a one-off push with the current settings so the user can verify
         their setup. Runs off the UI thread; the result returns via signal."""
-        provider = app_settings.get_reset_notify_push_provider()
-        title = "Clawdmeter test"
-        body = "If you can see this, your phone notifications are set up."
         self.notify_push_test_btn.setEnabled(False)
         self.notify_push_test_status.setText("Sending…")
 
         def worker() -> None:
-            if provider == "telegram":
-                ok, msg = remote_notify.send_telegram(
-                    app_settings.get_reset_notify_push_tg_token(),
-                    app_settings.get_reset_notify_push_tg_chat(),
-                    title,
-                    body,
-                )
-            else:
-                ok, msg = remote_notify.send_ntfy(
-                    app_settings.get_reset_notify_push_topic(), title, body
-                )
+            ok, msg = _dispatch_push(
+                "Clawdmeter test",
+                "If you can see this, your phone notifications are set up.",
+            )
             self._push_test_result.emit(ok, msg)
 
         threading.Thread(target=worker, name="push-test", daemon=True).start()
@@ -1342,20 +1357,11 @@ class Dashboard(QMainWindow):
 
     def _send_push(self, title: str, body: str) -> None:
         """Fire the phone push off the UI thread; a failure is logged, not raised."""
-        provider = app_settings.get_reset_notify_push_provider()
+        if not _push_configured():  # nothing to send to — stay a clean no-op
+            return
 
         def worker() -> None:
-            if provider == "telegram":
-                ok, msg = remote_notify.send_telegram(
-                    app_settings.get_reset_notify_push_tg_token(),
-                    app_settings.get_reset_notify_push_tg_chat(),
-                    title,
-                    body,
-                )
-            else:
-                ok, msg = remote_notify.send_ntfy(
-                    app_settings.get_reset_notify_push_topic(), title, body
-                )
+            ok, msg = _dispatch_push(title, body)
             # The frozen app runs windowed (console=False), where stderr is None
             # and print() would raise — guard so the failure stays silent-but-safe.
             if not ok and sys.stderr is not None:

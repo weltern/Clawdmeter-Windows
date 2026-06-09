@@ -79,11 +79,15 @@ class ResetNotifier:
             return ResetDecision()
 
         # Gate each axis on the pre-reset sample: was the user near/at the limit?
+        # `status` is the 5h (session) status header only — there is no weekly
+        # status — so the throttle shortcut applies to the session axis alone;
+        # the weekly axis gates on its own utilization to avoid cross-axis
+        # false positives (a 5h throttle firing a low-utilization weekly alert).
         concerning = _status_concerning(prev.status)
         reasons: list[str] = []
         if session_reset and (prev.session_pct >= self._threshold or concerning):
             reasons.append("session")
-        if weekly_reset and (prev.weekly_pct >= self._threshold or concerning):
+        if weekly_reset and prev.weekly_pct >= self._threshold:
             reasons.append("weekly")
 
         return ResetDecision(
