@@ -160,11 +160,20 @@ QWidget#scrim { background-color: rgba(0, 0, 0, 60); }
 
 QWidget#compactRoot {
     background-color: #0e1116;
-    border: 1px solid #1f2937;
+    border: 1px solid #CE7D6B;
 }
-QLabel#compactPct { font-size: 15px; font-weight: 700; color: #e6edf3; }
-QLabel#compactPctSub { font-size: 12px; font-weight: 700; color: #9ca3af; }
-QLabel#compactReset { font-size: 11px; color: #9ca3af; }
+QLabel#compactPct { font-size: 17px; font-weight: 700; color: #e6edf3; }
+QLabel#compactPctSub { font-size: 13px; font-weight: 700; color: #9ca3af; }
+QLabel#compactReset { font-size: 12px; color: #9ca3af; }
+
+QWidget#toastRoot {
+    background-color: #0e1116;
+    border: 1px solid #CE7D6B;
+}
+QLabel#toastTitle {
+    font-size: 14px; font-weight: 700; color: #e6edf3; letter-spacing: 0.5px;
+}
+QLabel#toastBody { font-size: 12px; color: #9ca3af; }
 """
 
 
@@ -257,7 +266,7 @@ class CompactWidget(QWidget):
     expand_requested = Signal()
     quit_requested = Signal()
 
-    SPRITE = 34
+    SPRITE = 37
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -278,8 +287,8 @@ class CompactWidget(QWidget):
         self._drag_offset: QPoint | None = None
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(7, 4, 10, 4)
-        row.setSpacing(8)
+        row.setContentsMargins(8, 4, 11, 5)
+        row.setSpacing(9)
 
         self.sprite = SpritePlayer(size=self.SPRITE)
         row.addWidget(self.sprite)
@@ -310,9 +319,9 @@ class CompactWidget(QWidget):
 
     def _row(self, parent_layout: QVBoxLayout, pct_object: str):
         line = QHBoxLayout()
-        line.setSpacing(6)
+        line.setSpacing(7)
         pct = QLabel("-", objectName=pct_object)
-        pct.setMinimumWidth(38)
+        pct.setMinimumWidth(42)
         pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         reset = QLabel("", objectName="compactReset")
         reset.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -350,6 +359,141 @@ class CompactWidget(QWidget):
         if e.button() == Qt.LeftButton:
             self.expand_requested.emit()
             e.accept()
+
+
+class ResetToast(QWidget):
+    """Themed limit-reset toast: a frameless card with the mascot, a title and
+    a one-line body. Fades in at the bottom-right of the primary screen, auto-
+    dismisses after DURATION_MS, and emits `clicked` (then dismisses) on click
+    so the dashboard can pop to the foreground.
+
+    Replaces QSystemTrayIcon.showMessage so the reset alert matches the app's
+    look. Pure QtWidgets/QtGui/QtCore — no QtMultimedia, no new dependency.
+    """
+
+    clicked = Signal()
+
+    MARGIN = 18           # gap from the screen working-area edges
+    DURATION_MS = 8000    # visible time before the auto fade-out
+    FADE_MS = 220
+    # A reset is good news, so the mascot does its DJ bounce rather than idling.
+    ANIMS = ["dance bounce dj"]
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.setObjectName("toastShell")
+        self.setWindowTitle("Clawdmeter")
+        self._show_seq = 0  # bumps each show so the sprite restarts its anim
+        # Frameless, on-top, no taskbar entry, and — critically — never steal
+        # focus/activation from whatever the user is doing when it pops.
+        self.setWindowFlags(
+            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        )
+        # Opaque, like the main/compact windows. NOT WA_TranslucentBackground:
+        # the slim frozen build prunes opengl32sw.dll, without which translucent
+        # compositing renders wrong. windowOpacity (the fade) is a separate OS
+        # layered-window feature and keeps working.
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        card = QWidget(objectName="toastRoot")
+        card.setAttribute(Qt.WA_StyledBackground, True)
+        card.setStyleSheet(STYLESHEET)
+        outer.addWidget(card)
+
+        row = QHBoxLayout(card)
+        row.setContentsMargins(14, 12, 16, 12)
+        row.setSpacing(12)
+
+        self.sprite = SpritePlayer(size=44)
+        row.addWidget(self.sprite, 0, Qt.AlignVCenter)
+
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        self.title = QLabel("", objectName="toastTitle")
+        self.body = QLabel("", objectName="toastBody")
+        self.body.setWordWrap(True)
+        text.addWidget(self.title)
+        text.addWidget(self.body)
+        row.addLayout(text, 1)
+
+        self.setFixedWidth(330)
+
+        self._fade = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade.setDuration(self.FADE_MS)
+        self._fade.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade_hooked = False  # is _on_faded_out currently connected?
+
+        self._dismiss_timer = QTimer(self)
+        self._dismiss_timer.setSingleShot(True)
+        self._dismiss_timer.timeout.connect(self.dismiss)
+
+    def show_message(self, title: str, body: str) -> None:
+        """Show (or re-show) the toast with new text and restart the timer."""
+        self.title.setText(title)
+        self.body.setText(body)
+        # dismiss() stops the sprite, and set_anims() no-ops on an unchanged key —
+        # so reuse of a fixed key would leave the mascot frozen on every toast
+        # after the first. A fresh key each show forces a clean restart.
+        self._show_seq += 1
+        self.sprite.set_anims(f"toast{self._show_seq}", self.ANIMS)
+        self.adjustSize()
+        self._move_to_corner()
+
+        # Cancel any in-flight fade-out so a fresh alert always lands at full
+        # opacity, and drop the hide-on-finish hook from a prior dismiss().
+        self._fade.stop()
+        self._disconnect_fade_finished()
+        self.setWindowOpacity(0.0)
+        self.show()
+        self.raise_()
+        self._fade.setStartValue(0.0)
+        self._fade.setEndValue(1.0)
+        self._fade.start()
+
+        self._dismiss_timer.start(self.DURATION_MS)
+
+    def dismiss(self) -> None:
+        """Fade out and hide. Safe to call when already hidden."""
+        self._dismiss_timer.stop()
+        self._fade.stop()
+        if not self._fade_hooked:
+            self._fade.finished.connect(self._on_faded_out)
+            self._fade_hooked = True
+        self._fade.setStartValue(self.windowOpacity())
+        self._fade.setEndValue(0.0)
+        self._fade.start()
+
+    def _on_faded_out(self) -> None:
+        # A new show_message() during the fade would have bumped opacity back
+        # up; only actually hide if we really faded to zero.
+        if self.windowOpacity() <= 0.01:
+            self.sprite.stop()
+            self.hide()
+
+    def _disconnect_fade_finished(self) -> None:
+        if self._fade_hooked:
+            self._fade.finished.disconnect(self._on_faded_out)
+            self._fade_hooked = False
+
+    def _move_to_corner(self) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        geo = screen.availableGeometry()  # excludes the taskbar
+        x = geo.right() - self.width() - self.MARGIN
+        y = geo.bottom() - self.height() - self.MARGIN
+        self.move(x, y)
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+            self.dismiss()
+            e.accept()
+        else:
+            super().mousePressEvent(e)
 
 
 class Scrim(QWidget):
@@ -1092,6 +1236,11 @@ class Dashboard(QMainWindow):
         self.compact.expand_requested.connect(self._exit_compact)
         self.compact.quit_requested.connect(self._real_quit)
 
+        # Custom limit-reset toast (replaces the native OS notification);
+        # clicking it brings the dashboard forward.
+        self._toast = ResetToast()
+        self._toast.clicked.connect(self._show_window)
+
         self._countdown = QTimer(self)
         self._countdown.setInterval(1000)
         self._countdown.timeout.connect(self._tick_countdown)
@@ -1345,9 +1494,8 @@ class Dashboard(QMainWindow):
         title = "Claude limit reset"
         body = f"{which} limit has reset — you can resume."
 
-        # Native OS toast + tray flash always accompany the master toggle.
-        if self._tray.isVisible() and self._tray.supportsMessages():
-            self._tray.showMessage(title, body, QSystemTrayIcon.Information, 8000)
+        # Themed toast + tray flash always accompany the master toggle.
+        self._toast.show_message(title, body)
         self._start_tray_flash()
 
         if app_settings.get_reset_notify_sound():
@@ -1561,5 +1709,7 @@ class Dashboard(QMainWindow):
             app_settings.set_compact_pos(self.compact.x(), self.compact.y())
         self.compact.sprite.stop()
         self.compact.close()
+        self._toast.sprite.stop()
+        self._toast.close()
         self._tray.hide()
         QGuiApplication.quit()
