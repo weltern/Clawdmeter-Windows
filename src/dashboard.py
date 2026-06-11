@@ -284,7 +284,7 @@ class CompactWidget(QWidget):
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
-        self._drag_offset: QPoint | None = None
+        self._press_pos: QPoint | None = None
 
         row = QHBoxLayout(self)
         row.setContentsMargins(8, 4, 11, 5)
@@ -341,19 +341,57 @@ class CompactWidget(QWidget):
         """Reset labels in the same relative form as the main window."""
         self.session_reset.setText(f"resets in {_format_minutes(session_reset_minutes)}")
         self.weekly_reset.setText(f"resets in {_format_minutes(weekly_reset_minutes)}")
+        self.lock_size()
+
+    # Qt's QWIDGETSIZE_MAX — the "no constraint" sentinel for max size.
+    _SIZE_MAX = 16777215
+    # Horizontal breathing room so high-DPI rounding can't clip the reset text.
+    _WIDTH_SLACK_PX = 8
+
+    def lock_size(self) -> None:
+        """Pin the window to its current content size as a hard cap.
+
+        Belt-and-suspenders with the native-drag move: even if a mixed-DPI
+        geometry glitch tries to resize the window, min == max blocks it, so it
+        can't balloon across monitors. Recomputed on every content change so a
+        longer "resets in ..." string is never clipped.
+
+        Locks to sizeHint() (not size()): adjustSize() on a visible top-level
+        window doesn't update size() synchronously, so reading it back pinned a
+        stale, narrower width and clipped the trailing "m"/"h" of the reset text.
+        A few px of horizontal slack is added on top: sizeHint() comes out exactly
+        text-tight, so at fractional/200% scaling rounding would otherwise shave
+        the last glyph. The trailing stretch in each row soaks up the slack.
+        """
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(self._SIZE_MAX, self._SIZE_MAX)
+        self.layout().activate()
+        hint = self.sizeHint()
+        self.setFixedSize(hint.width() + self._WIDTH_SLACK_PX, hint.height())
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
-            self._drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            self._press_pos = e.globalPosition().toPoint()
             e.accept()
 
     def mouseMoveEvent(self, e) -> None:
-        if (e.buttons() & Qt.LeftButton) and self._drag_offset is not None:
-            self.move(e.globalPosition().toPoint() - self._drag_offset)
+        # Once the pointer passes the drag threshold, hand the move to
+        # Windows' native move loop instead of repositioning the window
+        # ourselves. The manual self.move() approach made Qt recompute the
+        # window geometry on every step, which — when the frameless window
+        # straddled a higher-DPI monitor — doubled the size each pass and
+        # ballooned it across the desktop. The native loop is DPI-aware and
+        # never triggers that recompute. Movement under the threshold is left
+        # alone so double-click-to-expand still registers.
+        if (e.buttons() & Qt.LeftButton) and self._press_pos is not None:
+            moved = (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
+            if moved >= QApplication.startDragDistance():
+                self._press_pos = None
+                winutil.start_native_move(int(self.winId()))
             e.accept()
 
     def mouseReleaseEvent(self, e) -> None:
-        self._drag_offset = None
+        self._press_pos = None
 
     def mouseDoubleClickEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
@@ -530,7 +568,7 @@ class TitleBar(QWidget):
         self.setMinimumHeight(0)
         self.setMaximumHeight(self.HEIGHT)
         self._win = window
-        self._drag_offset: QPoint | None = None
+        self._press_pos: QPoint | None = None
 
         row = QHBoxLayout(self)
         row.setContentsMargins(8, 0, 0, 0)
@@ -595,23 +633,33 @@ class TitleBar(QWidget):
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
-            self._drag_offset = e.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
+            self._press_pos = e.globalPosition().toPoint()
             e.accept()
 
     def mouseMoveEvent(self, e) -> None:
-        if not (e.buttons() & Qt.LeftButton) or self._drag_offset is None:
+        # Once past the drag threshold, hand the move to Windows' native move
+        # loop rather than repositioning the window ourselves every step. The
+        # manual self._win.move() approach made Qt recompute the window geometry
+        # on each step, which ballooned the frameless window when it was dragged
+        # onto a higher-DPI monitor. The native loop is DPI-aware and avoids it.
+        # Under the threshold we do nothing so double-click-to-maximize still
+        # registers.
+        if not (e.buttons() & Qt.LeftButton) or self._press_pos is None:
             return
+        moved = (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
+        if moved < QApplication.startDragDistance():
+            return
+        self._press_pos = None
         if self._win.isMaximized():
-            # Restore on drag, like Windows: re-anchor cursor proportionally.
+            # Restore before the handoff so the window follows the cursor at
+            # its normal size, like Windows' own maximized title-bar drag.
             self._win.showNormal()
             self.max_btn.setText("")  # ChromeMaximize
-            geo = self._win.frameGeometry()
-            self._drag_offset = QPoint(geo.width() // 2, self.HEIGHT // 2)
-        self._win.move(e.globalPosition().toPoint() - self._drag_offset)
+        winutil.start_native_move(int(self._win.winId()))
         e.accept()
 
     def mouseReleaseEvent(self, e) -> None:
-        self._drag_offset = None
+        self._press_pos = None
 
     def mouseDoubleClickEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
@@ -1369,8 +1417,12 @@ class Dashboard(QMainWindow):
         if eventType == b"windows_generic_MSG":
             msg = winutil.parse_msg(message)
             if msg.message == winutil.WM_NCHITTEST and not self.isMaximized():
-                sx, sy = winutil.screen_xy_from_lparam(msg.lParam)
-                local = self.mapFromGlobal(QPoint(sx, sy))
+                # Use Qt's own logical cursor position so the coordinate space
+                # matches mapFromGlobal(). The native lParam is in physical
+                # pixels, which mismatches Qt's device-independent geometry
+                # under high-DPI scaling (e.g. 200%) and makes the whole client
+                # area read as a resize border. See issue #7.
+                local = self.mapFromGlobal(QCursor.pos())
                 hit = winutil.hit_test(local.x(), local.y(), self.width(), self.height())
                 if hit != winutil.HTCLIENT:
                     return True, hit
@@ -1656,7 +1708,7 @@ class Dashboard(QMainWindow):
             self._close_settings()
 
         pos = app_settings.get_compact_pos()
-        self.compact.adjustSize()
+        self.compact.lock_size()
         if pos is None:
             scr = self.screen() or QGuiApplication.primaryScreen()
             geo = scr.availableGeometry()
