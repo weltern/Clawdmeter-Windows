@@ -20,6 +20,7 @@ HTBOTTOMLEFT = 16
 HTBOTTOMRIGHT = 17
 
 WM_NCHITTEST = 0x0084
+WM_NCLBUTTONDOWN = 0x00A1
 
 # SetWindowPos.
 HWND_TOPMOST = -1
@@ -56,6 +57,21 @@ def set_topmost(hwnd: int, on: bool) -> None:
     ctypes.windll.user32.SetWindowPos(
         wt.HWND(hwnd), wt.HWND(insert_after), 0, 0, 0, 0, flags
     )
+
+
+def start_native_move(hwnd: int) -> None:
+    """Hand an in-progress drag to Windows' own move loop.
+
+    Releasing the mouse capture and posting WM_NCLBUTTONDOWN/HTCAPTION makes
+    Windows move the window itself — DPI-aware, and without the per-step Qt
+    geometry recompute that ballooned the frameless compact window when it was
+    dragged onto a higher-DPI monitor.
+    """
+    if not is_windows():
+        return
+    user32 = ctypes.windll.user32
+    user32.ReleaseCapture()
+    user32.SendMessageW(wt.HWND(hwnd), WM_NCLBUTTONDOWN, HTCAPTION, 0)
 
 
 def parse_msg(message_ptr) -> _MSG:
