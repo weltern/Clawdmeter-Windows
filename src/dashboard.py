@@ -1369,8 +1369,12 @@ class Dashboard(QMainWindow):
         if eventType == b"windows_generic_MSG":
             msg = winutil.parse_msg(message)
             if msg.message == winutil.WM_NCHITTEST and not self.isMaximized():
-                sx, sy = winutil.screen_xy_from_lparam(msg.lParam)
-                local = self.mapFromGlobal(QPoint(sx, sy))
+                # Use Qt's own logical cursor position so the coordinate space
+                # matches mapFromGlobal(). The native lParam is in physical
+                # pixels, which mismatches Qt's device-independent geometry
+                # under high-DPI scaling (e.g. 200%) and makes the whole client
+                # area read as a resize border. See issue #7.
+                local = self.mapFromGlobal(QCursor.pos())
                 hit = winutil.hit_test(local.x(), local.y(), self.width(), self.height())
                 if hit != winutil.HTCLIENT:
                     return True, hit

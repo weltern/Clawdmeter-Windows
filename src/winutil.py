@@ -77,6 +77,11 @@ def hit_test(local_x: int, local_y: int, width: int, height: int) -> int:
     Returns HTCLIENT for the interior so Qt handles input normally; returns
     HT* edge codes when the point is inside the resize border.
     """
+    # Reject out-of-bounds points so a DPI/multi-monitor coordinate mismatch
+    # can't be misread as a resize-border hit (issue #7).
+    if local_x < 0 or local_y < 0 or local_x >= width or local_y >= height:
+        return HTCLIENT
+
     b = RESIZE_BORDER_PX
     left = local_x < b
     right = local_x >= width - b
