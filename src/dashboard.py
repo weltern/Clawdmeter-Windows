@@ -66,6 +66,7 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 from reset_notify import ResetDecision, ResetNotifier
+from session_shelf import SessionShelf
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
     ACTIVITY_ANIMS,
@@ -1244,8 +1245,11 @@ class Dashboard(QMainWindow):
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         self._min_h_no_badge = 550
         self._min_h_with_badge = 580
-        self.setMinimumSize(440, self._min_h_no_badge)
-        self.resize(440, self._min_h_no_badge)
+        # Wider than the old hero-only 440 so ~3 shelf tiles (130px sprites plus
+        # their margins/spacing) fit without scrolling; overflow scrolls
+        # horizontally inside the shelf's QScrollArea, so the window never balloons.
+        self.setMinimumSize(520, self._min_h_no_badge)
+        self.resize(520, self._min_h_no_badge)
         self.setStyleSheet(STYLESHEET)
 
         icon_path = assets_root() / "icon.png"
@@ -1269,12 +1273,24 @@ class Dashboard(QMainWindow):
         layout.setContentsMargins(24, 14, 24, 11)
         layout.setSpacing(12)
 
+        # Hero mascot for the EMPTY (0-session) state — the single rate-driven
+        # mascot that's been the app's face from day one. Wrapped in its own
+        # widget so the whole block can hide as a unit when the shelf is shown.
         self.sprite = SpritePlayer(size=240)
-        sprite_row = QHBoxLayout()
+        self.hero = QWidget()
+        sprite_row = QHBoxLayout(self.hero)
+        sprite_row.setContentsMargins(0, 0, 0, 0)
         sprite_row.addStretch(1)
         sprite_row.addWidget(self.sprite)
         sprite_row.addStretch(1)
-        layout.addLayout(sprite_row)
+        layout.addWidget(self.hero)
+
+        # Shelf of per-session mascots, shown whenever >=1 session is live. It
+        # lives in the same slot as the hero and the two toggle visibility so
+        # only one occupies the space at a time. Hidden until a session appears.
+        self.shelf = SessionShelf()
+        self.shelf.hide()
+        layout.addWidget(self.shelf, 1)
 
         # Group label sits 6px above the session row (half of the main
         # layout's 12px) by nesting both into a sub-layout. The sub-layout
@@ -1356,13 +1372,22 @@ class Dashboard(QMainWindow):
         self._last_sample: UsageSample | None = None
         self._last_tooltip = ""
         self._transcript_state: TranscriptState | None = None
+        # True while the shelf is showing >=1 live session. Tracked explicitly
+        # (not via shelf.isVisible(), which is False until the window is shown)
+        # so the usage-poll handler knows to leave the mascots to the shelf.
+        self._shelf_active = False
 
         self._transcript = TranscriptWatcher(self)
-        self._transcript.state_changed.connect(self._on_transcript)
+        # sessions_changed drives the whole multi-mascot path (shelf + the
+        # focused-session compact mascot + empty-state mood). state_changed is
+        # the back-compat single-session signal; sessions_changed[0] carries the
+        # same focused state, so we listen to the richer one only.
+        self._transcript.sessions_changed.connect(self._on_sessions)
         # NOTE: started at the END of __init__, not here. start() does a
-        # synchronous first poll that emits state_changed, and _on_transcript
-        # touches widgets (self.compact, self.sprite) that aren't built until
-        # later in __init__ — starting here AttributeErrors on real-mode launch.
+        # synchronous first poll that emits sessions_changed, and _on_sessions
+        # touches widgets (self.compact, self.sprite, self.shelf) that aren't
+        # built until later in __init__ — starting here AttributeErrors on
+        # real-mode launch.
 
         self._tray = QSystemTrayIcon(self)
         self._tray.setIcon(QIcon(str(icon_path)) if icon_path.exists() else QIcon(_tray_pixmap(0)))
@@ -1407,8 +1432,8 @@ class Dashboard(QMainWindow):
             self._start_mock()
         else:
             self._start_poller()
-            # Now that self.compact / self.sprite exist, the watcher's initial
-            # synchronous poll can safely drive the sprite selection.
+            # Now that self.compact / self.sprite / self.shelf exist, the
+            # watcher's initial synchronous poll can safely drive the shelf.
             self._transcript.start()
 
     def eventFilter(self, obj, ev):
@@ -1590,7 +1615,6 @@ class Dashboard(QMainWindow):
             self.settings_panel.set_token_status("⚠ " + result.status)
 
     def _start_mock(self) -> None:
-        self._mock_group = 0
         self._mock_pct = 12
         self._mock_sample_timer = QTimer(self)
 
@@ -1606,17 +1630,74 @@ class Dashboard(QMainWindow):
                 error=None,
                 timestamp=time.time(),
             ))
-            self._set_sprite_anims(f"mock:{self._mock_group}", GROUP_ANIMS[self._mock_group])
-            self.group_label.setText(GROUP_NAMES[self._mock_group].upper() + "  (mock)")
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
-
-        self._mock_group_timer = QTimer(self)
-        def group_tick():
-            self._mock_group = (self._mock_group + 1) % 4
-        self._mock_group_timer.timeout.connect(group_tick)
-        self._mock_group_timer.start(8000)
         sample_tick()
+
+        # Synthesize the three-session shelf from variant_c_shelf.png — two live
+        # mascots cycling activities plus one stale/idle tile — and feed them
+        # through the real _on_sessions path so the shelf is fully exercised
+        # without launching concurrent Claude Code windows.
+        self._mock_phase = 0
+        self._mock_shelf_timer = QTimer(self)
+        self._mock_shelf_timer.timeout.connect(self._emit_mock_sessions)
+        self._mock_shelf_timer.start(2000)
+        self._emit_mock_sessions()
+
+    # Activities the two live mock mascots rotate through, so the shelf shows
+    # off the per-activity glow colors and animations over time.
+    _MOCK_CODING_CYCLE = [
+        TranscriptActivity.CODING,
+        TranscriptActivity.READING,
+        TranscriptActivity.INTEGRATING,
+    ]
+    _MOCK_THINKING_CYCLE = [
+        TranscriptActivity.THINKING,
+        TranscriptActivity.PLANNING,
+        TranscriptActivity.SEARCHING,
+    ]
+
+    def _emit_mock_sessions(self) -> None:
+        i = self._mock_phase
+        self._mock_phase += 1
+        now = time.time()
+        coding = self._MOCK_CODING_CYCLE[i % len(self._MOCK_CODING_CYCLE)]
+        thinking = self._MOCK_THINKING_CYCLE[i % len(self._MOCK_THINKING_CYCLE)]
+        states = [
+            TranscriptState(
+                activity=coding,
+                tool_name="Edit" if coding == TranscriptActivity.CODING else None,
+                transcript_path=None,
+                last_event_ts=now,
+                session_id="mock-clawdmeter",
+                cwd=r"C:\Claude\clawdmeter-windows",
+                project_name="clawdmeter-windows",
+                is_stale=False,
+            ),
+            TranscriptState(
+                activity=thinking,
+                tool_name=None,
+                transcript_path=None,
+                last_event_ts=now,
+                session_id="mock-api-gateway",
+                cwd=r"C:\work\api-gateway",
+                project_name="api-gateway",
+                is_stale=False,
+            ),
+            # Stale tile — quiet ~4 minutes, so the shelf renders it dim/IDLE
+            # with a "last active 4m ago" sub-label.
+            TranscriptState(
+                activity=TranscriptActivity.IDLE,
+                tool_name=None,
+                transcript_path=None,
+                last_event_ts=now - 4 * 60,
+                session_id="mock-notes-cli",
+                cwd=r"C:\work\notes-cli",
+                project_name="notes-cli",
+                is_stale=True,
+            ),
+        ]
+        self._on_sessions(states)
 
     def _on_sample(self, s: UsageSample) -> None:
         # Feed every sample (incl. errors) so the notifier can ignore them
@@ -1646,7 +1727,13 @@ class Dashboard(QMainWindow):
         self._sync_compact(s)
 
         self._rate.observe(s.session_pct)
-        self._update_sprite_selection()
+        # While the shelf is up it owns the mascots (per-session tiles + the
+        # compact widget via _drive_compact_from), so the rate-based mood must
+        # NOT also drive them here — two paths with different set_anims keys for
+        # the same activity would restart and flicker the compact animation on
+        # every usage poll. Only refresh the rate mood in the empty state.
+        if not self._shelf_active:
+            self._update_sprite_selection()
 
         self._apply_status_badge(s.status)
         self._set_tray_tooltip(s.session_pct, s.session_reset_minutes,
@@ -1781,9 +1868,48 @@ class Dashboard(QMainWindow):
         self.compact.set_resets(sr, wr)
         self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
 
-    def _on_transcript(self, state: TranscriptState) -> None:
-        self._transcript_state = state
-        self._update_sprite_selection()
+    def _on_sessions(self, states: list[TranscriptState]) -> None:
+        """Route the watcher's per-session states to the shelf (or the empty
+        state). With >=1 live session the shelf takes over the mascot slot and
+        the compact widget mirrors the focused (newest) session; with 0 the hero
+        returns and the rate-based mood drives hero + compact + group_label."""
+        if states:
+            self._shelf_active = True
+            self.hero.hide()
+            # Pause the hidden hero so its 240px mascot isn't animating offscreen
+            # the whole time the shelf is up.
+            self.sprite.stop()
+            # The shelf owns its own header, so hide the rate-mood group label
+            # rather than leave it showing stale text beside live tiles.
+            self.group_label.hide()
+            self.shelf.show()
+            self.shelf.set_sessions(states)
+            # The compact widget stays single-mascot for now (full multi-session
+            # compact is Variant D), so it follows the focused session.
+            self._transcript_state = states[0]
+            self._drive_compact_from(states[0])
+        else:
+            self._shelf_active = False
+            self.shelf.hide()
+            self.shelf.set_sessions([])  # drop any leftover tiles + reset header
+            self.hero.show()
+            self.group_label.show()
+            # No session: fall back to today's rate-driven mood for hero/compact.
+            self._transcript_state = None
+            self._update_sprite_selection()
+            # set_anims no-ops on an unchanged key, so re-show the paused hero.
+            self.sprite.resume()
+
+    def _drive_compact_from(self, state: TranscriptState) -> None:
+        """Mirror one session's activity on the compact mascot only — the hero
+        is hidden while the shelf is up, so it isn't driven here. Idle/stale
+        sessions fall back to the calm group-0 loop."""
+        idle = state.is_stale or state.activity == TranscriptActivity.IDLE
+        anims = None if idle else ACTIVITY_ANIMS.get(state.activity)
+        if anims:
+            self.compact.sprite.set_anims(f"compact:{state.activity.value}", anims)
+        else:
+            self.compact.sprite.set_anims("compact:idle", GROUP_ANIMS[0])
 
     def _set_sprite_anims(self, key: str, names) -> None:
         """Drive both the full-window and compact mascots in lockstep."""
@@ -1874,6 +2000,7 @@ class Dashboard(QMainWindow):
             self._poller.wait(2000)
         self._transcript.stop()
         self.sprite.stop()
+        self.shelf.stop_all()
         if self.compact.isVisible():
             app_settings.set_compact_pos(self.compact.x(), self.compact.y())
         self.compact.sprite.stop()

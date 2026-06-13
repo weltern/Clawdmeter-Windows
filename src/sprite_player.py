@@ -129,6 +129,33 @@ class SpritePlayer(QLabel):
     def current_anim(self) -> str | None:
         return self._cur_anim_name
 
+    def set_size(self, px: int) -> None:
+        """Change the render size and re-scale the current frame immediately.
+
+        setFixedSize() alone is not enough: frames are scaled to self._size in
+        _show_frame(), which otherwise only re-runs on the frame timer — so a
+        widget that resizes between animation frames keeps painting the old
+        size. Update _size here and re-show the current frame so the mascot
+        tracks the new tile size at once (the shelf resizes tiles as the
+        session count changes)."""
+        if px == self._size:
+            return
+        self._size = px
+        self.setFixedSize(px, px)
+        if self._cur_frames:
+            self._show_frame()
+
+    def resume(self) -> None:
+        """Restart the frame/rotation timers for the current animation after a
+        stop(). set_anims() no-ops on an unchanged key, so a stopped sprite
+        won't restart on its own when the same animation is re-selected — the
+        dashboard pauses the hidden hero and needs this to wake it again."""
+        if not self._has_sprites or not self._cur_frames:
+            return
+        self._show_frame()
+        if len(self._active_list) > 1:
+            self._rotate_timer.start()
+
     def _rotate(self) -> None:
         if not self._active_list:
             return
