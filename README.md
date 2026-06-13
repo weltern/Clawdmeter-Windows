@@ -1,8 +1,6 @@
 # Clawdmeter-Windows
 
-Standalone Windows desktop dashboard for Claude Code usage. A software-only
-port of [HermannBjorgvin/Clawdmeter](https://github.com/HermannBjorgvin/Clawdmeter)
-— the same metrics, the same 60-second poll, no ESP32 hardware.
+Standalone Windows desktop dashboard for Claude Code usage.
 
 <p align="center">
   <img src="assets/ClawdMeter.gif" width="420"
@@ -40,6 +38,17 @@ When Claude Code goes quiet, the mascot falls back to a mood driven by your
 usage rate — sleepy when you're idle, dancing when you're burning through
 tokens (the same 4-group logic as the original firmware).
 
+## Compact view
+
+Want something tiny that stays out of the way? Click the **compact-mode button**
+in the title bar to shrink the dashboard down to a small always-on-top readout —
+the mini mascot beside your session and weekly percentages, each with its reset
+time. It's frameless, keeps no taskbar entry, and is draggable (it remembers
+where you left it). **Double-click** it — or right-click → **Expand** — to pop
+back to the full dashboard.
+
+![Clawdmeter-Windows compact view — a tiny always-on-top readout with the mascot and session and weekly percentages](assets/Screenshot-compact-view.png)
+
 ## Download
 
 Grab the latest `Clawdmeter.exe` from the
@@ -54,10 +63,10 @@ bundling Python + Qt), no install needed. Just run it.
 ## How it works
 
 It reads your Claude Code OAuth token from `~/.claude/.credentials.json`,
-sends a minimal 1-token request to `api.anthropic.com/v1/messages` every 60s,
-and reads the rate-limit headers from the response. The window minimises to
-the system tray; closing the window hides it. **Quit** from the tray menu
-fully exits.
+sends a minimal 1-token request to `api.anthropic.com/v1/messages` on a
+configurable interval (60s by default), and reads the rate-limit headers from
+the response. The window minimises to the system tray; closing the window
+hides it. **Quit** from the tray menu fully exits.
 
 ## Requirements
 
@@ -109,6 +118,11 @@ Open the settings panel from the gear icon in the title bar.
   the token is actually expired.
 - **Window** — toggle **Always on top**, **Auto-hide title bar**, and **Quit on
   close** (closes the app instead of minimizing to the tray).
+- **Usage polling** — how often the app checks your usage. Each check is a tiny
+  billed API request, so the interval is adjustable from **10 to 600 seconds**
+  (60 by default): lower is fresher but makes more requests; higher is gentler
+  on your quota when you leave it running. Out-of-range entries snap to the
+  nearest allowed value.
 - **Notifications** — **Notify on limit reset** pings you the moment a usage
   limit resets so you know you can resume — but only when you were actually near
   the limit (or already throttled), so it stays quiet otherwise. It shows a tray
