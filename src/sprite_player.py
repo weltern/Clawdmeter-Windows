@@ -12,7 +12,7 @@ import json
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QRect, Qt, QTimer
+from PySide6.QtCore import Property, QRect, Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QLabel
 
@@ -144,6 +144,16 @@ class SpritePlayer(QLabel):
         self.setFixedSize(px, px)
         if self._cur_frames:
             self._show_frame()
+
+    def _get_render_size(self) -> int:
+        return self._size
+
+    def _set_render_size(self, px: int) -> None:
+        self.set_size(int(px))
+
+    # Animatable size, so the shelf can scale a mascot smoothly when the session
+    # count (and thus the tile size) changes, instead of popping to the new size.
+    renderSize = Property(int, _get_render_size, _set_render_size)
 
     def resume(self) -> None:
         """Restart the frame/rotation timers for the current animation after a

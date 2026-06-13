@@ -280,7 +280,16 @@ class SessionShelf(QWidget):
         # the live animation groups keyed by tile so they aren't GC'd and so we
         # can tell when the shelf is "settled" (safe to reorder).
         self._leaving: dict[str, SessionTile] = {}
-        self._anims: dict[SessionTile, QParallelAnimationGroup] = {}
+        self._anims: dict[SessionTile, object] = {}
+        # The uniform sprite size currently applied to live tiles. When the
+        # session count changes this target changes and survivors animate to it
+        # rather than popping (which, with centre alignment, jolts the whole row).
+        self._sprite_size: int | None = None
+        # Animates the reserved shelf height when the tile size changes, so the
+        # quota bars below glide to their new position instead of jumping.
+        self._height_anim: QPropertyAnimation | None = None
+        # Per-tile height beyond the mascot (labels + margins), measured once.
+        self._tile_oh: int | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -318,6 +327,8 @@ class SessionShelf(QWidget):
         # can't disagree if a duplicate id ever slips through.
         incoming = {s.session_id: s for s in states if s.session_id}
         size = self._sprite_size_for(len(incoming))
+        old_size = self._sprite_size
+        self._sprite_size = size
 
         # Animate out tiles whose session left the shelf (they stay in the layout
         # and collapse, so the neighbours slide in to fill the gap).
@@ -338,7 +349,13 @@ class SessionShelf(QWidget):
                     tile.update_state(state)
                     self._start_enter(tile)
                     continue
-            tile.set_sprite_size(size)
+            # Survivor: smoothly scale to the new size when the count changed.
+            if tile in self._anims:
+                pass  # an enter/size animation owns the size — don't fight it
+            elif old_size is not None and old_size != size:
+                self._animate_tile_size(tile, old_size, size)
+            else:
+                tile.set_sprite_size(size)
             tile.update_state(state)
 
         # Re-assert newest-first order. _reorder_live short-circuits when the
@@ -347,11 +364,23 @@ class SessionShelf(QWidget):
         # animations running as they're repositioned.
         self._reorder_live(incoming)
 
-        self._refresh_min_height()
+        self._sync_height(old_size, size)
         self.header.setText(f"ACTIVE SESSIONS — {len(self._tiles)}")
 
     def _start_enter(self, tile: SessionTile) -> None:
         anim = tile.build_enter_anim()
+        self._anims[tile] = anim
+        anim.finished.connect(lambda t=tile: self._anims.pop(t, None))
+        anim.start()
+
+    def _animate_tile_size(self, tile: SessionTile, start: int, end: int) -> None:
+        """Scale a survivor's mascot from `start` to `end` over the enter
+        duration, so a count change reflows the row smoothly instead of popping."""
+        anim = QPropertyAnimation(tile.sprite, b"renderSize", tile)
+        anim.setDuration(SessionTile.ENTER_MS)
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
         self._anims[tile] = anim
         anim.finished.connect(lambda t=tile: self._anims.pop(t, None))
         anim.start()
@@ -371,7 +400,6 @@ class SessionShelf(QWidget):
         self._row.removeWidget(tile)
         tile.stop()
         tile.deleteLater()
-        self._refresh_min_height()
 
     def _resurrect(self, sid: str) -> SessionTile | None:
         """A session that reappeared before its leave finished: cancel the leave,
@@ -417,16 +445,68 @@ class SessionShelf(QWidget):
         for i, tile in enumerate(desired):
             self._row.insertWidget(i, tile, 0, Qt.AlignTop)
 
-    def _refresh_min_height(self) -> None:
-        # Reserve vertical room for a whole tile (mascot + the labels beneath
-        # it). Without this the shelf gets squeezed in a short window and, since
-        # the vertical scrollbar is off, the labels below the mascot are clipped.
-        # +14 leaves room for the horizontal scrollbar shown when tiles overflow.
-        wanted_h = self._row_widget.sizeHint().height() + 14
-        if wanted_h != self._scroll.minimumHeight():
-            self._scroll.setMinimumHeight(wanted_h)
+    def _sync_height(self, old_size: int | None, new_size: int) -> None:
+        """Keep the reserved shelf height in step with the tile size so the quota
+        bars below don't jump. Snap on the first fill (or when the size is
+        unchanged); animate — same curve/duration as the mascot resize — when it
+        changes. The height is derived analytically from the target sprite size,
+        not from the live layout, so a tile mid enter-animation (width clamped to
+        0) can't report a stale, clipped height."""
+        target = self._reserved_height_for(new_size)
+        if old_size is None or old_size == new_size:
+            if self._height_anim is None and self._scroll.minimumHeight() != target:
+                self._scroll.setMinimumHeight(target)
+            return
+        if self._height_anim is not None:
+            self._height_anim.stop()
+        start = self._scroll.minimumHeight()
+        if start == target:
+            self._height_anim = None
+            return
+        anim = QPropertyAnimation(self._scroll, b"minimumHeight", self)
+        anim.setDuration(SessionTile.ENTER_MS)
+        anim.setStartValue(start)
+        anim.setEndValue(target)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.finished.connect(self._on_height_anim_done)
+        self._height_anim = anim
+        anim.start()
+
+    def _on_height_anim_done(self) -> None:
+        self._height_anim = None
+
+    def _tile_overhead(self) -> int:
+        """Tile height beyond the mascot (labels + spacing + margins). Measured
+        once from a real, already-styled tile (its sizeHint height minus the
+        sprite size); falls back to a constant until a tile exists. Width
+        animations don't affect height, so a tile mid-enter measures fine."""
+        if self._tile_oh is None:
+            tile = next(iter(self._tiles.values()), None)
+            if tile is None or self._sprite_size is None:
+                return 64  # not cached — recompute once a real tile exists
+            self._tile_oh = max(0, tile.sizeHint().height() - self._sprite_size)
+        return self._tile_oh
+
+    def _reserved_height_for(self, sprite_size: int) -> int:
+        # tile height (mascot + overhead) + row margins (8) + horizontal-scrollbar
+        # room (14), so labels are never clipped and overflow can scroll.
+        return sprite_size + self._tile_overhead() + 8 + 14
+
+    def reserved_current(self) -> int:
+        """Currently reserved scroll height (may be mid height-animation)."""
+        return self._scroll.minimumHeight()
+
+    def reserved_target(self) -> int:
+        """Settled reserved scroll height for the current tile size — lets the
+        host window aim at the final size while this is still animating."""
+        if self._sprite_size is None:
+            return self._scroll.minimumHeight()
+        return self._reserved_height_for(self._sprite_size)
 
     def stop_all(self) -> None:
+        if self._height_anim is not None:
+            self._height_anim.stop()
+            self._height_anim = None
         for anim in list(self._anims.values()):
             anim.stop()
         self._anims.clear()

@@ -1243,13 +1243,16 @@ class Dashboard(QMainWindow):
         super().__init__()
         self.setWindowTitle("Clawdmeter")
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
-        self._min_h_no_badge = 550
-        self._min_h_with_badge = 580
-        # Wider than the old hero-only 440 so ~3 shelf tiles (130px sprites plus
-        # their margins/spacing) fit without scrolling; overflow scrolls
-        # horizontally inside the shelf's QScrollArea, so the window never balloons.
-        self.setMinimumSize(520, self._min_h_no_badge)
-        self.resize(520, self._min_h_no_badge)
+        # The window height tracks its content (see _fit_window_height): it grows
+        # and shrinks with the mascot shelf so there's no dead space below the
+        # bars. This low floor only stops a manual drag from clipping badly; the
+        # actual height is driven by the fit.
+        self._min_window_h = 430
+        # Width: ~3 shelf tiles (130px sprites + margins/spacing) fit without
+        # scrolling; overflow scrolls horizontally inside the shelf's QScrollArea,
+        # so the window never balloons sideways.
+        self.setMinimumSize(520, self._min_window_h)
+        self.resize(520, 520)
         self.setStyleSheet(STYLESHEET)
 
         icon_path = assets_root() / "icon.png"
@@ -1366,6 +1369,11 @@ class Dashboard(QMainWindow):
         # absolute reference so interrupted animations don't accumulate.
         self._collapsed_window_height: int | None = None
         self._apply_auto_hide(app_settings.get_auto_hide_titlebar())
+
+        # Smoothly resizes the window height to fit content as the shelf changes.
+        self._fit_anim = QPropertyAnimation(self, b"size", self)
+        self._fit_anim.setDuration(240)  # matches the shelf enter/resize animation
+        self._fit_anim.setEasingCurve(QEasingCurve.OutCubic)
 
         self._rate = RateGroupTracker()
         self._reset_notifier = ResetNotifier()
@@ -1826,6 +1834,34 @@ class Dashboard(QMainWindow):
             self._last_tooltip = text
             self._tray.setToolTip(text)
 
+    def _target_window_height(self) -> int:
+        """Snug window height for the current content: the title bar plus the
+        content area, counting the shelf at its settled (target) height rather
+        than a value still mid-animation, so the fit aims at the final size."""
+        tb_h = self.title_bar.height() or TitleBar.HEIGHT  # may be 0 before show
+        content_min = self._content.minimumSizeHint().height()
+        if self._shelf_active:
+            content_min += self.shelf.reserved_target() - self.shelf.reserved_current()
+        return tb_h + content_min
+
+    def _fit_window_height(self) -> None:
+        """Resize the window's height to hug its content so there's no dead space
+        below the bars; the height follows the shelf as it grows/shrinks."""
+        if self.isMaximized() or self.isFullScreen():
+            return
+        if self._titlebar_anim_group.state() == QAbstractAnimation.Running:
+            return  # don't fight the auto-hide title-bar resize
+        target = max(self.minimumHeight(), self._target_window_height())
+        if abs(target - self.height()) <= 1:
+            return
+        if not self.isVisible():
+            self.resize(self.width(), target)  # snap before the first show
+            return
+        self._fit_anim.stop()
+        self._fit_anim.setStartValue(self.size())
+        self._fit_anim.setEndValue(QSize(self.width(), target))
+        self._fit_anim.start()
+
     def _apply_status_badge(self, status: str) -> None:
         """Show/hide the bottom-left rate-limit badge and reflow the window.
 
@@ -1857,19 +1893,9 @@ class Dashboard(QMainWindow):
         self.status_text.style().unpolish(self.status_text)
         self.status_text.style().polish(self.status_text)
 
-        # Window grows when the badge appears; doesn't shrink the user's
-        # manual resize if they've already enlarged it. Auto-hide mode removes
-        # TitleBar.HEIGHT from both floors since the title bar is overlayed.
-        base = self._min_h_with_badge if has_badge else self._min_h_no_badge
-        offset = TitleBar.HEIGHT if self._auto_hide_enabled else 0
-        new_min = base - offset
-        if self.minimumHeight() != new_min:
-            prev_min = self.minimumHeight()
-            self.setMinimumHeight(new_min)
-            if not has_badge and self.height() == prev_min and prev_min > new_min:
-                # Window was sitting at the previous (larger) auto-grown floor;
-                # shrink back to the new floor when the badge clears.
-                self.resize(self.width(), new_min)
+        # The badge row changes the content height; refit so the window grows to
+        # show it (and shrinks back when it clears) with no dead space.
+        self._fit_window_height()
 
     def _tick_countdown(self) -> None:
         s = self._last_sample
@@ -1914,6 +1940,9 @@ class Dashboard(QMainWindow):
             self._update_sprite_selection()
             # set_anims no-ops on an unchanged key, so re-show the paused hero.
             self.sprite.resume()
+
+        # Resize the window to hug the new content (no dead space below the bars).
+        self._fit_window_height()
 
     def _drive_compact_from(self, state: TranscriptState) -> None:
         """Mirror one session's activity on the compact mascot only — the hero

@@ -22,7 +22,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
+
+# Comfortably longer than the enter/leave/resize animations so they settle.
+SETTLE_MS = 400
 
 # The shelf codes to the locked contract; if transcript.py hasn't landed the
 # new symbols yet, skip cleanly instead of erroring the suite.
@@ -156,8 +160,11 @@ def test_tiles_reorder_to_match_newest_first():
 def test_existing_tile_sprite_resizes_with_count():
     # Regression: a survivor tile's mascot must re-scale when the count (and so
     # the target size) changes — not just the QLabel box, the rendered pixmap.
+    # The resize is animated, so settle each step before asserting the result.
     shelf = SessionShelf()
+    shelf.show()
     shelf.set_sessions([_state("a", Activity.CODING)])
+    QTest.qWait(SETTLE_MS)
     tile_a = shelf._tiles["a"]
     assert tile_a.sprite._size == 200          # solo -> 200
 
@@ -166,10 +173,12 @@ def test_existing_tile_sprite_resizes_with_count():
         _state("b", Activity.THINKING),
         _state("c", Activity.READING),
     ])
+    QTest.qWait(SETTLE_MS)
     assert tile_a.sprite._size == 130          # 3 sessions -> 130, survivor re-scaled
     assert tile_a.sprite.maximumWidth() == 130
 
     shelf.set_sessions([_state("a", Activity.CODING)])
+    QTest.qWait(SETTLE_MS)
     assert tile_a.sprite._size == 200          # back to solo -> re-grown
     shelf.stop_all()
 
