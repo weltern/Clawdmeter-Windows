@@ -174,6 +174,27 @@ def test_existing_tile_sprite_resizes_with_count():
     shelf.stop_all()
 
 
+def test_enter_starts_collapsed_and_leave_defers_removal():
+    # Timing-free check of the transition lifecycle: a new tile starts collapsed
+    # (width animation engaged) and a removed tile animates out (parked in
+    # _leaving, still in the layout) rather than being deleted instantly.
+    shelf = SessionShelf()
+    shelf.set_sessions([_state("a", Activity.CODING)])
+    shelf.set_sessions([_state("a", Activity.CODING), _state("b", Activity.THINKING)])
+    tile_b = shelf._tiles["b"]
+    assert tile_b.maximumWidth() == 0          # enter begins fully collapsed
+    assert tile_b in shelf._anims              # its enter animation is tracked
+
+    tile_a = shelf._tiles["a"]
+    shelf.set_sessions([_state("b", Activity.THINKING)])
+    assert "a" not in shelf._tiles             # removed from the live set...
+    assert shelf._leaving.get("a") is tile_a   # ...but parked, animating out
+    assert tile_a in shelf._anims
+    # Still parented to the row (visible while it collapses), not yet deleted.
+    assert tile_a.parent() is not None
+    shelf.stop_all()
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

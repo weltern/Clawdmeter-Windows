@@ -14,11 +14,18 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import (
+    QEasingCurve,
+    QParallelAnimationGroup,
+    QPropertyAnimation,
+    Qt,
+)
 from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -99,11 +106,20 @@ class SessionTile(QWidget):
         self.setObjectName("sessionTile")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self._session_id = session_id
+        self._fade = None  # QGraphicsOpacityEffect during an enter/leave anim
 
         col = QVBoxLayout(self)
-        col.setContentsMargins(8, 4, 8, 4)
+        # Side margins double as the inter-tile gap (the row spacing is 0) so a
+        # leaving tile collapses to truly zero width with no leftover gap.
+        col.setContentsMargins(12, 4, 12, 4)
         col.setSpacing(4)
         col.setAlignment(Qt.AlignHCenter)
+        # SetNoConstraint + a zero minimum let the enter/leave width animation
+        # shrink the tile below the mascot's fixed size (the content is clipped),
+        # so neighbours slide over instead of the tile popping in/out. The row
+        # layout still allocates the tile its sizeHint width when unconstrained.
+        col.setSizeConstraint(QLayout.SetNoConstraint)
+        self.setMinimumWidth(0)
 
         self.sprite = SpritePlayer(size=sprite_size)
         # The drop shadow is the colored "glow" behind the mascot. Offset 0 so
@@ -174,6 +190,69 @@ class SessionTile(QWidget):
     def stop(self) -> None:
         self.sprite.stop()
 
+    # --- enter/leave transitions --------------------------------------------
+    # A tile fades + expands in (width 0 -> natural) and fades + collapses out
+    # (natural -> 0), so the row reflows smoothly as sessions come and go. The
+    # opacity rides a QGraphicsOpacityEffect on the tile; the width rides the
+    # widget's own maximumWidth property (the SetNoConstraint above lets it
+    # shrink past the mascot). The shelf owns the animation objects so they
+    # aren't garbage-collected mid-flight.
+    ENTER_MS = 240
+    LEAVE_MS = 200
+    _SIZE_MAX = 16777215  # Qt's QWIDGETSIZE_MAX — the "no maximum" sentinel.
+
+    def _begin_fade(self) -> QGraphicsOpacityEffect:
+        eff = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(eff)
+        self._fade = eff
+        return eff
+
+    def build_enter_anim(self) -> QParallelAnimationGroup:
+        target = max(1, self.sizeHint().width())
+        eff = self._begin_fade()
+        eff.setOpacity(0.0)
+        self.setMaximumWidth(0)
+        grp = QParallelAnimationGroup(self)
+        fade = QPropertyAnimation(eff, b"opacity", grp)
+        fade.setDuration(self.ENTER_MS)
+        fade.setStartValue(0.0)
+        fade.setEndValue(1.0)
+        fade.setEasingCurve(QEasingCurve.OutCubic)
+        grow = QPropertyAnimation(self, b"maximumWidth", grp)
+        grow.setDuration(self.ENTER_MS)
+        grow.setStartValue(0)
+        grow.setEndValue(target)
+        grow.setEasingCurve(QEasingCurve.OutCubic)
+        grp.addAnimation(fade)
+        grp.addAnimation(grow)
+        grp.finished.connect(self._clear_transition)
+        return grp
+
+    def build_leave_anim(self) -> QParallelAnimationGroup:
+        eff = self._begin_fade()
+        eff.setOpacity(1.0)
+        grp = QParallelAnimationGroup(self)
+        fade = QPropertyAnimation(eff, b"opacity", grp)
+        fade.setDuration(self.LEAVE_MS)
+        fade.setStartValue(1.0)
+        fade.setEndValue(0.0)
+        fade.setEasingCurve(QEasingCurve.InCubic)
+        shrink = QPropertyAnimation(self, b"maximumWidth", grp)
+        shrink.setDuration(self.LEAVE_MS)
+        shrink.setStartValue(max(1, self.width()))
+        shrink.setEndValue(0)
+        shrink.setEasingCurve(QEasingCurve.InCubic)
+        grp.addAnimation(fade)
+        grp.addAnimation(shrink)
+        return grp
+
+    def _clear_transition(self) -> None:
+        """Release the width cap and drop the opacity effect so the tile renders
+        normally (and the sprite's own glow is unobstructed) after an enter."""
+        self.setMaximumWidth(self._SIZE_MAX)
+        self.setGraphicsEffect(None)
+        self._fade = None
+
 
 class SessionShelf(QWidget):
     """Header + horizontal scroll row of SessionTiles, diffed by session id."""
@@ -197,6 +276,11 @@ class SessionShelf(QWidget):
         self.setStyleSheet(SHELF_STYLESHEET)
 
         self._tiles: dict[str, SessionTile] = {}
+        # Tiles mid-leave (animating out, still in the layout) keyed by id, and
+        # the live animation groups keyed by tile so they aren't GC'd and so we
+        # can tell when the shelf is "settled" (safe to reorder).
+        self._leaving: dict[str, SessionTile] = {}
+        self._anims: dict[SessionTile, QParallelAnimationGroup] = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -216,16 +300,18 @@ class SessionShelf(QWidget):
         self._row_widget = QWidget(objectName="shelfRow")
         self._row = QHBoxLayout(self._row_widget)
         self._row.setContentsMargins(4, 4, 4, 4)
-        self._row.setSpacing(8)
+        # Spacing is 0 — each tile carries its own side margins as the gap, so a
+        # collapsing tile leaves no residual space behind when it animates out.
+        self._row.setSpacing(0)
         self._row.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self._scroll.setWidget(self._row_widget)
 
     def set_sessions(self, states) -> None:
         """Add/remove/update tiles by session id without rebuilding the row.
 
-        Rebuilding every poll would thrash the sprite QTimers and flicker, so
-        we keep tiles keyed by id, drop the ones whose session vanished, add
-        ones that appeared, and update the survivors in place.
+        Rebuilding every poll would thrash the sprite QTimers and flicker, so we
+        keep tiles keyed by id, animate out the ones whose session vanished,
+        animate in ones that appeared, and update the survivors in place.
         """
         # Dedup by session id (the dict keeps the watcher's newest-first order).
         # Sizing, tile creation and the header all key off this one map so they
@@ -233,38 +319,105 @@ class SessionShelf(QWidget):
         incoming = {s.session_id: s for s in states if s.session_id}
         size = self._sprite_size_for(len(incoming))
 
-        # Remove tiles whose session left the shelf.
+        # Animate out tiles whose session left the shelf (they stay in the layout
+        # and collapse, so the neighbours slide in to fill the gap).
         for sid in list(self._tiles):
             if sid not in incoming:
-                tile = self._tiles.pop(sid)
-                self._row.removeWidget(tile)
-                tile.stop()
-                tile.deleteLater()
+                self._start_leave(sid, self._tiles.pop(sid))
 
-        # Create any new tiles and refresh every survivor in place.
-        for sid, state in incoming.items():
+        # Create/update tiles in newest-first order.
+        for index, (sid, state) in enumerate(incoming.items()):
             tile = self._tiles.get(sid)
             if tile is None:
-                tile = SessionTile(sid, sprite_size=size, parent=self._row_widget)
-                self._tiles[sid] = tile
+                tile = self._resurrect(sid)  # a session that reappeared mid-leave
+                if tile is None:
+                    tile = SessionTile(sid, sprite_size=size, parent=self._row_widget)
+                    self._tiles[sid] = tile
+                    self._insert_live(tile, index)
+                    tile.set_sprite_size(size)
+                    tile.update_state(state)
+                    self._start_enter(tile)
+                    continue
             tile.set_sprite_size(size)
             tile.update_state(state)
 
-        # Re-assert left-to-right order to match the watcher's newest-first list:
-        # sessions genuinely change order as they take turns being most-recent.
-        # Only reshuffle when the order actually differs (removeWidget +
-        # insertWidget is the safe move, but doing it every poll would churn the
-        # layout and fight the sprite repaint), and this also folds in any
-        # brand-new tiles, which aren't in the layout yet.
-        desired = [self._tiles[sid] for sid in incoming]
-        current = [self._row.itemAt(i).widget() for i in range(self._row.count())]
-        if current != desired:
-            for w in current:
-                if w is not None:
-                    self._row.removeWidget(w)
-            for i, tile in enumerate(desired):
-                self._row.insertWidget(i, tile, 0, Qt.AlignTop)
+        # Re-assert newest-first order. _reorder_live short-circuits when the
+        # live order is unchanged (the common case) so there's no per-poll
+        # churn, operates only on live tiles, and leaves entering tiles' width
+        # animations running as they're repositioned.
+        self._reorder_live(incoming)
 
+        self._refresh_min_height()
+        self.header.setText(f"ACTIVE SESSIONS — {len(self._tiles)}")
+
+    def _start_enter(self, tile: SessionTile) -> None:
+        anim = tile.build_enter_anim()
+        self._anims[tile] = anim
+        anim.finished.connect(lambda t=tile: self._anims.pop(t, None))
+        anim.start()
+
+    def _start_leave(self, sid: str, tile: SessionTile) -> None:
+        self._cancel_anim(tile)  # if it was still entering, drop that animation
+        self._leaving[sid] = tile
+        anim = tile.build_leave_anim()
+        self._anims[tile] = anim
+        anim.finished.connect(lambda s=sid, t=tile: self._finish_leave(s, t))
+        anim.start()
+
+    def _finish_leave(self, sid: str, tile: SessionTile) -> None:
+        self._anims.pop(tile, None)
+        if self._leaving.get(sid) is tile:
+            del self._leaving[sid]
+        self._row.removeWidget(tile)
+        tile.stop()
+        tile.deleteLater()
+        self._refresh_min_height()
+
+    def _resurrect(self, sid: str) -> SessionTile | None:
+        """A session that reappeared before its leave finished: cancel the leave,
+        restore the tile and re-enter it instead of spawning a duplicate."""
+        tile = self._leaving.pop(sid, None)
+        if tile is None:
+            return None
+        self._cancel_anim(tile)
+        self._tiles[sid] = tile
+        self._start_enter(tile)
+        return tile
+
+    def _cancel_anim(self, tile: SessionTile) -> None:
+        anim = self._anims.pop(tile, None)
+        if anim is not None:
+            anim.stop()
+
+    def _insert_live(self, tile: SessionTile, logical_index: int) -> None:
+        """Insert `tile` so it becomes the logical_index-th live tile, skipping
+        any tiles currently animating out when counting positions."""
+        leaving = set(self._leaving.values())
+        seen = 0
+        for i in range(self._row.count()):
+            w = self._row.itemAt(i).widget()
+            if w is None or w in leaving:
+                continue
+            if seen == logical_index:
+                self._row.insertWidget(i, tile, 0, Qt.AlignTop)
+                return
+            seen += 1
+        self._row.addWidget(tile, 0, Qt.AlignTop)
+
+    def _reorder_live(self, incoming) -> None:
+        desired = [self._tiles[sid] for sid in incoming if sid in self._tiles]
+        current = [
+            w for i in range(self._row.count())
+            if (w := self._row.itemAt(i).widget()) in self._tiles.values()
+        ]
+        if current == desired:
+            return
+        for w in current:
+            self._row.removeWidget(w)
+        for i, tile in enumerate(desired):
+            self._row.insertWidget(i, tile, 0, Qt.AlignTop)
+
+    def _refresh_min_height(self) -> None:
         # Reserve vertical room for a whole tile (mascot + the labels beneath
         # it). Without this the shelf gets squeezed in a short window and, since
         # the vertical scrollbar is off, the labels below the mascot are clipped.
@@ -273,8 +426,9 @@ class SessionShelf(QWidget):
         if wanted_h != self._scroll.minimumHeight():
             self._scroll.setMinimumHeight(wanted_h)
 
-        self.header.setText(f"ACTIVE SESSIONS — {len(self._tiles)}")
-
     def stop_all(self) -> None:
-        for tile in self._tiles.values():
+        for anim in list(self._anims.values()):
+            anim.stop()
+        self._anims.clear()
+        for tile in list(self._tiles.values()) + list(self._leaving.values()):
             tile.stop()
