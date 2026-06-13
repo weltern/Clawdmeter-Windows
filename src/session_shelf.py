@@ -265,6 +265,14 @@ class SessionShelf(QWidget):
             for i, tile in enumerate(desired):
                 self._row.insertWidget(i, tile, 0, Qt.AlignTop)
 
+        # Reserve vertical room for a whole tile (mascot + the labels beneath
+        # it). Without this the shelf gets squeezed in a short window and, since
+        # the vertical scrollbar is off, the labels below the mascot are clipped.
+        # +14 leaves room for the horizontal scrollbar shown when tiles overflow.
+        wanted_h = self._row_widget.sizeHint().height() + 14
+        if wanted_h != self._scroll.minimumHeight():
+            self._scroll.setMinimumHeight(wanted_h)
+
         self.header.setText(f"ACTIVE SESSIONS — {len(self._tiles)}")
 
     def stop_all(self) -> None:

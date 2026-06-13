@@ -1634,69 +1634,84 @@ class Dashboard(QMainWindow):
         self._mock_sample_timer.start(800)
         sample_tick()
 
-        # Synthesize the three-session shelf from variant_c_shelf.png — two live
-        # mascots cycling activities plus one stale/idle tile — and feed them
-        # through the real _on_sessions path so the shelf is fully exercised
-        # without launching concurrent Claude Code windows.
+        # Drive the shelf through a scripted roster that grows 1->4 sessions and
+        # shrinks back, reordering and cycling activities along the way, so every
+        # transition (tile enter/leave, resize, reorder, live<->idle) is on show
+        # without launching concurrent Claude Code windows. Steps every 2s.
         self._mock_phase = 0
         self._mock_shelf_timer = QTimer(self)
         self._mock_shelf_timer.timeout.connect(self._emit_mock_sessions)
         self._mock_shelf_timer.start(2000)
         self._emit_mock_sessions()
 
-    # Activities the two live mock mascots rotate through, so the shelf shows
-    # off the per-activity glow colors and animations over time.
-    _MOCK_CODING_CYCLE = [
-        TranscriptActivity.CODING,
-        TranscriptActivity.READING,
-        TranscriptActivity.INTEGRATING,
+    # Pool of fake sessions (session_id, project_name) the mock roster draws on.
+    _MOCK_POOL = [
+        ("mock-clawdmeter", "clawdmeter-windows"),
+        ("mock-api-gateway", "api-gateway"),
+        ("mock-notes-cli", "notes-cli"),
+        ("mock-data-pipeline", "data-pipeline"),
     ]
-    _MOCK_THINKING_CYCLE = [
+
+    # Each step lists the active pool indices, newest-first. The shelf is driven
+    # through add (1->4), reorder (data-pipeline jumps to front) and remove
+    # (4->1), exercising the tile enter/leave + count-based resize each step.
+    _MOCK_SCHEDULE = [
+        [0],
+        [0, 1],
+        [0, 1, 2],
+        [0, 1, 2, 3],
+        [3, 0, 1, 2],
+        [3, 0, 1],
+        [3, 0],
+        [0],
+    ]
+
+    # Activities the live tiles rotate through, so the per-activity glow colors
+    # and animations change over time.
+    _MOCK_ACTIVITY_CYCLE = [
+        TranscriptActivity.CODING,
         TranscriptActivity.THINKING,
-        TranscriptActivity.PLANNING,
+        TranscriptActivity.READING,
         TranscriptActivity.SEARCHING,
+        TranscriptActivity.PLANNING,
+        TranscriptActivity.INTEGRATING,
     ]
 
     def _emit_mock_sessions(self) -> None:
-        i = self._mock_phase
+        phase = self._mock_phase
         self._mock_phase += 1
         now = time.time()
-        coding = self._MOCK_CODING_CYCLE[i % len(self._MOCK_CODING_CYCLE)]
-        thinking = self._MOCK_THINKING_CYCLE[i % len(self._MOCK_THINKING_CYCLE)]
-        states = [
-            TranscriptState(
-                activity=coding,
-                tool_name="Edit" if coding == TranscriptActivity.CODING else None,
-                transcript_path=None,
-                last_event_ts=now,
-                session_id="mock-clawdmeter",
-                cwd=r"C:\Claude\clawdmeter-windows",
-                project_name="clawdmeter-windows",
-                is_stale=False,
-            ),
-            TranscriptState(
-                activity=thinking,
-                tool_name=None,
-                transcript_path=None,
-                last_event_ts=now,
-                session_id="mock-api-gateway",
-                cwd=r"C:\work\api-gateway",
-                project_name="api-gateway",
-                is_stale=False,
-            ),
-            # Stale tile — quiet ~4 minutes, so the shelf renders it dim/IDLE
-            # with a "last active 4m ago" sub-label.
-            TranscriptState(
-                activity=TranscriptActivity.IDLE,
-                tool_name=None,
-                transcript_path=None,
-                last_event_ts=now - 4 * 60,
-                session_id="mock-notes-cli",
-                cwd=r"C:\work\notes-cli",
-                project_name="notes-cli",
-                is_stale=True,
-            ),
-        ]
+        active = self._MOCK_SCHEDULE[phase % len(self._MOCK_SCHEDULE)]
+        states = []
+        for slot, pool_idx in enumerate(active):
+            sid, project = self._MOCK_POOL[pool_idx]
+            # When there's more than one, keep the last (oldest) tile idle/stale
+            # so the dim "IDLE — last active 4m ago" state is always on show too.
+            if len(active) > 1 and slot == len(active) - 1:
+                states.append(TranscriptState(
+                    activity=TranscriptActivity.IDLE,
+                    tool_name=None,
+                    transcript_path=None,
+                    last_event_ts=now - 4 * 60,
+                    session_id=sid,
+                    cwd=None,
+                    project_name=project,
+                    is_stale=True,
+                ))
+            else:
+                act = self._MOCK_ACTIVITY_CYCLE[
+                    (phase + pool_idx) % len(self._MOCK_ACTIVITY_CYCLE)
+                ]
+                states.append(TranscriptState(
+                    activity=act,
+                    tool_name="Edit" if act == TranscriptActivity.CODING else None,
+                    transcript_path=None,
+                    last_event_ts=now,
+                    session_id=sid,
+                    cwd=None,
+                    project_name=project,
+                    is_stale=False,
+                ))
         self._on_sessions(states)
 
     def _on_sample(self, s: UsageSample) -> None:
