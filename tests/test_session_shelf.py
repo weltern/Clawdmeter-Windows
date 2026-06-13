@@ -34,7 +34,7 @@ transcript = pytest.importorskip("transcript")
 if not hasattr(transcript, "ACTIVITY_COLORS"):
     pytest.skip("transcript.ACTIVITY_COLORS not present yet", allow_module_level=True)
 
-from transcript import Activity, TranscriptState  # noqa: E402
+from transcript import Activity, AgentState, TranscriptState  # noqa: E402
 import session_shelf  # noqa: E402
 from session_shelf import SessionShelf, SessionTile  # noqa: E402
 
@@ -113,6 +113,30 @@ def test_tile_live_shows_tool_and_activity():
     tile.update_state(_state("y", Activity.CODING, project="api", tool="Edit"))
     assert tile.activity_label.text() == "CODING"
     assert tile.sub_label.text() == "Edit"
+    tile.stop()
+
+
+def test_tile_child_agents_add_update_remove():
+    tile = SessionTile("p", sprite_size=130)
+    assert tile.has_agents() is False
+    assert tile._agents_box.isVisibleTo(tile) is False
+
+    def ag(i, act):
+        return AgentState(agent_id=f"agent-{i}", activity=act, tool_name=None)
+
+    tile.update_agents([ag(0, Activity.CODING), ag(1, Activity.READING)])
+    assert set(tile._agents) == {"agent-0", "agent-1"}
+    assert tile.has_agents() is True
+
+    # Reused, not rebuilt, and diffed by id.
+    m0 = tile._agents["agent-0"]
+    tile.update_agents([ag(0, Activity.SEARCHING), ag(2, Activity.PLANNING)])
+    assert tile._agents["agent-0"] is m0
+    assert set(tile._agents) == {"agent-0", "agent-2"}
+
+    tile.update_agents([])
+    assert tile.has_agents() is False
+    assert tile._agents_box.isVisibleTo(tile) is False  # row hidden again
     tile.stop()
 
 

@@ -72,6 +72,7 @@ from transcript import (
     ACTIVITY_ANIMS,
     ACTIVITY_LABELS,
     Activity as TranscriptActivity,
+    AgentState as TranscriptAgentState,
     TranscriptState,
     TranscriptWatcher,
 )
@@ -1685,6 +1686,23 @@ class Dashboard(QMainWindow):
         TranscriptActivity.INTEGRATING,
     ]
 
+    # The focused session spins up a varying number of child agents over time so
+    # the nested mini-mascots are shown appearing, working and finishing.
+    _MOCK_AGENT_COUNTS = [0, 2, 3, 1, 0, 2, 3]
+
+    def _mock_agents(self, phase: int) -> list:
+        n = self._MOCK_AGENT_COUNTS[phase % len(self._MOCK_AGENT_COUNTS)]
+        cyc = self._MOCK_ACTIVITY_CYCLE
+        return [
+            TranscriptAgentState(
+                agent_id=f"mock-agent-{k}",
+                activity=cyc[(phase + k) % len(cyc)],
+                tool_name=None,
+                is_stale=False,
+            )
+            for k in range(n)
+        ]
+
     def _emit_mock_sessions(self) -> None:
         phase = self._mock_phase
         self._mock_phase += 1
@@ -1693,9 +1711,27 @@ class Dashboard(QMainWindow):
         states = []
         for slot, pool_idx in enumerate(active):
             sid, project = self._MOCK_POOL[pool_idx]
-            # When there's more than one, keep the last (oldest) tile idle/stale
-            # so the dim "IDLE — last active 4m ago" state is always on show too.
-            if len(active) > 1 and slot == len(active) - 1:
+            # The clawdmeter session spins up child agents to show nesting.
+            agents = self._mock_agents(phase) if pool_idx == 0 else []
+            is_last = len(active) > 1 and slot == len(active) - 1
+            if agents:
+                # Supervising: a parent driving live child agents — mirror what
+                # the watcher emits (PLANNING over the children), even when this
+                # slot would otherwise be the idle one, so that path is on show.
+                states.append(TranscriptState(
+                    activity=TranscriptActivity.PLANNING,
+                    tool_name=None,
+                    transcript_path=None,
+                    last_event_ts=now,
+                    session_id=sid,
+                    cwd=None,
+                    project_name=project,
+                    is_stale=False,
+                    agents=agents,
+                ))
+            elif is_last:
+                # Keep the last (oldest) tile idle/stale so the dim
+                # "IDLE — last active 4m ago" state is always on show too.
                 states.append(TranscriptState(
                     activity=TranscriptActivity.IDLE,
                     tool_name=None,

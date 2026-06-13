@@ -18,6 +18,12 @@ from PySide6.QtWidgets import QLabel
 
 ROTATE_INTERVAL_MS = 20_000
 
+# Cropped (unscaled) frames keyed by animation slug, shared across ALL
+# SpritePlayer instances — the alpha-bbox crop is identical regardless of the
+# widget's render size (scaling happens per-frame in _show_frame), so many child
+# mascots running the same animation don't each re-run the per-pixel bbox scan.
+_FRAME_CACHE: dict[str, list[QPixmap]] = {}
+
 
 def _alpha_bbox(img: QImage) -> QRect:
     """Tightest rectangle containing all non-transparent pixels."""
@@ -90,7 +96,6 @@ class SpritePlayer(QLabel):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self._sprites_dir = sprites_dir
         self._anims: dict[str, dict] = manifest["animations"]
-        self._pixmap_cache: dict[str, list[QPixmap]] = {}
 
         self._active_key: str | None = None
         self._active_list: list[str] = []
@@ -188,8 +193,8 @@ class SpritePlayer(QLabel):
         floating in a transparent margin.
         """
         slug = meta["slug"]
-        if slug in self._pixmap_cache:
-            return self._pixmap_cache[slug]
+        if slug in _FRAME_CACHE:
+            return _FRAME_CACHE[slug]
 
         images: list[QImage] = []
         for frame in meta["frames"]:
@@ -199,12 +204,12 @@ class SpritePlayer(QLabel):
                 images.append(img.convertToFormat(QImage.Format_ARGB32))
 
         if not images:
-            self._pixmap_cache[slug] = []
+            _FRAME_CACHE[slug] = []
             return []
 
         crop = _square_alpha_bbox(images)
         frames = [QPixmap.fromImage(img.copy(crop)) for img in images]
-        self._pixmap_cache[slug] = frames
+        _FRAME_CACHE[slug] = frames
         return frames
 
     def _show_frame(self) -> None:

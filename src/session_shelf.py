@@ -39,6 +39,7 @@ from transcript import (
     ACTIVITY_COLORS,
     ACTIVITY_LABELS,
     Activity,
+    AgentState,
     TranscriptState,
 )
 
@@ -70,6 +71,7 @@ QLabel#tileActivity {{
 }}
 QLabel#tileDot {{ font-size: 11px; }}
 QLabel#tileSub {{ font-size: 10px; color: {_MUTED}; }}
+QLabel#tileAgentArrow {{ font-size: 13px; color: {_MUTED}; }}
 QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 0 2px; }}
 QScrollBar::handle:horizontal {{
     background: #374151; border-radius: 4px; min-width: 24px;
@@ -94,8 +96,49 @@ def _ago_text(last_event_ts: float | None) -> str:
     return f"last active {hours}h {m:02d}m ago"
 
 
+# Child-mascot (subagent) sizing.
+AGENT_SPRITE = 38
+# Column spacing above the agents row (matches the tile's QVBoxLayout spacing).
+AGENTS_ROW_SPACING = 4
+# Height reserved for the agents row before a real one can be measured; once a
+# tile has agents the true measured height is used instead (see _agent_extra).
+AGENT_ROW_FALLBACK = 46
+
+
+class AgentMascot(QWidget):
+    """A small child mascot for one subagent: a mini sprite with an activity glow
+    (no label — the tooltip names its activity/tool)."""
+
+    def __init__(self, agent_id: str, parent=None) -> None:
+        super().__init__(parent)
+        self._agent_id = agent_id
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.sprite = SpritePlayer(size=AGENT_SPRITE)
+        self._glow = QGraphicsDropShadowEffect(self)
+        self._glow.setBlurRadius(16)
+        self._glow.setOffset(0, 0)
+        self._glow.setColor(QColor(_IDLE_COLOR))
+        self.sprite.setGraphicsEffect(self._glow)
+        lay.addWidget(self.sprite, 0, Qt.AlignHCenter)
+
+    def update_state(self, agent: AgentState) -> None:
+        idle = agent.is_stale or agent.activity == Activity.IDLE
+        color = _IDLE_COLOR if idle else ACTIVITY_COLORS.get(agent.activity, _IDLE_COLOR)
+        self._glow.setColor(QColor(color))
+        anims = _IDLE_ANIMS if idle else (ACTIVITY_ANIMS.get(agent.activity) or _IDLE_ANIMS)
+        self.sprite.set_anims(f"{self._agent_id}:{'idle' if idle else agent.activity.value}", anims)
+        label = ACTIVITY_LABELS.get(agent.activity, "")
+        self.setToolTip(f"agent · {label}" + (f" — {agent.tool_name}" if agent.tool_name else ""))
+
+    def stop(self) -> None:
+        self.sprite.stop()
+
+
 class SessionTile(QWidget):
-    """One session: glowing mascot + project name + activity + status dot."""
+    """One session: glowing mascot + project name + activity + status dot,
+    plus a row of small child mascots when the session has live subagents."""
 
     # A single status dot reused for both states — the glyph stays, only its
     # color changes (warm/active accent when live, dim grey when idle).
@@ -151,6 +194,46 @@ class SessionTile(QWidget):
         self.sub_label.setAlignment(Qt.AlignHCenter)
         col.addWidget(self.sub_label)
 
+        # Row of child mascots for live subagents — hidden until the session has
+        # any. A leading "↳" marks them as belonging to this session's mascot.
+        self._agents: dict[str, AgentMascot] = {}
+        self._agents_box = QWidget()
+        self._agents_row = QHBoxLayout(self._agents_box)
+        self._agents_row.setContentsMargins(0, 4, 0, 0)
+        self._agents_row.setSpacing(6)
+        self._agents_row.setAlignment(Qt.AlignHCenter)
+        self._agents_row.addWidget(
+            QLabel("↳", objectName="tileAgentArrow"), 0, Qt.AlignVCenter
+        )
+        self._agents_box.hide()
+        col.addWidget(self._agents_box)
+
+    def has_agents(self) -> bool:
+        return bool(self._agents)
+
+    def agents_box_height(self) -> int:
+        """Height the agents row contributes to the tile's sizeHint (0 if empty)."""
+        return self._agents_box.sizeHint().height() if self._agents else 0
+
+    def update_agents(self, agents: list[AgentState]) -> None:
+        """Diff child mascots by agent id (add/remove/update in place) and show
+        the row only while the session has live subagents."""
+        incoming = {a.agent_id: a for a in agents}
+        for aid in list(self._agents):
+            if aid not in incoming:
+                m = self._agents.pop(aid)
+                self._agents_row.removeWidget(m)
+                m.stop()
+                m.deleteLater()
+        for aid, agent in incoming.items():
+            m = self._agents.get(aid)
+            if m is None:
+                m = AgentMascot(aid, parent=self._agents_box)
+                self._agents[aid] = m
+                self._agents_row.addWidget(m, 0, Qt.AlignVCenter)
+            m.update_state(agent)
+        self._agents_box.setVisible(bool(self._agents))
+
     def set_sprite_size(self, px: int) -> None:
         # set_size (not setFixedSize) so the mascot pixmap re-scales too; it
         # early-returns when the size is unchanged, so calling it every poll is
@@ -189,6 +272,8 @@ class SessionTile(QWidget):
 
     def stop(self) -> None:
         self.sprite.stop()
+        for m in self._agents.values():
+            m.stop()
 
     # --- enter/leave transitions --------------------------------------------
     # A tile fades + expands in (width 0 -> natural) and fades + collapses out
@@ -290,6 +375,10 @@ class SessionShelf(QWidget):
         self._height_anim: QPropertyAnimation | None = None
         # Per-tile height beyond the mascot (labels + margins), measured once.
         self._tile_oh: int | None = None
+        # Measured height an agents row adds to a tile (sprite + padding + the
+        # column spacing). Cached the first time a tile actually has agents so
+        # the reserve's add-back and _tile_overhead's subtraction always agree.
+        self._agent_oh: int | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -347,6 +436,7 @@ class SessionShelf(QWidget):
                     self._insert_live(tile, index)
                     tile.set_sprite_size(size)
                     tile.update_state(state)
+                    tile.update_agents(state.agents)
                     self._start_enter(tile)
                     continue
             # Survivor: smoothly scale to the new size when the count changed.
@@ -357,6 +447,7 @@ class SessionShelf(QWidget):
             else:
                 tile.set_sprite_size(size)
             tile.update_state(state)
+            tile.update_agents(state.agents)
 
         # Re-assert newest-first order. _reorder_live short-circuits when the
         # live order is unchanged (the common case) so there's no per-poll
@@ -453,13 +544,18 @@ class SessionShelf(QWidget):
         not from the live layout, so a tile mid enter-animation (width clamped to
         0) can't report a stale, clipped height."""
         target = self._reserved_height_for(new_size)
-        if old_size is None or old_size == new_size:
-            if self._height_anim is None and self._scroll.minimumHeight() != target:
+        start = self._scroll.minimumHeight()
+        if old_size is None:
+            # First fill — snap, no animation.
+            if start != target:
                 self._scroll.setMinimumHeight(target)
+            return
+        # Already animating toward this exact target? Let it finish — restarting
+        # every poll (the steady state) would stutter and never settle.
+        if self._height_anim is not None and self._height_anim.endValue() == target:
             return
         if self._height_anim is not None:
             self._height_anim.stop()
-        start = self._scroll.minimumHeight()
         if start == target:
             self._height_anim = None
             return
@@ -475,22 +571,42 @@ class SessionShelf(QWidget):
     def _on_height_anim_done(self) -> None:
         self._height_anim = None
 
+    def _any_agents(self) -> bool:
+        return any(t.has_agents() for t in self._tiles.values())
+
+    def _agent_extra(self) -> int:
+        """Measured height an agents row adds to a tile. Taken from a real tile
+        that has agents (so the reserve's add-back and the _tile_overhead
+        subtraction use the SAME number and can't drift), cached once."""
+        if self._agent_oh is None:
+            tile = next((t for t in self._tiles.values() if t.has_agents()), None)
+            if tile is None:
+                return AGENT_ROW_FALLBACK  # nothing to measure yet
+            self._agent_oh = tile.agents_box_height() + AGENTS_ROW_SPACING
+        return self._agent_oh
+
     def _tile_overhead(self) -> int:
-        """Tile height beyond the mascot (labels + spacing + margins). Measured
-        once from a real, already-styled tile (its sizeHint height minus the
-        sprite size); falls back to a constant until a tile exists. Width
-        animations don't affect height, so a tile mid-enter measures fine."""
+        """Tile height beyond the mascot AND the (optional) agents row — i.e. the
+        labels + spacing + margins. Measured once from a real, already-styled
+        tile (sizeHint minus the sprite size, minus the agents row if that tile
+        has one). Width animations don't affect height, so a tile mid-enter
+        measures fine."""
         if self._tile_oh is None:
             tile = next(iter(self._tiles.values()), None)
             if tile is None or self._sprite_size is None:
                 return 64  # not cached — recompute once a real tile exists
-            self._tile_oh = max(0, tile.sizeHint().height() - self._sprite_size)
+            h = tile.sizeHint().height() - self._sprite_size
+            if tile.has_agents():
+                h -= self._agent_extra()
+            self._tile_oh = max(0, h)
         return self._tile_oh
 
     def _reserved_height_for(self, sprite_size: int) -> int:
-        # tile height (mascot + overhead) + row margins (8) + horizontal-scrollbar
-        # room (14), so labels are never clipped and overflow can scroll.
-        return sprite_size + self._tile_overhead() + 8 + 14
+        # mascot + label overhead + an agents row (when any tile has subagents)
+        # + row margins (8) + horizontal-scrollbar room (14). Kept uniform across
+        # tiles so rows line up and labels are never clipped.
+        agents_extra = self._agent_extra() if self._any_agents() else 0
+        return sprite_size + self._tile_overhead() + agents_extra + 8 + 14
 
     def reserved_current(self) -> int:
         """Currently reserved scroll height (may be mid height-animation)."""
