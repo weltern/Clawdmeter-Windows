@@ -1359,8 +1359,10 @@ class Dashboard(QMainWindow):
 
         self._transcript = TranscriptWatcher(self)
         self._transcript.state_changed.connect(self._on_transcript)
-        if not mock:
-            self._transcript.start()
+        # NOTE: started at the END of __init__, not here. start() does a
+        # synchronous first poll that emits state_changed, and _on_transcript
+        # touches widgets (self.compact, self.sprite) that aren't built until
+        # later in __init__ — starting here AttributeErrors on real-mode launch.
 
         self._tray = QSystemTrayIcon(self)
         self._tray.setIcon(QIcon(str(icon_path)) if icon_path.exists() else QIcon(_tray_pixmap(0)))
@@ -1405,6 +1407,9 @@ class Dashboard(QMainWindow):
             self._start_mock()
         else:
             self._start_poller()
+            # Now that self.compact / self.sprite exist, the watcher's initial
+            # synchronous poll can safely drive the sprite selection.
+            self._transcript.start()
 
     def eventFilter(self, obj, ev):
         if obj is self._content and ev.type() == ev.Type.Resize:
