@@ -22,7 +22,6 @@ from PySide6.QtCore import (
 )
 from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -80,6 +79,11 @@ QScrollBar::handle:horizontal:hover {{ background: #4b5563; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
 """
+
+
+# Top padding inside a tile so the mascot's glow (drop-shadow blur ~38) isn't
+# clipped at the tile's top edge. Sized to the visible extent of the blur.
+_GLOW_PAD = 26
 
 
 def _ago_text(last_event_ts: float | None) -> str:
@@ -149,12 +153,14 @@ class SessionTile(QWidget):
         self.setObjectName("sessionTile")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self._session_id = session_id
-        self._fade = None  # QGraphicsOpacityEffect during an enter/leave anim
 
         col = QVBoxLayout(self)
         # Side margins double as the inter-tile gap (the row spacing is 0) so a
-        # leaving tile collapses to truly zero width with no leftover gap.
-        col.setContentsMargins(12, 4, 12, 4)
+        # leaving tile collapses to truly zero width with no leftover gap. The
+        # generous TOP margin gives the mascot's drop-shadow glow room to render —
+        # child widgets are clipped to the tile, so without it the glow's upper
+        # halo is sliced off at the tile's top edge.
+        col.setContentsMargins(12, _GLOW_PAD, 12, 4)
         col.setSpacing(4)
         col.setAlignment(Qt.AlignHCenter)
         # SetNoConstraint + a zero minimum let the enter/leave width animation
@@ -276,67 +282,44 @@ class SessionTile(QWidget):
             m.stop()
 
     # --- enter/leave transitions --------------------------------------------
-    # A tile fades + expands in (width 0 -> natural) and fades + collapses out
-    # (natural -> 0), so the row reflows smoothly as sessions come and go. The
-    # opacity rides a QGraphicsOpacityEffect on the tile; the width rides the
+    # A tile expands in (width 0 -> natural) and collapses out (natural -> 0),
+    # so the row reflows smoothly as sessions come and go. The width rides the
     # widget's own maximumWidth property (the SetNoConstraint above lets it
-    # shrink past the mascot). The shelf owns the animation objects so they
-    # aren't garbage-collected mid-flight.
+    # shrink past the mascot, clipping the centred content). The glow stays on
+    # throughout — we deliberately do NOT fade via a QGraphicsOpacityEffect on
+    # the tile, because that would nest over the sprite's (and agents') own glow
+    # effects, which Qt can't render (a graphics effect inside a graphics
+    # effect). The shelf owns the animation objects so they aren't GC'd mid-flight.
     ENTER_MS = 240
     LEAVE_MS = 200
     _SIZE_MAX = 16777215  # Qt's QWIDGETSIZE_MAX — the "no maximum" sentinel.
 
-    def _begin_fade(self) -> QGraphicsOpacityEffect:
-        eff = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(eff)
-        self._fade = eff
-        return eff
-
     def build_enter_anim(self) -> QParallelAnimationGroup:
         target = max(1, self.sizeHint().width())
-        eff = self._begin_fade()
-        eff.setOpacity(0.0)
         self.setMaximumWidth(0)
         grp = QParallelAnimationGroup(self)
-        fade = QPropertyAnimation(eff, b"opacity", grp)
-        fade.setDuration(self.ENTER_MS)
-        fade.setStartValue(0.0)
-        fade.setEndValue(1.0)
-        fade.setEasingCurve(QEasingCurve.OutCubic)
         grow = QPropertyAnimation(self, b"maximumWidth", grp)
         grow.setDuration(self.ENTER_MS)
         grow.setStartValue(0)
         grow.setEndValue(target)
         grow.setEasingCurve(QEasingCurve.OutCubic)
-        grp.addAnimation(fade)
         grp.addAnimation(grow)
         grp.finished.connect(self._clear_transition)
         return grp
 
     def build_leave_anim(self) -> QParallelAnimationGroup:
-        eff = self._begin_fade()
-        eff.setOpacity(1.0)
         grp = QParallelAnimationGroup(self)
-        fade = QPropertyAnimation(eff, b"opacity", grp)
-        fade.setDuration(self.LEAVE_MS)
-        fade.setStartValue(1.0)
-        fade.setEndValue(0.0)
-        fade.setEasingCurve(QEasingCurve.InCubic)
         shrink = QPropertyAnimation(self, b"maximumWidth", grp)
         shrink.setDuration(self.LEAVE_MS)
         shrink.setStartValue(max(1, self.width()))
         shrink.setEndValue(0)
         shrink.setEasingCurve(QEasingCurve.InCubic)
-        grp.addAnimation(fade)
         grp.addAnimation(shrink)
         return grp
 
     def _clear_transition(self) -> None:
-        """Release the width cap and drop the opacity effect so the tile renders
-        normally (and the sprite's own glow is unobstructed) after an enter."""
+        """Release the width cap so the tile sizes naturally again after enter."""
         self.setMaximumWidth(self._SIZE_MAX)
-        self.setGraphicsEffect(None)
-        self._fade = None
 
 
 class SessionShelf(QWidget):
@@ -457,6 +440,11 @@ class SessionShelf(QWidget):
 
         self._sync_height(old_size, size)
         self.header.setText(f"ACTIVE SESSIONS — {len(self._tiles)}")
+
+    def set_header_visible(self, on: bool) -> None:
+        """Show/hide the 'ACTIVE SESSIONS — N' header (hidden in single-mascot
+        mode, where the count is meaningless)."""
+        self.header.setVisible(on)
 
     def _start_enter(self, tile: SessionTile) -> None:
         anim = tile.build_enter_anim()

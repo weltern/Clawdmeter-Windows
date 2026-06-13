@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -76,6 +77,29 @@ from transcript import (
     TranscriptState,
     TranscriptWatcher,
 )
+
+
+# Stable tile id used in single-mascot mode (Settings: show multiple sessions
+# off) so the one tile updates in place rather than animating a swap when the
+# focused session changes.
+_SINGLE_TILE_ID = "__single__"
+
+
+def _view_states(raw, show_multiple, show_subagents, single_id=_SINGLE_TILE_ID):
+    """Apply the Settings session-view toggles to the watcher's raw states.
+
+    - show_subagents off -> strip each session's child agents.
+    - show_multiple off  -> keep only the focused (newest) session, re-keyed to a
+      stable id so its tile updates in place instead of animating a swap when the
+      focused session changes.
+    Pure (returns a new list) so it's testable without the Qt UI.
+    """
+    states = raw
+    if not show_subagents:
+        states = [replace(s, agents=[]) for s in states]
+    if not show_multiple and states:
+        states = [replace(states[0], session_id=single_id)]
+    return states
 
 
 STYLESHEET = """
@@ -685,7 +709,7 @@ class SettingsPanel(QWidget):
 
     def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested,
                  on_refresh_token=None, on_auto_refresh_changed=None,
-                 on_poll_interval_changed=None) -> None:
+                 on_poll_interval_changed=None, on_sessions_view_changed=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -696,6 +720,7 @@ class SettingsPanel(QWidget):
         self._on_refresh_token = on_refresh_token
         self._on_auto_refresh_changed = on_auto_refresh_changed
         self._on_poll_interval_changed = on_poll_interval_changed
+        self._on_sessions_view_changed = on_sessions_view_changed
         self.hide()
 
         outer = QVBoxLayout(self)
@@ -782,6 +807,25 @@ class SettingsPanel(QWidget):
         self.quit_on_close_check.setChecked(app_settings.get_quit_on_close())
         self.quit_on_close_check.toggled.connect(self._on_quit_on_close_toggled)
         layout.addWidget(self.quit_on_close_check)
+
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("SESSIONS", objectName="sectionLabel"))
+        sessions_hint = QLabel(
+            "Show every active Claude Code session as its own mascot, and the "
+            "child agents a session spins up. Turn off for a single mascot.",
+            objectName="sectionHint",
+        )
+        sessions_hint.setWordWrap(True)
+        layout.addWidget(sessions_hint)
+        self.multi_sessions_check = QCheckBox("Show multiple sessions")
+        self.multi_sessions_check.setChecked(app_settings.get_show_multiple_sessions())
+        self.multi_sessions_check.toggled.connect(self._on_multi_sessions_toggled)
+        layout.addWidget(self.multi_sessions_check)
+
+        self.subagents_check = QCheckBox("Show subagents")
+        self.subagents_check.setChecked(app_settings.get_show_subagents())
+        self.subagents_check.toggled.connect(self._on_subagents_toggled)
+        layout.addWidget(self.subagents_check)
 
         layout.addSpacing(10)
         layout.addWidget(QLabel("USAGE POLLING", objectName="sectionLabel"))
@@ -1074,6 +1118,16 @@ class SettingsPanel(QWidget):
     def _on_quit_on_close_toggled(self, checked: bool) -> None:
         app_settings.set_quit_on_close(checked)
 
+    def _on_multi_sessions_toggled(self, checked: bool) -> None:
+        app_settings.set_show_multiple_sessions(checked)
+        if self._on_sessions_view_changed:
+            self._on_sessions_view_changed()
+
+    def _on_subagents_toggled(self, checked: bool) -> None:
+        app_settings.set_show_subagents(checked)
+        if self._on_sessions_view_changed:
+            self._on_sessions_view_changed()
+
     def _on_notify_toggled(self, checked: bool) -> None:
         app_settings.set_reset_notify(checked)
         self._sync_notify_subtoggles()
@@ -1340,6 +1394,7 @@ class Dashboard(QMainWindow):
             on_refresh_token=self._request_token_refresh,
             on_auto_refresh_changed=self._set_auto_refresh,
             on_poll_interval_changed=self._set_poll_interval,
+            on_sessions_view_changed=self._apply_session_view,
         )
         self.settings_panel.place_closed()
         content.installEventFilter(self)
@@ -1381,6 +1436,8 @@ class Dashboard(QMainWindow):
         self._last_sample: UsageSample | None = None
         self._last_tooltip = ""
         self._transcript_state: TranscriptState | None = None
+        # Last sessions from the watcher, re-rendered through the Settings toggles.
+        self._last_raw_states: list[TranscriptState] = []
         # True while the shelf is showing >=1 live session. Tracked explicitly
         # (not via shelf.isVisible(), which is False until the window is shown)
         # so the usage-poll handler knows to leave the mascots to the shelf.
@@ -1946,10 +2003,26 @@ class Dashboard(QMainWindow):
         self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
 
     def _on_sessions(self, states: list[TranscriptState]) -> None:
-        """Route the watcher's per-session states to the shelf (or the empty
-        state). With >=1 live session the shelf takes over the mascot slot and
-        the compact widget mirrors the focused (newest) session; with 0 the hero
-        returns and the rate-based mood drives hero + compact + group_label."""
+        """Receive the watcher's per-session states, remember them, and render
+        through the current Settings view (multiple-sessions / subagents toggles)."""
+        self._last_raw_states = list(states)
+        self._apply_session_view()
+
+    def _apply_session_view(self) -> None:
+        """Render the last-seen sessions honouring the Settings toggles: collapse
+        to the focused session when 'show multiple sessions' is off, and strip
+        child agents when 'show subagents' is off. Called on each watcher update
+        and whenever a toggle changes, so a flip takes effect immediately.
+
+        With >=1 live session the shelf takes over the mascot slot and the compact
+        widget mirrors the focused (newest) session; with 0 the hero returns and
+        the rate-based mood drives hero + compact + group_label."""
+        states = _view_states(
+            self._last_raw_states,
+            app_settings.get_show_multiple_sessions(),
+            app_settings.get_show_subagents(),
+        )
+
         if states:
             self._shelf_active = True
             self.hero.hide()
@@ -1960,6 +2033,8 @@ class Dashboard(QMainWindow):
             # rather than leave it showing stale text beside live tiles.
             self.group_label.hide()
             self.shelf.show()
+            # The "ACTIVE SESSIONS — N" count is only meaningful in multi mode.
+            self.shelf.set_header_visible(app_settings.get_show_multiple_sessions())
             self.shelf.set_sessions(states)
             # The compact widget stays single-mascot for now (full multi-session
             # compact is Variant D), so it follows the focused session.

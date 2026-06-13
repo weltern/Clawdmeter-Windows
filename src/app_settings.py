@@ -13,6 +13,8 @@ KEY_ALWAYS_ON_TOP = "window/always_on_top"
 KEY_AUTO_HIDE_TITLEBAR = "window/auto_hide_titlebar"
 KEY_QUIT_ON_CLOSE = "window/quit_on_close"
 KEY_COMPACT_POS = "window/compact_pos"
+KEY_SHOW_MULTIPLE_SESSIONS = "sessions/show_multiple"
+KEY_SHOW_SUBAGENTS = "sessions/show_subagents"
 KEY_AUTO_REFRESH = "token/auto_refresh"
 KEY_POLL_INTERVAL = "poll/interval_seconds"
 KEY_RESET_NOTIFY = "notify/reset_enabled"
@@ -94,6 +96,28 @@ def get_compact_pos() -> tuple[int, int] | None:
 
 def set_compact_pos(x: int, y: int) -> None:
     _settings().setValue(KEY_COMPACT_POS, f"{int(x)},{int(y)}")
+
+
+def get_show_multiple_sessions() -> bool:
+    v = _settings().value(KEY_SHOW_MULTIPLE_SESSIONS, True)  # on by default
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_show_multiple_sessions(on: bool) -> None:
+    _settings().setValue(KEY_SHOW_MULTIPLE_SESSIONS, bool(on))
+
+
+def get_show_subagents() -> bool:
+    v = _settings().value(KEY_SHOW_SUBAGENTS, True)  # on by default
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_show_subagents(on: bool) -> None:
+    _settings().setValue(KEY_SHOW_SUBAGENTS, bool(on))
 
 
 def get_auto_refresh() -> bool:
