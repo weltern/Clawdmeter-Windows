@@ -14,6 +14,7 @@ KEY_AUTO_HIDE_TITLEBAR = "window/auto_hide_titlebar"
 KEY_QUIT_ON_CLOSE = "window/quit_on_close"
 KEY_COMPACT_POS = "window/compact_pos"
 KEY_AUTO_REFRESH = "token/auto_refresh"
+KEY_POLL_INTERVAL = "poll/interval_seconds"
 KEY_RESET_NOTIFY = "notify/reset_enabled"
 KEY_RESET_NOTIFY_SOUND = "notify/reset_sound"
 KEY_RESET_NOTIFY_POPUP = "notify/reset_popup"
@@ -24,6 +25,13 @@ KEY_RESET_NOTIFY_PUSH_TG_TOKEN = "notify/reset_push_tg_token"
 KEY_RESET_NOTIFY_PUSH_TG_CHAT = "notify/reset_push_tg_chat"
 
 PUSH_PROVIDERS = ("ntfy", "telegram")
+
+# API usage poll cadence (seconds). The floor keeps the self-billed 1-token
+# probe from tripping per-minute rate limits; the ceiling keeps the usage %
+# from going too stale and the per-cycle token-refresh check from lagging.
+POLL_INTERVAL_MIN = 10
+POLL_INTERVAL_MAX = 600
+POLL_INTERVAL_DEFAULT = 60
 
 
 def _settings() -> QSettings:
@@ -97,6 +105,29 @@ def get_auto_refresh() -> bool:
 
 def set_auto_refresh(on: bool) -> None:
     _settings().setValue(KEY_AUTO_REFRESH, bool(on))
+
+
+def _clamp_poll_interval(value: int) -> int:
+    return max(POLL_INTERVAL_MIN, min(POLL_INTERVAL_MAX, value))
+
+
+def get_poll_interval() -> int:
+    """Seconds between API usage polls. QSettings hands values back as strings
+    on Windows, so parse defensively and clamp into [MIN, MAX]; fall back to
+    the default on anything unparseable."""
+    raw = _settings().value(KEY_POLL_INTERVAL, POLL_INTERVAL_DEFAULT)
+    try:
+        secs = int(raw)
+    except (TypeError, ValueError):
+        return POLL_INTERVAL_DEFAULT
+    return _clamp_poll_interval(secs)
+
+
+def set_poll_interval(seconds: int) -> int:
+    """Clamp to [MIN, MAX], persist, and return the value actually stored."""
+    clamped = _clamp_poll_interval(int(seconds))
+    _settings().setValue(KEY_POLL_INTERVAL, clamped)
+    return clamped
 
 
 def get_reset_notify() -> bool:

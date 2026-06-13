@@ -31,6 +31,7 @@ from PySide6.QtGui import (
     QCursor,
     QGuiApplication,
     QIcon,
+    QIntValidator,
     QPainter,
     QPixmap,
 )
@@ -678,7 +679,8 @@ class SettingsPanel(QWidget):
     _push_test_result = Signal(bool, str)
 
     def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested,
-                 on_refresh_token=None, on_auto_refresh_changed=None) -> None:
+                 on_refresh_token=None, on_auto_refresh_changed=None,
+                 on_poll_interval_changed=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -688,6 +690,7 @@ class SettingsPanel(QWidget):
         self._on_close_requested = on_close_requested
         self._on_refresh_token = on_refresh_token
         self._on_auto_refresh_changed = on_auto_refresh_changed
+        self._on_poll_interval_changed = on_poll_interval_changed
         self.hide()
 
         outer = QVBoxLayout(self)
@@ -774,6 +777,35 @@ class SettingsPanel(QWidget):
         self.quit_on_close_check.setChecked(app_settings.get_quit_on_close())
         self.quit_on_close_check.toggled.connect(self._on_quit_on_close_toggled)
         layout.addWidget(self.quit_on_close_check)
+
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("USAGE POLLING", objectName="sectionLabel"))
+        poll_hint = QLabel(
+            f"How often to check your usage ({app_settings.POLL_INTERVAL_MIN}"
+            f"–{app_settings.POLL_INTERVAL_MAX}s). Each check is a tiny API "
+            "request, so lower = fresher but more requests. Takes effect on the "
+            "next check.",
+            objectName="sectionHint",
+        )
+        poll_hint.setWordWrap(True)
+        layout.addWidget(poll_hint)
+        poll_row = QHBoxLayout()
+        poll_row.setSpacing(6)
+        self.poll_interval_edit = QLineEdit()
+        self.poll_interval_edit.setValidator(
+            QIntValidator(0, app_settings.POLL_INTERVAL_MAX, self)
+        )
+        self.poll_interval_edit.setText(str(app_settings.get_poll_interval()))
+        self.poll_interval_edit.setFixedWidth(64)
+        self.poll_interval_edit.setToolTip(
+            f"Whole seconds, {app_settings.POLL_INTERVAL_MIN}–"
+            f"{app_settings.POLL_INTERVAL_MAX}. Out-of-range values are clamped."
+        )
+        self.poll_interval_edit.editingFinished.connect(self._on_poll_interval_committed)
+        poll_row.addWidget(self.poll_interval_edit)
+        poll_row.addWidget(QLabel("seconds"))
+        poll_row.addStretch(1)
+        layout.addLayout(poll_row)
 
         layout.addSpacing(10)
         layout.addWidget(QLabel("NOTIFICATIONS", objectName="sectionLabel"))
@@ -947,6 +979,18 @@ class SettingsPanel(QWidget):
         app_settings.set_auto_refresh(checked)
         if self._on_auto_refresh_changed:
             self._on_auto_refresh_changed(checked)
+
+    def _on_poll_interval_committed(self) -> None:
+        """Parse the box, clamp+persist, reflect the applied value back into the
+        field, and push it live to the poller."""
+        try:
+            requested = int(self.poll_interval_edit.text().strip())
+        except ValueError:
+            requested = app_settings.get_poll_interval()
+        clamped = app_settings.set_poll_interval(requested)
+        self.poll_interval_edit.setText(str(clamped))  # show what actually applied
+        if self._on_poll_interval_changed:
+            self._on_poll_interval_changed(clamped)
 
     def _on_refresh_token_clicked(self) -> None:
         if self._on_refresh_token:
@@ -1213,6 +1257,7 @@ class Dashboard(QMainWindow):
             on_close_requested=self._close_settings,
             on_refresh_token=self._request_token_refresh,
             on_auto_refresh_changed=self._set_auto_refresh,
+            on_poll_interval_changed=self._set_poll_interval,
         )
         self.settings_panel.place_closed()
         content.installEventFilter(self)
@@ -1448,7 +1493,7 @@ class Dashboard(QMainWindow):
         return outer, pct, bar, reset
 
     def _start_poller(self) -> None:
-        self._poller = UsagePoller()
+        self._poller = UsagePoller(interval_seconds=app_settings.get_poll_interval())
         self._poller.sample.connect(self._on_sample)
         self._poller.refresh_status.connect(self._on_refresh_status)
         self._poller.start()
@@ -1464,6 +1509,11 @@ class Dashboard(QMainWindow):
         poller = getattr(self, "_poller", None)
         if poller is not None:
             poller.set_auto_refresh(on)
+
+    def _set_poll_interval(self, seconds: int) -> None:
+        poller = getattr(self, "_poller", None)
+        if poller is not None:
+            poller.set_interval(seconds)
 
     def _on_refresh_status(self, result) -> None:
         """token_refresh.RefreshResult from the poll thread (auto or manual)."""

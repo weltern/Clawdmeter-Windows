@@ -162,6 +162,13 @@ class UsagePoller(QThread):
     def set_auto_refresh(self, on: bool) -> None:
         self._auto_refresh = bool(on)
 
+    def set_interval(self, seconds: int) -> None:
+        """Change the poll cadence. Takes effect on the next cycle: the current
+        sleep already snapshotted the old interval via range(), so a mid-sleep
+        change won't wake it early (instant apply would need a wake flag like
+        _manual_refresh — deferred for now)."""
+        self._interval = max(1, int(seconds))
+
     def request_manual_refresh(self) -> None:
         """Ask the poll thread to refresh the token ASAP (bypasses cooldown)."""
         self._manual_refresh = True
