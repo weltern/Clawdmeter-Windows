@@ -20,6 +20,7 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QPoint,
     QRect,
+    QRegularExpression,
     QSize,
     Qt,
     QTimer,
@@ -31,9 +32,9 @@ from PySide6.QtGui import (
     QCursor,
     QGuiApplication,
     QIcon,
-    QIntValidator,
     QPainter,
     QPixmap,
+    QRegularExpressionValidator,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -41,6 +42,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -142,6 +144,7 @@ QLabel#pathDisplay {
 }
 QLabel#credStatus { font-size: 10px; color: #6b7280; }
 QLabel#sectionHint { font-size: 10px; color: #6b7280; }
+QLabel#pollNote { font-size: 10px; color: #f59e0b; font-weight: 600; }
 QPushButton#resetLink {
     background: transparent; color: #9ca3af; border: 0; padding: 2px 4px;
     text-decoration: underline; font-size: 10px;
@@ -792,8 +795,13 @@ class SettingsPanel(QWidget):
         poll_row = QHBoxLayout()
         poll_row.setSpacing(6)
         self.poll_interval_edit = QLineEdit()
+        # Digits-only — NOT QIntValidator(0, MAX). An int validator marks
+        # out-of-range-but-same-digit-count values like "999" as Intermediate,
+        # and editingFinished is suppressed for non-Acceptable input, so the
+        # commit/clamp would silently never run. A plain digit validator keeps
+        # every commit firing; the handler does the clamping.
         self.poll_interval_edit.setValidator(
-            QIntValidator(0, app_settings.POLL_INTERVAL_MAX, self)
+            QRegularExpressionValidator(QRegularExpression(r"\d{0,6}"), self)
         )
         self.poll_interval_edit.setText(str(app_settings.get_poll_interval()))
         self.poll_interval_edit.setFixedWidth(64)
@@ -802,10 +810,30 @@ class SettingsPanel(QWidget):
             f"{app_settings.POLL_INTERVAL_MAX}. Out-of-range values are clamped."
         )
         self.poll_interval_edit.editingFinished.connect(self._on_poll_interval_committed)
+        self.poll_interval_edit.textEdited.connect(self._clear_poll_note)
         poll_row.addWidget(self.poll_interval_edit)
         poll_row.addWidget(QLabel("seconds"))
         poll_row.addStretch(1)
         layout.addLayout(poll_row)
+
+        # Transient amber note shown when a committed value gets clamped, so the
+        # correction is obvious without a modal. Holds briefly, fades out, and
+        # clears the moment the user edits the field again.
+        self.poll_interval_note = QLabel("", objectName="pollNote")
+        self.poll_interval_note.setWordWrap(True)
+        self._poll_note_effect = QGraphicsOpacityEffect(self.poll_interval_note)
+        self.poll_interval_note.setGraphicsEffect(self._poll_note_effect)
+        self._poll_note_effect.setOpacity(0.0)
+        self.poll_interval_note.hide()
+        self._poll_note_fade = QPropertyAnimation(self._poll_note_effect, b"opacity", self)
+        self._poll_note_fade.setDuration(500)
+        self._poll_note_fade.setEndValue(0.0)
+        self._poll_note_fade.finished.connect(self._clear_poll_note)
+        self._poll_note_hold = QTimer(self)
+        self._poll_note_hold.setSingleShot(True)
+        self._poll_note_hold.setInterval(3200)
+        self._poll_note_hold.timeout.connect(self._fade_poll_note)
+        layout.addWidget(self.poll_interval_note)
 
         layout.addSpacing(10)
         layout.addWidget(QLabel("NOTIFICATIONS", objectName="sectionLabel"))
@@ -982,15 +1010,49 @@ class SettingsPanel(QWidget):
 
     def _on_poll_interval_committed(self) -> None:
         """Parse the box, clamp+persist, reflect the applied value back into the
-        field, and push it live to the poller."""
+        field, surface an amber note if it was corrected, and push it live."""
+        raw = self.poll_interval_edit.text().strip()
         try:
-            requested = int(self.poll_interval_edit.text().strip())
+            requested = int(raw)
+            parsed = True
         except ValueError:
             requested = app_settings.get_poll_interval()
+            parsed = False
         clamped = app_settings.set_poll_interval(requested)
-        self.poll_interval_edit.setText(str(clamped))  # show what actually applied
+        self.poll_interval_edit.setText(str(clamped))  # reflect what applied
+
+        lo, hi = app_settings.POLL_INTERVAL_MIN, app_settings.POLL_INTERVAL_MAX
+        if not parsed:
+            self._show_poll_note(f"Enter a whole number {lo}–{hi}s — kept {clamped}.")
+        elif clamped != requested:
+            self._show_poll_note(f"Adjusted to {clamped}s — allowed range {lo}–{hi}.")
+        else:
+            self._clear_poll_note()
+
         if self._on_poll_interval_changed:
             self._on_poll_interval_changed(clamped)
+
+    def _show_poll_note(self, text: str) -> None:
+        """Show the amber clamp note at full opacity, then schedule a fade."""
+        self._poll_note_hold.stop()
+        self._poll_note_fade.stop()
+        self.poll_interval_note.setText(text)
+        self._poll_note_effect.setOpacity(1.0)
+        self.poll_interval_note.show()
+        self._poll_note_hold.start()
+
+    def _fade_poll_note(self) -> None:
+        self._poll_note_fade.stop()
+        self._poll_note_fade.setStartValue(self._poll_note_effect.opacity())
+        self._poll_note_fade.start()
+
+    def _clear_poll_note(self, *args) -> None:
+        """Hide the note immediately (called on next edit and on fade finish)."""
+        self._poll_note_hold.stop()
+        self._poll_note_fade.stop()
+        self.poll_interval_note.clear()
+        self.poll_interval_note.hide()
+        self._poll_note_effect.setOpacity(0.0)
 
     def _on_refresh_token_clicked(self) -> None:
         if self._on_refresh_token:
