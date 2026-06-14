@@ -13,6 +13,8 @@ KEY_ALWAYS_ON_TOP = "window/always_on_top"
 KEY_AUTO_HIDE_TITLEBAR = "window/auto_hide_titlebar"
 KEY_QUIT_ON_CLOSE = "window/quit_on_close"
 KEY_MINI_POS = "window/mini_pos"
+KEY_COMPACT_POS = "window/compact_pos"
+KEY_VIEW_MODE = "window/view_mode"
 KEY_SHOW_MULTIPLE_SESSIONS = "sessions/show_multiple"
 KEY_SHOW_SUBAGENTS = "sessions/show_subagents"
 KEY_SHOW_TOKEN_USAGE = "tokens/show_usage"
@@ -97,6 +99,34 @@ def get_mini_pos() -> tuple[int, int] | None:
 
 def set_mini_pos(x: int, y: int) -> None:
     _settings().setValue(KEY_MINI_POS, f"{int(x)},{int(y)}")
+
+
+def get_compact_pos() -> tuple[int, int] | None:
+    """Last on-screen position of the compact (list) window, or None."""
+    v = _settings().value(KEY_COMPACT_POS, "")
+    if not v:
+        return None
+    try:
+        x, y = str(v).split(",")
+        return int(x), int(y)
+    except (ValueError, TypeError):
+        return None
+
+
+def set_compact_pos(x: int, y: int) -> None:
+    _settings().setValue(KEY_COMPACT_POS, f"{int(x)},{int(y)}")
+
+
+def get_view_mode() -> str:
+    """Last-used view mode: 'full', 'compact', or 'mini' (defaults to full)."""
+    v = _settings().value(KEY_VIEW_MODE, "full")
+    v = str(v).lower()
+    return v if v in ("full", "compact", "mini") else "full"
+
+
+def set_view_mode(mode: str) -> None:
+    if mode in ("full", "compact", "mini"):
+        _settings().setValue(KEY_VIEW_MODE, mode)
 
 
 def get_show_multiple_sessions() -> bool:

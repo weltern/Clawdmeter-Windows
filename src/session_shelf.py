@@ -19,23 +19,31 @@ from PySide6.QtCore import (
     Property,
     QEasingCurve,
     QParallelAnimationGroup,
+    QPoint,
     QPropertyAnimation,
     QSize,
     Qt,
+    Signal,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLayout,
+    QMenu,
+    QProgressBar,
     QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
+from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter
 
+import winutil
 from mood import GROUP_ANIMS
-from sprite_player import SpritePlayer
+from sprite_player import SpritePlayer, assets_root
+from uiutil import format_minutes, heat
 from transcript import (
     ACTIVITY_ANIMS,
     ACTIVITY_COLORS,
@@ -157,11 +165,12 @@ class ScrollingLabel(QWidget):
 
     def __init__(self, parent=None, *, px: int = 13, bold: bool = True,
                  color: str = _TEXT, letter_spacing: float = 0.5,
-                 max_w: int = _LABEL_MIN_W) -> None:
+                 max_w: int = _LABEL_MIN_W, align=Qt.AlignHCenter) -> None:
         super().__init__(parent)
         self._full = ""
         self._offset = 0
         self._hovering = False
+        self._align = align           # how non-scrolling text sits (centre vs left)
         self._explicit_tt: str | None = None   # None = auto (overflow-based)
         self._font = QFont()
         self._font.setPixelSize(px)
@@ -278,13 +287,13 @@ class ScrollingLabel(QWidget):
         p.setPen(self._color)
         rect = self.rect()
         if not self._overflows():
-            p.drawText(rect, Qt.AlignHCenter | Qt.AlignVCenter, self._full)
+            p.drawText(rect, self._align | Qt.AlignVCenter, self._full)
         elif self._hovering:
             y = self._fm.ascent() + (self.height() - self._fm.height()) // 2
             p.drawText(-self._offset, y, self._full)
         else:
             elided = self._fm.elidedText(self._full, Qt.ElideRight, self._avail())
-            p.drawText(rect, Qt.AlignHCenter | Qt.AlignVCenter, elided)
+            p.drawText(rect, self._align | Qt.AlignVCenter, elided)
         p.end()
 
 
@@ -824,3 +833,349 @@ class SessionShelf(QWidget):
         self._anims.clear()
         for tile in list(self._tiles.values()) + list(self._leaving.values()):
             tile.stop()
+
+
+# ---------------------------------------------------------------------------
+# Compact mode — a denser list view (one horizontal row per session) for when
+# you're running many sessions. Distinct from the shelf (vertical mascots) and
+# from mini (the tiny readout).
+# ---------------------------------------------------------------------------
+
+COMPACT_MASCOT = 38
+
+COMPACT_STYLESHEET = f"""
+QWidget#compactRoot {{ background: {_BG}; }}
+QWidget#compactTitleBar {{ background: #0b0e13; }}
+QLabel#compactTitle {{ font-size: 12px; font-weight: 700; color: {_TEXT};
+                       letter-spacing: 1.5px; }}
+QToolButton#compactBtn {{ background: transparent; color: #CE7D6B; border: none;
+                          font-size: 13px; padding: 2px 7px; }}
+QToolButton#compactBtn:hover {{ background: #1f2937; }}
+QWidget#compactRow:hover {{ background: #161b22; }}
+QLabel#compactBarLabel {{ font-size: 10px; font-weight: 600; color: {_MUTED};
+                          letter-spacing: 1px; }}
+QLabel#compactPctLbl {{ font-size: 11px; font-weight: 700; color: {_TEXT}; }}
+QLabel#compactReset {{ font-size: 10px; color: {_MUTED}; }}
+QLabel#compactRowTokens {{ font-size: 11px; font-weight: 700; color: {_MUTED}; }}
+QLabel#compactRowDot {{ font-size: 11px; }}
+QLabel#compactRowActivity {{ font-size: 10px; font-weight: 600; letter-spacing: 1px; }}
+QLabel#compactRowAgents {{ font-size: 10px; font-weight: 700; color: {_MUTED}; }}
+QProgressBar {{ background: #1f2937; border: 1px solid #374151; border-radius: 0px;
+                height: 8px; text-align: center; color: transparent; }}
+QProgressBar::chunk {{ background-color: #CE7D6B; }}
+QProgressBar[heat="warm"]::chunk {{ background-color: #B85C42; }}
+QProgressBar[heat="hot"]::chunk {{ background-color: #8B2E1A; }}
+QProgressBar[heat="over"]::chunk {{ background-color: #dc2626; }}
+QScrollArea#compactScroll {{ background: transparent; border: none; }}
+QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px 0; }}
+QScrollBar::handle:vertical {{ background: #374151; border-radius: 4px; min-height: 24px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+"""
+
+
+class CompactRow(QWidget):
+    """One session as a horizontal row: small mascot | title + tokens, then a
+    second line of ``● activity · target`` (or 'last active …' when idle)."""
+
+    _DOT = "●"
+
+    def __init__(self, session_id: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("compactRow")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self._sid = session_id
+        self._show_tokens = True
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(10, 5, 10, 5)
+        h.setSpacing(9)
+
+        self.sprite = SpritePlayer(size=COMPACT_MASCOT)
+        self._glow = QGraphicsDropShadowEffect(self)
+        self._glow.setBlurRadius(14)
+        self._glow.setOffset(0, 0)
+        self._glow.setColor(QColor(_IDLE_COLOR))
+        self.sprite.setGraphicsEffect(self._glow)
+        h.addWidget(self.sprite, 0, Qt.AlignVCenter)
+
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        col.setContentsMargins(0, 0, 0, 0)
+
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        self.title = ScrollingLabel(px=12, bold=True, color=_TEXT, max_w=230,
+                                    align=Qt.AlignLeft)
+        self.tokens = QLabel("", objectName="compactRowTokens")
+        self.tokens.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        top.addWidget(self.title, 1)
+        top.addWidget(self.tokens, 0)
+        col.addLayout(top)
+
+        bot = QHBoxLayout()
+        bot.setSpacing(5)
+        self.dot = QLabel(self._DOT, objectName="compactRowDot")
+        self.activity = QLabel("", objectName="compactRowActivity")
+        self.sep = QLabel("·", objectName="compactRowActivity")
+        self.target = ScrollingLabel(px=10, bold=False, color=_MUTED,
+                                     letter_spacing=0, max_w=170, align=Qt.AlignLeft)
+        self.agents = QLabel("", objectName="compactRowAgents")
+        bot.addWidget(self.dot, 0)
+        bot.addWidget(self.activity, 0)
+        bot.addWidget(self.sep, 0)
+        bot.addWidget(self.target, 1)
+        bot.addWidget(self.agents, 0)
+        col.addLayout(bot)
+
+        h.addLayout(col, 1)
+
+    def set_show_tokens(self, on: bool) -> None:
+        self._show_tokens = bool(on)
+
+    def update_state(self, state: TranscriptState) -> None:
+        self.title.setText(state.project_name or "unknown")
+        idle = state.is_stale or state.activity == Activity.IDLE
+        color = ACTIVITY_COLORS.get(state.activity, _IDLE_COLOR)
+        if idle:
+            self._glow.setColor(QColor(_IDLE_COLOR))
+            self._glow.setBlurRadius(6)
+            self.dot.setStyleSheet(f"color: {_IDLE_COLOR};")
+            self.activity.setText(ACTIVITY_LABELS[Activity.IDLE])
+            self.activity.setStyleSheet(f"color: {_IDLE_COLOR};")
+            self.sep.hide()
+            self.target.setText(_ago_text(state.last_event_ts),
+                                tooltip=_abs_time_text(state.last_event_ts))
+            self.sprite.set_anims(f"crow:{self._sid}:idle", _IDLE_ANIMS)
+        else:
+            self._glow.setColor(QColor(color))
+            self._glow.setBlurRadius(14)
+            self.dot.setStyleSheet(f"color: {color};")
+            self.activity.setText(ACTIVITY_LABELS.get(state.activity, ""))
+            self.activity.setStyleSheet(f"color: {color};")
+            tgt = state.target or state.tool_name or ""
+            self.sep.setVisible(bool(tgt))
+            self.target.setText(tgt)
+            anims = ACTIVITY_ANIMS.get(state.activity) or _IDLE_ANIMS
+            self.sprite.set_anims(f"crow:{self._sid}:{state.activity.value}", anims)
+
+        tk = getattr(state, "tokens", None)
+        if self._show_tokens and tk is not None and tk.work > 0:
+            self.tokens.setText(fmt_tokens(tk.work))
+            self.sprite.setToolTip(_token_tooltip(tk))
+        else:
+            self.tokens.setText("")
+            self.sprite.setToolTip("")
+
+    def update_agents(self, agents) -> None:
+        n = len(agents)
+        self.agents.setText(f"+{n}" if n else "")
+        self.agents.setToolTip(
+            f"{n} subagent{'s' if n != 1 else ''}" if n else "")
+
+    def stop(self) -> None:
+        self.sprite.stop()
+
+
+class CompactView(QWidget):
+    """Compact mode window: slim usage bars over a scrollable list of session
+    rows. Frameless, draggable by its title bar, always-on-top, no taskbar."""
+
+    cycle_requested = Signal()   # title-bar button -> next mode
+    grow_requested = Signal()    # double-click title / menu -> full view
+    hide_requested = Signal()    # close button -> hide to tray
+    quit_requested = Signal()
+
+    WIDTH = 400
+    MAX_ROWS = 6
+    ROW_H = 50
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.setObjectName("compactRoot")
+        self.setWindowTitle("Clawdmeter")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(COMPACT_STYLESHEET)
+        self.setWindowFlags(
+            Qt.Window | Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+        )
+        icon_path = assets_root() / "icon.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+        self.setFixedWidth(self.WIDTH)
+        self._press_pos: QPoint | None = None
+        self._rows: dict[str, CompactRow] = {}
+        self._show_tokens = True
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # title bar
+        self._title_bar = QWidget(objectName="compactTitleBar")
+        trow = QHBoxLayout(self._title_bar)
+        trow.setContentsMargins(10, 6, 6, 6)
+        trow.setSpacing(6)
+        icon_lbl = QLabel()
+        if icon_path.exists():
+            icon_lbl.setPixmap(QIcon(str(icon_path)).pixmap(18, 18))
+        trow.addWidget(icon_lbl)
+        trow.addWidget(QLabel("CLAWDMETER", objectName="compactTitle"))
+        trow.addStretch(1)
+        self.cycle_btn = self._tbtn("⤢", "Switch view")   # ⤢
+        self.cycle_btn.clicked.connect(self.cycle_requested.emit)
+        self.close_btn = self._tbtn("✕", "Hide to tray")  # ✕
+        self.close_btn.clicked.connect(self.hide_requested.emit)
+        trow.addWidget(self.cycle_btn)
+        trow.addWidget(self.close_btn)
+        outer.addWidget(self._title_bar)
+
+        # slim bars
+        bars = QWidget()
+        bcol = QVBoxLayout(bars)
+        bcol.setContentsMargins(12, 6, 12, 8)
+        bcol.setSpacing(3)
+        self.s_label, self.s_pct, self.s_bar, self.s_reset = self._slim_bar(bcol)
+        bcol.addSpacing(4)
+        self.w_label, self.w_pct, self.w_bar, self.w_reset = self._slim_bar(bcol)
+        outer.addWidget(bars)
+
+        # scrollable session list
+        self._scroll = QScrollArea(objectName="compactScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._list_widget = QWidget(objectName="compactList")
+        self._list_widget.setStyleSheet("QWidget#compactList { background: transparent; }")
+        self._list = QVBoxLayout(self._list_widget)
+        self._list.setContentsMargins(0, 0, 0, 4)
+        self._list.setSpacing(0)
+        self._list.addStretch(1)
+        self._scroll.setWidget(self._list_widget)
+        outer.addWidget(self._scroll, 1)
+
+        menu = QMenu(self)
+        act_full = QAction("Full view", self)
+        act_full.triggered.connect(self.grow_requested.emit)
+        act_quit = QAction("Quit", self)
+        act_quit.triggered.connect(self.quit_requested.emit)
+        menu.addAction(act_full)
+        menu.addSeparator()
+        menu.addAction(act_quit)
+        self._menu = menu
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(
+            lambda p: self._menu.exec(self.mapToGlobal(p)))
+
+    def _tbtn(self, glyph: str, tip: str) -> QToolButton:
+        b = QToolButton()
+        b.setObjectName("compactBtn")
+        b.setText(glyph)
+        b.setToolTip(tip)
+        b.setCursor(Qt.PointingHandCursor)
+        return b
+
+    def _slim_bar(self, parent_col: QVBoxLayout):
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        label = QLabel("", objectName="compactBarLabel")
+        pct = QLabel("-", objectName="compactPctLbl")
+        pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        head.addWidget(label)
+        head.addStretch(1)
+        head.addWidget(pct)
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setTextVisible(False)
+        reset = QLabel("", objectName="compactReset")
+        parent_col.addLayout(head)
+        parent_col.addWidget(bar)
+        parent_col.addWidget(reset)
+        return label, pct, bar, reset
+
+    @staticmethod
+    def _apply_bar(label, pct, bar, reset, title, value, hheat,
+                   reset_min, tokens, show_tokens) -> None:
+        label.setText(title)
+        pct.setText(f"{value}%")
+        bar.setValue(value)
+        bar.setProperty("heat", hheat)
+        bar.style().unpolish(bar)
+        bar.style().polish(bar)
+        line = f"resets in {format_minutes(reset_min)}"
+        if show_tokens:
+            line += f" · {fmt_tokens(tokens)}"
+        reset.setText(line)
+
+    def update_usage(self, s, sr: int, wr: int, ovr: int, show_tokens: bool) -> None:
+        self._apply_bar(self.s_label, self.s_pct, self.s_bar, self.s_reset,
+                        "SESSION 5h", s.session_pct, heat(s.session_pct), sr,
+                        s.tokens_5h, show_tokens)
+        if getattr(s, "overage_pct", 0) > 0:
+            self._apply_bar(self.w_label, self.w_pct, self.w_bar, self.w_reset,
+                            "OVERAGE", s.overage_pct, "over", ovr, 0, False)
+        else:
+            self._apply_bar(self.w_label, self.w_pct, self.w_bar, self.w_reset,
+                            "WEEKLY 7d", s.weekly_pct, heat(s.weekly_pct), wr,
+                            s.tokens_7d, show_tokens)
+
+    def set_show_tokens(self, on: bool) -> None:
+        self._show_tokens = bool(on)
+        for row in self._rows.values():
+            row.set_show_tokens(on)
+
+    def set_sessions(self, states) -> None:
+        incoming = {s.session_id: s for s in states if s.session_id}
+        for sid in list(self._rows):
+            if sid not in incoming:
+                row = self._rows.pop(sid)
+                self._list.removeWidget(row)
+                row.stop()
+                row.deleteLater()
+        # Re-add all live rows in the incoming (newest-first) order.
+        for row in self._rows.values():
+            self._list.removeWidget(row)
+        for index, (sid, st) in enumerate(incoming.items()):
+            row = self._rows.get(sid)
+            if row is None:
+                row = CompactRow(sid, parent=self._list_widget)
+                row.set_show_tokens(self._show_tokens)
+                self._rows[sid] = row
+            self._list.insertWidget(index, row)
+            row.show()
+            row.update_state(st)
+            row.update_agents(getattr(st, "agents", []) or [])
+        self._relayout()
+
+    def _relayout(self) -> None:
+        visible = min(max(1, len(self._rows)), self.MAX_ROWS)
+        self._scroll.setFixedHeight(visible * self.ROW_H + 6)
+        self.adjustSize()
+
+    def stop_all(self) -> None:
+        for row in self._rows.values():
+            row.stop()
+
+    # --- frameless drag + grow-on-double-click (title bar only) -------------
+    def _in_title(self, e) -> bool:
+        return self._title_bar.geometry().contains(e.position().toPoint())
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton and self._in_title(e):
+            self._press_pos = e.globalPosition().toPoint()
+            e.accept()
+
+    def mouseMoveEvent(self, e) -> None:
+        if (e.buttons() & Qt.LeftButton) and self._press_pos is not None:
+            moved = (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
+            if moved >= QApplication.startDragDistance():
+                self._press_pos = None
+                winutil.start_native_move(int(self.winId()))
+            e.accept()
+
+    def mouseReleaseEvent(self, e) -> None:
+        self._press_pos = None
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton and self._in_title(e):
+            self.grow_requested.emit()

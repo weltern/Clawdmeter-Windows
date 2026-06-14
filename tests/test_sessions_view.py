@@ -85,6 +85,25 @@ def test_autofit_kept_for_non_user_resizes():
     assert _should_release_autofit(True, False, True, False, True) is False
 
 
+def test_view_mode_round_trips_and_clamps(tmp_path):
+    import app_settings
+    from PySide6.QtCore import QSettings
+
+    store = QSettings(str(tmp_path / "vm.ini"), QSettings.IniFormat)
+    orig = app_settings._settings
+    app_settings._settings = lambda: store
+    try:
+        assert app_settings.get_view_mode() == "full"        # default
+        app_settings.set_view_mode("compact")
+        assert app_settings.get_view_mode() == "compact"
+        app_settings.set_view_mode("mini")
+        assert app_settings.get_view_mode() == "mini"
+        app_settings.set_view_mode("bogus")                  # invalid -> ignored
+        assert app_settings.get_view_mode() == "mini"
+    finally:
+        app_settings._settings = orig
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
