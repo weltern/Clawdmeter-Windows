@@ -707,8 +707,11 @@ class TitleBar(QWidget):
         self._press_pos = None
 
     def mouseDoubleClickEvent(self, e) -> None:
+        # Double-click snaps the window back to the snug auto-fit height (undoes
+        # a manual height resize). Maximize stays on the title-bar [ ] button.
         if e.button() == Qt.LeftButton:
-            self._toggle_max()
+            self._win.reset_to_fit()
+            e.accept()
 
 
 class SettingsPanel(QWidget):
@@ -1985,6 +1988,14 @@ class Dashboard(QMainWindow):
 
     def _on_fit_anim_finished(self) -> None:
         self._fitting = False
+
+    def reset_to_fit(self) -> None:
+        """Re-enable auto-fit and snap back to the snug content height — the
+        title-bar double-click 'reset' after a manual height resize."""
+        if self.isMaximized():
+            self.showNormal()
+        self._auto_fit_height = True
+        self._fit_window_height()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
