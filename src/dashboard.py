@@ -122,15 +122,8 @@ def _should_release_autofit(height_changed, fitting, armed, max_involved, titleb
     )
 
 
-# View modes, largest -> smallest. Pure helper so the grow order is
-# unit-testable without constructing a Dashboard.
+# Valid view modes, largest -> smallest.
 VIEW_ORDER = ("full", "compact", "mini")
-
-
-def grow_view_mode(mode: str) -> str:
-    """One step toward full (mini -> compact -> full; full stays full)."""
-    i = VIEW_ORDER.index(mode) if mode in VIEW_ORDER else 0
-    return VIEW_ORDER[max(0, i - 1)]
 
 
 STYLESHEET = """
@@ -292,9 +285,8 @@ class MiniWidget(QWidget):
     """Tiny always-on-top floating readout: mini mascot + session/weekly bars.
 
     A frameless, draggable tool window with no taskbar entry. Double-click (or
-    right-click -> Grow) steps up to the compact view; cycle/grow again for full.
-    The owning Dashboard feeds it usage values and sprite animations so it
-    mirrors the main window.
+    right-click -> Expand) returns to the full dashboard. The owning Dashboard
+    feeds it usage values and sprite animations so it mirrors the main window.
     """
 
     expand_requested = Signal()
@@ -337,7 +329,7 @@ class MiniWidget(QWidget):
         row.addLayout(stack, 1)
 
         menu = QMenu(self)
-        act_expand = QAction("Grow", self)
+        act_expand = QAction("Expand", self)
         act_expand.triggered.connect(self.expand_requested.emit)
         act_quit = QAction("Quit", self)
         act_quit.triggered.connect(self.quit_requested.emit)
@@ -349,7 +341,7 @@ class MiniWidget(QWidget):
         self.customContextMenuRequested.connect(
             lambda pos: self._menu.exec(self.mapToGlobal(pos))
         )
-        self.setToolTip("Session (top) · Weekly (bottom)\nDouble-click to grow · drag to move")
+        self.setToolTip("Session (top) · Weekly (bottom)\nDouble-click to expand · drag to move")
 
     def _row(self, parent_layout: QVBoxLayout, pct_object: str):
         line = QHBoxLayout()
@@ -1551,13 +1543,15 @@ class Dashboard(QMainWindow):
         # Mini mode: a tiny always-on-top floating widget mirroring usage.
         self._view_mode = "full"
         self.mini = MiniWidget()
-        self.mini.expand_requested.connect(self._grow_view)   # mini -> compact
+        # Double-click / Expand on mini goes straight back to the full view.
+        self.mini.expand_requested.connect(lambda: self._set_view_mode("full"))
         self.mini.quit_requested.connect(self._real_quit)
 
         # Compact mode: a denser list view (one row per session).
         self.compact_view = CompactView()
-        self.compact_view.set_mode_requested.connect(self._set_view_mode)  # segments
-        self.compact_view.grow_requested.connect(self._grow_view)     # dbl-click -> full
+        self.compact_view.set_mode_requested.connect(self._set_view_mode)
+        # Double-click the compact title bar also expands to full.
+        self.compact_view.grow_requested.connect(lambda: self._set_view_mode("full"))
         self.compact_view.hide_requested.connect(self._stash_compact)  # to tray
         self.compact_view.quit_requested.connect(self._real_quit)
 
@@ -2354,9 +2348,6 @@ class Dashboard(QMainWindow):
     def _toggle_full_compact(self) -> None:
         """The square-caret toggle: full <-> compact."""
         self._set_view_mode("full" if self._view_mode == "compact" else "compact")
-
-    def _grow_view(self) -> None:
-        self._set_view_mode(grow_view_mode(getattr(self, "_view_mode", "full")))
 
     def _restore_view(self) -> None:
         """Tray click / 'Show' / pop-to-front: re-show the last-used mode without

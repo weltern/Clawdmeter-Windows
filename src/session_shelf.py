@@ -303,7 +303,7 @@ class ScrollingLabel(QWidget):
 # past 100% with a distinct overage colour).
 _BAR_TRACK = "#1f2937"
 _BAR_BORDER = "#374151"
-_BAR_OVERAGE = "#C1121F"   # deep fire-truck red — the overage overflow
+_BAR_OVERAGE = "#A50F1A"   # deep fire-truck red — the overage overflow
 _BAR_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
 
 
@@ -1115,6 +1115,12 @@ class CompactView(QWidget):
         self.caret_btn.clicked.connect(lambda: self.set_mode_requested.emit("full"))
         trow.addWidget(self.caret_btn)
         self.mini_btn = self._tbtn(chr(0xE73F), "Mini view")  # BackToWindow
+        # The glyph is a Segoe icon-font codepoint; the compact stylesheet
+        # doesn't set that family (unlike the full title bar), so apply it here
+        # or it falls back to a default font and renders as tofu.
+        _iconf = self.mini_btn.font()
+        _iconf.setFamilies(["Segoe Fluent Icons", "Segoe MDL2 Assets"])
+        self.mini_btn.setFont(_iconf)
         self.mini_btn.clicked.connect(lambda: self.set_mode_requested.emit("mini"))
         trow.addWidget(self.mini_btn)
         self.close_btn = self._tbtn("✕", "Hide to tray")  # ✕
