@@ -11,9 +11,10 @@ Standalone Windows desktop dashboard for Claude Code usage.
 
 - **Session (5h) %** with reset countdown
 - **Weekly (7d) %** with reset countdown
-- A **session shelf** — one Clawd mascot per active Claude Code session, each with
-  its project name and live activity (plus small child mascots for any subagents
-  it spins up), falling back to a usage-rate mood when nothing's running
+- A **session shelf** — one Clawd mascot per active Claude Code session, each
+  labeled with its session title and live activity (plus small child mascots for
+  any subagents it spins up), falling back to a usage-rate mood when nothing's
+  running
 - A system-tray icon whose fill arc tracks session % — **hover it for a quick
   session & weekly readout**
 
@@ -45,9 +46,14 @@ tokens (the same 4-group logic as the original firmware).
 ## Multiple sessions
 
 Run more than one Claude Code session at once and each gets its own mascot on the
-**session shelf** — labeled with its project and live activity, animating
-independently. The session/weekly usage bars stay account-wide (a single number
-from the API), shown once beneath the shelf.
+**session shelf** — labeled with its **session title** (the one Claude Code shows
+for the conversation, or a custom title you've set, falling back to the project
+folder name) and its live activity, animating independently. Long titles are
+shortened to fit, with the full title on hover. The session/weekly usage bars
+stay account-wide (a single number from the API), shown once beneath the shelf.
+
+> The screenshots below predate title-based labels and still show project-folder
+> names; the behavior is otherwise current.
 
 ![Clawdmeter-Windows session shelf — one mascot per active Claude Code session, each with its project name and activity](assets/Screenshot-shelf.png)
 
