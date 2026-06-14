@@ -15,6 +15,7 @@ KEY_QUIT_ON_CLOSE = "window/quit_on_close"
 KEY_COMPACT_POS = "window/compact_pos"
 KEY_SHOW_MULTIPLE_SESSIONS = "sessions/show_multiple"
 KEY_SHOW_SUBAGENTS = "sessions/show_subagents"
+KEY_SHOW_TOKEN_USAGE = "tokens/show_usage"
 KEY_AUTO_REFRESH = "token/auto_refresh"
 KEY_POLL_INTERVAL = "poll/interval_seconds"
 KEY_RESET_NOTIFY = "notify/reset_enabled"
@@ -118,6 +119,17 @@ def get_show_subagents() -> bool:
 
 def set_show_subagents(on: bool) -> None:
     _settings().setValue(KEY_SHOW_SUBAGENTS, bool(on))
+
+
+def get_show_token_usage() -> bool:
+    v = _settings().value(KEY_SHOW_TOKEN_USAGE, True)  # on by default
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_show_token_usage(on: bool) -> None:
+    _settings().setValue(KEY_SHOW_TOKEN_USAGE, bool(on))
 
 
 def get_auto_refresh() -> bool:

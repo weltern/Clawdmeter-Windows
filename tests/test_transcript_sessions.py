@@ -32,6 +32,7 @@ from transcript import (  # noqa: E402
     is_agent_transcript,
     is_subagent_path,
     parent_transcript_for_subagent,
+    fmt_tokens,
     parse_iso_ts,
     project_name_from_cwd,
     select_active,
@@ -96,6 +97,15 @@ def test_session_tail_accumulates_tokens_across_turns():
     })
     assert snap.tokens.work == 13
     assert tail.tokens.work == 113
+
+
+def test_fmt_tokens_humanizes():
+    assert fmt_tokens(0) == "0"
+    assert fmt_tokens(940) == "940"
+    assert fmt_tokens(8_100) == "8.1K"
+    assert fmt_tokens(914_000) == "914K"      # >=100 drops the decimal
+    assert fmt_tokens(19_400_000) == "19.4M"
+    assert fmt_tokens(2_170_000_000) == "2.2B"
 
 
 def test_sum_token_windows_respects_5h_and_7d():

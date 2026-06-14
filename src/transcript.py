@@ -308,6 +308,18 @@ def session_label(
     return project_name_from_cwd(cwd, transcript_path)
 
 
+def fmt_tokens(n: int) -> str:
+    """Humanize a token count for display: 0, 940, 8.1K, 19.4M, 2.2B."""
+    n = int(n)
+    if n < 1000:
+        return str(n)
+    for div, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if n >= div:
+            val = n / div
+            return f"{val:.1f}{suffix}" if val < 100 else f"{val:.0f}{suffix}"
+    return str(n)
+
+
 def sum_token_windows(events, now: float) -> tuple[int, int]:
     """Sum 'work' tokens (input+output) over the 5h and 7d windows ending at
     `now`. `events` is any iterable of ``(timestamp_epoch, work_tokens)``.

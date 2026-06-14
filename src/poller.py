@@ -22,6 +22,7 @@ from PySide6.QtCore import QThread, Signal
 
 import app_settings
 import token_refresh
+from transcript import account_window_tokens
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_HEADERS_TEMPLATE = {
@@ -57,6 +58,10 @@ class UsageSample:
     # reset clock (longer than weekly), so it's tracked separately.
     overage_pct: int = 0
     overage_reset_minutes: int = 0
+    # Account-wide input+output token totals over the 5h / 7d windows, summed
+    # from the local transcripts (0 when the token-usage display is off).
+    tokens_5h: int = 0
+    tokens_7d: int = 0
 
 
 def credentials_path() -> Path:
@@ -145,7 +150,15 @@ def _poll_once(token: str) -> UsageSample:
             resp = http.post(API_URL, headers=headers, json=API_BODY)
     except httpx.HTTPError as exc:
         return UsageSample(0, 0, 0, 0, "error", False, str(exc), now)
-    return sample_from_headers(resp.headers, now)
+    sample = sample_from_headers(resp.headers, now)
+    # Sum the local transcripts' input+output over the 5h/7d windows — only when
+    # the token display is on, so we don't scan files for nothing.
+    if app_settings.get_show_token_usage():
+        try:
+            sample.tokens_5h, sample.tokens_7d = account_window_tokens(now)
+        except OSError:
+            pass
+    return sample
 
 
 class UsagePoller(QThread):

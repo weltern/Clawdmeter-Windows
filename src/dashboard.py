@@ -74,8 +74,10 @@ from transcript import (
     ACTIVITY_LABELS,
     Activity as TranscriptActivity,
     AgentState as TranscriptAgentState,
+    TokenUsage,
     TranscriptState,
     TranscriptWatcher,
+    fmt_tokens,
 )
 
 
@@ -728,7 +730,8 @@ class SettingsPanel(QWidget):
 
     def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested,
                  on_refresh_token=None, on_auto_refresh_changed=None,
-                 on_poll_interval_changed=None, on_sessions_view_changed=None) -> None:
+                 on_poll_interval_changed=None, on_sessions_view_changed=None,
+                 on_token_view_changed=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -740,6 +743,7 @@ class SettingsPanel(QWidget):
         self._on_auto_refresh_changed = on_auto_refresh_changed
         self._on_poll_interval_changed = on_poll_interval_changed
         self._on_sessions_view_changed = on_sessions_view_changed
+        self._on_token_view_changed = on_token_view_changed
         self.hide()
 
         outer = QVBoxLayout(self)
@@ -845,6 +849,21 @@ class SettingsPanel(QWidget):
         self.subagents_check.setChecked(app_settings.get_show_subagents())
         self.subagents_check.toggled.connect(self._on_subagents_toggled)
         layout.addWidget(self.subagents_check)
+
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("TOKEN USAGE", objectName="sectionLabel"))
+        tokens_hint = QLabel(
+            "Show how many tokens you've used — input+output for the 5h/7d "
+            "windows beside the bars, with a full per-session breakdown when you "
+            "hover a mascot. Read from your local transcripts, not the API.",
+            objectName="sectionHint",
+        )
+        tokens_hint.setWordWrap(True)
+        layout.addWidget(tokens_hint)
+        self.token_usage_check = QCheckBox("Show token usage")
+        self.token_usage_check.setChecked(app_settings.get_show_token_usage())
+        self.token_usage_check.toggled.connect(self._on_token_usage_toggled)
+        layout.addWidget(self.token_usage_check)
 
         layout.addSpacing(10)
         layout.addWidget(QLabel("USAGE POLLING", objectName="sectionLabel"))
@@ -1147,6 +1166,11 @@ class SettingsPanel(QWidget):
         if self._on_sessions_view_changed:
             self._on_sessions_view_changed()
 
+    def _on_token_usage_toggled(self, checked: bool) -> None:
+        app_settings.set_show_token_usage(checked)
+        if self._on_token_view_changed:
+            self._on_token_view_changed()
+
     def _on_notify_toggled(self, checked: bool) -> None:
         app_settings.set_reset_notify(checked)
         self._sync_notify_subtoggles()
@@ -1414,6 +1438,7 @@ class Dashboard(QMainWindow):
             on_auto_refresh_changed=self._set_auto_refresh,
             on_poll_interval_changed=self._set_poll_interval,
             on_sessions_view_changed=self._apply_session_view,
+            on_token_view_changed=self._apply_token_view,
         )
         self.settings_panel.place_closed()
         content.installEventFilter(self)
@@ -1726,6 +1751,8 @@ class Dashboard(QMainWindow):
                 timestamp=time.time(),
                 overage_pct=overage,
                 overage_reset_minutes=12 * 24 * 60,
+                tokens_5h=914_000,
+                tokens_7d=19_400_000,
             ))
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
@@ -1853,6 +1880,14 @@ class Dashboard(QMainWindow):
                     transcript_path=None, last_event_ts=now, session_id=sid, cwd=None,
                     project_name=project, is_stale=False,
                 ))
+        # Give each mock session a distinct token tally so the mascot-hover
+        # breakdown shows realistic numbers.
+        for i, st in enumerate(states):
+            base = i + 1
+            st.tokens = TokenUsage(
+                input=base * 220_000, output=base * 410_000,
+                cache_read=base * 9_800_000, cache_write=base * 180_000,
+            )
         self._on_sessions(states)
 
     def _on_sample(self, s: UsageSample) -> None:
@@ -1871,7 +1906,6 @@ class Dashboard(QMainWindow):
         self.session_bar.setProperty("heat", _heat(s.session_pct))
         self.session_bar.style().unpolish(self.session_bar)
         self.session_bar.style().polish(self.session_bar)
-        self.session_reset.setText(f"resets in {_format_minutes(s.session_reset_minutes)}")
 
         if s.overage_pct > 0:
             # Past the weekly cap into paid overage: the weekly bar turns red
@@ -1881,17 +1915,17 @@ class Dashboard(QMainWindow):
             self.weekly_pct.setText(f"{s.overage_pct}%")
             self.weekly_bar.setValue(s.overage_pct)
             self.weekly_bar.setProperty("heat", "over")
-            self.weekly_reset.setText(
-                f"resets in {_format_minutes(s.overage_reset_minutes)}")
         else:
             self.weekly_title.setText("WEEKLY (7d)")
             self.weekly_pct.setText(f"{s.weekly_pct}%")
             self.weekly_bar.setValue(s.weekly_pct)
             self.weekly_bar.setProperty("heat", _heat(s.weekly_pct))
-            self.weekly_reset.setText(
-                f"resets in {_format_minutes(s.weekly_reset_minutes)}")
         self.weekly_bar.style().unpolish(self.weekly_bar)
         self.weekly_bar.style().polish(self.weekly_bar)
+
+        self._refresh_reset_lines(
+            s, s.session_reset_minutes, s.weekly_reset_minutes,
+            s.overage_reset_minutes)
 
         self._sync_compact(s)
 
@@ -1976,6 +2010,12 @@ class Dashboard(QMainWindow):
             f"Session {session_pct}% (resets {_format_minutes(session_reset)})\n"
             f"Weekly {weekly_pct}% (resets {_format_minutes(weekly_reset)})"
         )
+        s = self._last_sample
+        if s is not None and app_settings.get_show_token_usage():
+            text += (
+                f"\nTokens {fmt_tokens(s.tokens_5h)} (5h) · "
+                f"{fmt_tokens(s.tokens_7d)} (7d)"
+            )
         if text != self._last_tooltip:
             self._last_tooltip = text
             self._tray.setToolTip(text)
@@ -2083,6 +2123,24 @@ class Dashboard(QMainWindow):
         # show it (and shrinks back when it clears) with no dead space.
         self._fit_window_height()
 
+    def _reset_line(self, minutes: int, tokens: int) -> str:
+        line = f"resets in {_format_minutes(minutes)}"
+        if app_settings.get_show_token_usage():
+            line += f" · {fmt_tokens(tokens)}"
+        return line
+
+    def _refresh_reset_lines(self, s: UsageSample, sr: int, wr: int, ovr: int) -> None:
+        """Render the session/weekly reset lines (overage-aware) with the
+        per-window token total appended when the token display is on. Shared by
+        the poll handler and the 1s countdown so they never disagree (and so the
+        countdown can't clobber the overage line)."""
+        self.session_reset.setText(self._reset_line(sr, s.tokens_5h))
+        if s.overage_pct > 0:
+            # The overage line is about the overage window — no 7d token figure.
+            self.weekly_reset.setText(f"resets in {_format_minutes(ovr)}")
+        else:
+            self.weekly_reset.setText(self._reset_line(wr, s.tokens_7d))
+
     def _tick_countdown(self) -> None:
         s = self._last_sample
         if not s or not s.ok:
@@ -2090,8 +2148,8 @@ class Dashboard(QMainWindow):
         elapsed_min = int((time.time() - s.timestamp) // 60)
         sr = max(0, s.session_reset_minutes - elapsed_min)
         wr = max(0, s.weekly_reset_minutes - elapsed_min)
-        self.session_reset.setText(f"resets in {_format_minutes(sr)}")
-        self.weekly_reset.setText(f"resets in {_format_minutes(wr)}")
+        ovr = max(0, s.overage_reset_minutes - elapsed_min)
+        self._refresh_reset_lines(s, sr, wr, ovr)
         self.compact.set_resets(sr, wr)
         self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
 
@@ -2128,6 +2186,7 @@ class Dashboard(QMainWindow):
             self.shelf.show()
             # The "ACTIVE SESSIONS — N" count is only meaningful in multi mode.
             self.shelf.set_header_visible(app_settings.get_show_multiple_sessions())
+            self.shelf.set_show_tokens(app_settings.get_show_token_usage())
             self.shelf.set_sessions(states)
             # The compact widget stays single-mascot for now (full multi-session
             # compact is Variant D), so it follows the focused session.
@@ -2147,6 +2206,20 @@ class Dashboard(QMainWindow):
 
         # Resize the window to hug the new content (no dead space below the bars).
         self._fit_window_height()
+
+    def _apply_token_view(self) -> None:
+        """Token-usage display toggled in Settings: re-render the per-bar token
+        figures + tray and refresh the shelf's hover breakdown immediately."""
+        s = self._last_sample
+        if s is not None and s.ok:
+            elapsed_min = int((time.time() - s.timestamp) // 60)
+            sr = max(0, s.session_reset_minutes - elapsed_min)
+            wr = max(0, s.weekly_reset_minutes - elapsed_min)
+            ovr = max(0, s.overage_reset_minutes - elapsed_min)
+            self._refresh_reset_lines(s, sr, wr, ovr)
+            self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
+        # Re-render the shelf so mascot-hover tooltips appear/disappear at once.
+        self._apply_session_view()
 
     def _drive_compact_from(self, state: TranscriptState) -> None:
         """Mirror one session's activity on the compact mascot only — the hero

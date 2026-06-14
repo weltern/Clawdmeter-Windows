@@ -43,6 +43,7 @@ from transcript import (
     Activity,
     AgentState,
     TranscriptState,
+    fmt_tokens,
 )
 
 
@@ -108,6 +109,19 @@ def _abs_time_text(last_event_ts: float | None) -> str:
         return ""
     return "Last active " + datetime.fromtimestamp(last_event_ts).strftime(
         "%a %b %d, %I:%M %p"
+    )
+
+
+def _token_tooltip(t) -> str:
+    """Per-session token breakdown shown when hovering the mascot. Headline is
+    'work' (input+output); the cache buckets are listed separately so the big
+    cache-read figure is visible but doesn't distort the headline."""
+    return (
+        f"This session — {fmt_tokens(t.work)} tokens (input + output)\n"
+        f"  input  {fmt_tokens(t.input)}\n"
+        f"  output {fmt_tokens(t.output)}\n"
+        f"  cache  {fmt_tokens(t.cache_read + t.cache_write)} "
+        f"(read {fmt_tokens(t.cache_read)} + write {fmt_tokens(t.cache_write)})"
     )
 
 
@@ -306,6 +320,7 @@ class SessionTile(QWidget):
         self.setObjectName("sessionTile")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self._session_id = session_id
+        self._show_tokens = True   # mascot-hover token breakdown (gated by Settings)
 
         col = QVBoxLayout(self)
         # Side margins double as the inter-tile gap (the row spacing is 0) so a
@@ -408,6 +423,14 @@ class SessionTile(QWidget):
         and the mascot animation (idle sessions get the calm sleep loop)."""
         self.project_label.setText(state.project_name or "unknown")
 
+        # Per-session token breakdown on mascot hover (when enabled and there's
+        # something to show).
+        tokens = getattr(state, "tokens", None)
+        if self._show_tokens and tokens is not None and tokens.total > 0:
+            self.sprite.setToolTip(_token_tooltip(tokens))
+        else:
+            self.sprite.setToolTip("")
+
         idle = state.is_stale or state.activity == Activity.IDLE
         color = ACTIVITY_COLORS.get(state.activity, _IDLE_COLOR)
 
@@ -503,6 +526,9 @@ class SessionShelf(QWidget):
         self.setStyleSheet(SHELF_STYLESHEET)
 
         self._tiles: dict[str, SessionTile] = {}
+        # Whether tiles expose the per-session token breakdown on mascot hover
+        # (mirrors the Settings "Show token usage" toggle; applied to new tiles).
+        self._show_tokens = True
         # Tiles mid-leave (animating out, still in the layout) keyed by id, and
         # the live animation groups keyed by tile so they aren't GC'd and so we
         # can tell when the shelf is "settled" (safe to reorder).
@@ -574,6 +600,7 @@ class SessionShelf(QWidget):
                 tile = self._resurrect(sid)  # a session that reappeared mid-leave
                 if tile is None:
                     tile = SessionTile(sid, sprite_size=size, parent=self._row_widget)
+                    tile._show_tokens = self._show_tokens
                     self._tiles[sid] = tile
                     self._insert_live(tile, index)
                     tile.set_sprite_size(size)
@@ -604,6 +631,13 @@ class SessionShelf(QWidget):
         """Show/hide the 'ACTIVE SESSIONS — N' header (hidden in single-mascot
         mode, where the count is meaningless)."""
         self.header.setVisible(on)
+
+    def set_show_tokens(self, on: bool) -> None:
+        """Enable/disable the per-session token breakdown on mascot hover. The
+        actual tooltip text is (re)applied by the next update_state."""
+        self._show_tokens = bool(on)
+        for tile in (*self._tiles.values(), *self._leaving.values()):
+            tile._show_tokens = self._show_tokens
 
     def _start_enter(self, tile: SessionTile) -> None:
         anim = tile.build_enter_anim()
