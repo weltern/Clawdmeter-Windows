@@ -1164,7 +1164,9 @@ class CompactView(QWidget):
                 f'{title} <span style="color:{_BAR_OVERAGE}; font-weight:700">'
                 f'OVERAGE</span>')
             pct.setText(f"{100 + overage}%")
-            bar.set_values(100, overage, heat(100))
+            # Base keeps the normal (coral) colour so the red overage reads as a
+            # distinct overflow after it, left-to-right.
+            bar.set_values(100, overage, "cool")
         else:
             label.setText(title)
             pct.setText(f"{value}%")

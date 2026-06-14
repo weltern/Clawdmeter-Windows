@@ -1944,7 +1944,9 @@ class Dashboard(QMainWindow):
                 'WEEKLY (7d) <span style="color:#dc2626; font-weight:700">'
                 'OVERAGE</span>')
             self.weekly_pct.setText(f"{100 + s.overage_pct}%")
-            self.weekly_bar.set_values(100, s.overage_pct, _heat(100))
+            # Base stays the normal (coral) fill so the red overage clearly
+            # continues after it, left-to-right — not a wall of red.
+            self.weekly_bar.set_values(100, s.overage_pct, "cool")
         else:
             self.weekly_title.setText("WEEKLY (7d)")
             self.weekly_pct.setText(f"{s.weekly_pct}%")
