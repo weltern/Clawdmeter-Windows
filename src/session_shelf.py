@@ -298,7 +298,7 @@ class ScrollingLabel(QWidget):
 # past 100% with a distinct overage colour).
 _BAR_TRACK = "#1f2937"
 _BAR_BORDER = "#374151"
-_BAR_OVERAGE = "#ed1c24"   # deep, vivid red — the overage overflow
+_BAR_OVERAGE = "#C1121F"   # deep fire-truck red — the overage overflow
 _BAR_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
 
 
