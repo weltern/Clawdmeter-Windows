@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -30,9 +32,13 @@ from transcript import (  # noqa: E402
     is_agent_transcript,
     is_subagent_path,
     parent_transcript_for_subagent,
+    fmt_tokens,
+    parse_iso_ts,
     project_name_from_cwd,
     select_active,
     session_label,
+    sum_token_windows,
+    TokenUsage,
 )
 
 
@@ -51,6 +57,141 @@ def test_project_name_from_cwd_falls_back_to_transcript_parent():
 def test_project_name_from_cwd_total_fallback():
     assert project_name_from_cwd(None, None) == "unknown"
     assert project_name_from_cwd("", None) == "unknown"
+
+
+def test_token_usage_work_excludes_cache():
+    tu = TokenUsage()
+    tu.add_usage({"input_tokens": 100, "output_tokens": 50,
+                  "cache_read_input_tokens": 9000,
+                  "cache_creation_input_tokens": 200})
+    tu.add_usage({"input_tokens": 10, "output_tokens": 5})  # a 2nd turn
+    assert (tu.input, tu.output, tu.cache_read, tu.cache_write) == (110, 55, 9000, 200)
+    assert tu.work == 165               # input + output only
+    assert tu.total == 165 + 9200       # everything
+
+
+def test_session_tail_accumulates_tokens_across_turns():
+    tail = _SessionTail(Path("/p/proj/sess.jsonl"))
+    # a text/thinking turn carries usage too and must count (not just tool turns)
+    tail._consume_event({
+        "type": "assistant", "timestamp": "2026-06-14T03:00:00Z",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": 3, "output_tokens": 7}},
+    })
+    tail._consume_event({
+        "type": "assistant", "timestamp": "2026-06-14T03:01:00Z",
+        "message": {"role": "assistant",
+                    "content": [{"type": "tool_use", "name": "Read"}],
+                    "usage": {"input_tokens": 2, "output_tokens": 1,
+                              "cache_read_input_tokens": 500}},
+    })
+    assert tail.tokens.work == 13        # (3+7) + (2+1)
+    assert tail.tokens.cache_read == 500
+    snap = tail._state(Activity.READING, "Read")
+    assert snap.tokens.work == 13
+    # the emitted snapshot is independent of further accumulation
+    tail._consume_event({
+        "type": "assistant", "timestamp": "2026-06-14T03:02:00Z",
+        "message": {"role": "assistant", "content": [{"type": "text"}],
+                    "usage": {"input_tokens": 100, "output_tokens": 0}},
+    })
+    assert snap.tokens.work == 13
+    assert tail.tokens.work == 113
+
+
+def test_fmt_tokens_humanizes():
+    assert fmt_tokens(0) == "0"
+    assert fmt_tokens(940) == "940"
+    assert fmt_tokens(8_100) == "8.1K"
+    assert fmt_tokens(914_000) == "914K"      # >=100 drops the decimal
+    assert fmt_tokens(19_400_000) == "19.4M"
+    assert fmt_tokens(2_170_000_000) == "2.2B"
+
+
+def test_account_window_tokens_sums_5h_and_7d(tmp_path):
+    import json
+    from transcript import account_window_tokens, _TOKEN_EVENT_CACHE
+    _TOKEN_EVENT_CACHE.clear()
+    now = time.time()
+
+    def iso(epoch):
+        return datetime.fromtimestamp(epoch, timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z")
+
+    def ev(ts, inp, out):
+        return json.dumps({
+            "type": "assistant", "timestamp": iso(ts),
+            "message": {"role": "assistant", "content": [{"type": "text"}],
+                        "usage": {"input_tokens": inp, "output_tokens": out,
+                                  "cache_read_input_tokens": 99999}},
+        })
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "a.jsonl").write_text(
+        ev(now - 60, 10, 20) + "\n" + ev(now - 6 * 3600, 5, 5), encoding="utf-8")
+    # File freshly written (recent mtime) but its only event is 8 days old:
+    # excluded by the per-event window even though the file passes the mtime gate.
+    (proj / "b.jsonl").write_text(ev(now - 8 * 24 * 3600, 1000, 1000), encoding="utf-8")
+
+    w5, w7 = account_window_tokens(now, root=tmp_path)
+    assert w5 == 30          # only the now-60 event (10+20); cache excluded
+    assert w7 == 40          # + the now-6h event (5+5); 8-day-old event excluded
+
+
+def test_sum_token_windows_respects_5h_and_7d():
+    now = 1_000_000.0
+    events = [
+        (now - 60, 10),             # in 5h and 7d
+        (now - 4 * 3600, 20),       # in 5h and 7d
+        (now - 6 * 3600, 30),       # in 7d only (older than 5h)
+        (now - 8 * 24 * 3600, 40),  # older than 7d -> excluded
+        (None, 99),                 # no timestamp -> excluded
+    ]
+    w5, w7 = sum_token_windows(events, now)
+    assert w5 == 30                 # 10 + 20
+    assert w7 == 60                 # 10 + 20 + 30
+
+
+def test_parse_iso_ts_handles_z_and_fractions():
+    expected = datetime(2026, 6, 14, 3, 26, 31, 977000, tzinfo=timezone.utc).timestamp()
+    assert parse_iso_ts("2026-06-14T03:26:31.977Z") == expected
+    # no fractional seconds
+    assert parse_iso_ts("2026-06-14T03:26:31Z") == datetime(
+        2026, 6, 14, 3, 26, 31, tzinfo=timezone.utc
+    ).timestamp()
+    # explicit offset (not Z)
+    assert parse_iso_ts("2026-06-14T03:26:31+00:00") == expected - 0.977
+    # absent / garbage -> None so callers fall back to wall-clock
+    assert parse_iso_ts(None) is None
+    assert parse_iso_ts("") is None
+    assert parse_iso_ts("not-a-timestamp") is None
+
+
+def test_last_active_uses_event_timestamp_not_wall_clock():
+    tail = _SessionTail(Path("/p/proj/sess.jsonl"))
+    ts = "2026-06-14T03:26:31.977Z"
+    tail._consume_event({
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {"role": "assistant",
+                    "content": [{"type": "tool_use", "name": "Read"}]},
+    })
+    # The displayed "last active" anchors to the event's own time, so reading
+    # an old backlog at startup doesn't read as "just now".
+    assert tail.last_event_ts == parse_iso_ts(ts)
+
+
+def test_last_active_falls_back_to_wall_clock_without_timestamp():
+    tail = _SessionTail(Path("/p/proj/sess.jsonl"))
+    before = time.time()
+    tail._consume_event({
+        "type": "assistant",
+        "message": {"role": "assistant",
+                    "content": [{"type": "tool_use", "name": "Bash"}]},
+    })
+    assert tail.last_event_ts is not None
+    assert tail.last_event_ts >= before
 
 
 def test_session_label_prefers_custom_then_ai_then_cwd():
@@ -135,13 +276,13 @@ def test_select_active_caps_at_limit():
 
 def test_classify_mcp_tool_is_integrating():
     content = [{"type": "tool_use", "name": "mcp__github__get_pr"}]
-    activity, tool = _classify(content)
+    activity, tool, target = _classify(content)
     assert activity is Activity.INTEGRATING
     assert tool == "github/get_pr"
 
 
 def test_classify_unknown_tool_is_coding():
-    activity, tool = _classify([{"type": "tool_use", "name": "SomeNewTool"}])
+    activity, tool, target = _classify([{"type": "tool_use", "name": "SomeNewTool"}])
     assert activity is Activity.CODING
     assert tool == "SomeNewTool"
 
@@ -152,9 +293,10 @@ def test_classify_thinking_or_text_is_thinking():
 
 
 def test_classify_empty_is_idle():
-    activity, tool = _classify([])
+    activity, tool, target = _classify([])
     assert activity is Activity.IDLE
     assert tool is None
+    assert target is None
 
 
 def test_classify_last_tool_use_wins():
@@ -164,9 +306,60 @@ def test_classify_last_tool_use_wins():
         {"type": "tool_use", "name": "Read"},
         {"type": "tool_use", "name": "Bash"},
     ]
-    activity, tool = _classify(content)
+    activity, tool, target = _classify(content)
     assert activity is Activity.CODING
     assert tool == "Bash"
+
+
+def test_classify_extracts_target_from_tool_input():
+    a, tool, target = _classify(
+        [{"type": "tool_use", "name": "Read",
+          "input": {"file_path": r"C:\x\thisisatest.txt"}}])
+    assert (a, tool, target) == (Activity.READING, "Read", "thisisatest.txt")
+    assert _classify([{"type": "tool_use", "name": "Grep",
+                       "input": {"pattern": "def foo"}}])[2] == "def foo"
+    assert _classify([{"type": "tool_use", "name": "Bash",
+                       "input": {"command": "npm run build"}}])[2] == "npm"
+    assert _classify([{"type": "tool_use", "name": "WebFetch",
+                       "input": {"url": "https://example.com/page"}}])[2] == "example.com"
+    # the winning (last) tool_use supplies the target
+    assert _classify([
+        {"type": "tool_use", "name": "Read", "input": {"file_path": "/a/first.py"}},
+        {"type": "tool_use", "name": "Edit", "input": {"file_path": "/b/second.py"}},
+    ])[2] == "second.py"
+    # no natural target -> None (display falls back to the tool name)
+    assert _classify([{"type": "tool_use", "name": "TodoWrite",
+                       "input": {"todos": []}}])[2] is None
+
+
+def test_tool_target_covers_more_tools():
+    def tgt(name, inp):
+        return _classify([{"type": "tool_use", "name": name, "input": inp}])[2]
+    assert tgt("Write", {"file_path": "/a/b/out.json"}) == "out.json"
+    assert tgt("MultiEdit", {"file_path": "/a/b/c.py"}) == "c.py"
+    assert tgt("NotebookEdit", {"notebook_path": "/n/book.ipynb"}) == "book.ipynb"
+    assert tgt("NotebookEdit", {"file_path": "/n/fallback.ipynb"}) == "fallback.ipynb"
+    assert tgt("Glob", {"pattern": "**/*.ts"}) == "**/*.ts"
+    assert tgt("PowerShell", {"command": "Get-ChildItem -Recurse"}) == "Get-ChildItem"
+    assert tgt("WebSearch", {"query": "qt elide label"}) == "qt elide label"
+    assert tgt("Task", {"description": "scan logs", "subagent_type": "x"}) == "scan logs"
+    assert tgt("Task", {"subagent_type": "Explore"}) == "Explore"   # description fallback
+    assert tgt("Read", {}) is None                                   # missing field -> None
+    assert tgt("Bash", {"command": "   "}) is None                   # blank -> None
+
+
+def test_session_tail_target_in_state():
+    tail = _SessionTail(Path("/p/proj/sess.jsonl"))
+    tail._consume_event({
+        "type": "assistant", "timestamp": "2026-06-14T03:00:00Z",
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Edit",
+             "input": {"file_path": "/proj/src/dashboard.py"}}]},
+    })
+    st = tail._state(Activity.CODING, "Edit")
+    assert st.target == "dashboard.py"
+    # idle state carries no target
+    assert tail._state(Activity.IDLE, None, is_stale=True).target is None
 
 
 def test_parent_transcript_for_subagent():

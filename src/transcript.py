@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -160,6 +161,39 @@ ACTIVITY_COLORS: dict[Activity, str] = {
 
 
 @dataclass
+class TokenUsage:
+    """Running token tally for a session (summed from each assistant turn's
+    `message.usage`). `work` (input+output) is the headline figure; the cache
+    buckets are shown in the per-session hover breakdown."""
+    input: int = 0
+    output: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
+
+    @property
+    def work(self) -> int:
+        """Fresh input + output — the meaningful 'work' number (excludes the
+        cache reads that dominate and distort raw totals)."""
+        return self.input + self.output
+
+    @property
+    def total(self) -> int:
+        return self.input + self.output + self.cache_read + self.cache_write
+
+    def add_usage(self, usage: dict) -> None:
+        """Accumulate one assistant turn's `message.usage` block."""
+        def n(key: str) -> int:
+            try:
+                return int(usage.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+        self.input += n("input_tokens")
+        self.output += n("output_tokens")
+        self.cache_read += n("cache_read_input_tokens")
+        self.cache_write += n("cache_creation_input_tokens")
+
+
+@dataclass
 class AgentState:
     """One live subagent of a session — drives a small child mascot on the tile."""
     agent_id: str               # subagent file stem (agent-<hash>) — stable key
@@ -177,8 +211,10 @@ class TranscriptState:
     session_id: str | None = None      # transcript file stem (the uuid) — stable tile key
     cwd: str | None = None
     project_name: str | None = None    # friendly name shown on the tile
+    target: str | None = None          # what the tool acts on (file/pattern/…); else tool_name
     is_stale: bool = False             # in the shelf window but quiet > STALE_SECONDS
     agents: list[AgentState] = field(default_factory=list)  # live subagents, newest-first
+    tokens: TokenUsage = field(default_factory=TokenUsage)  # whole-session token tally
 
 
 def is_subagent_path(p: Path) -> bool:
@@ -221,6 +257,37 @@ def project_name_from_cwd(cwd: str | None, transcript_path: Path | None) -> str:
     return "unknown"
 
 
+def parse_iso_ts(value: str | None) -> float | None:
+    """Parse a Claude Code event ``timestamp`` (ISO-8601 UTC, e.g.
+    ``"2026-06-14T03:26:31.977Z"``) into an epoch float.
+
+    Returns None when the value is absent or unparseable so callers can fall
+    back to wall-clock time. UTC throughout, so ``time.time() - parse_iso_ts(...)``
+    is the true elapsed seconds regardless of local timezone.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    txt = value.strip()
+    if txt.endswith("Z"):
+        txt = txt[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(txt).timestamp()
+    except ValueError:
+        pass
+    # Some fromisoformat variants reject odd fractional-second digit counts;
+    # strip the ".<digits>" fraction and retry (tz suffix, if any, is kept).
+    dot = txt.find(".")
+    if dot != -1:
+        end = dot + 1
+        while end < len(txt) and txt[end].isdigit():
+            end += 1
+        try:
+            return datetime.fromisoformat(txt[:dot] + txt[end:]).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
 def session_label(
     custom_title: str | None,
     ai_title: str | None,
@@ -240,6 +307,114 @@ def session_label(
         if title and title.strip():
             return title.strip()
     return project_name_from_cwd(cwd, transcript_path)
+
+
+def fmt_tokens(n: int) -> str:
+    """Humanize a token count for display: 0, 940, 8.1K, 19.4M, 2.2B."""
+    n = int(n)
+    if n < 1000:
+        return str(n)
+    for div, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if n >= div:
+            val = n / div
+            return f"{val:.1f}{suffix}" if val < 100 else f"{val:.0f}{suffix}"
+    return str(n)
+
+
+def sum_token_windows(events, now: float) -> tuple[int, int]:
+    """Sum 'work' tokens (input+output) over the 5h and 7d windows ending at
+    `now`. `events` is any iterable of ``(timestamp_epoch, work_tokens)``.
+    Pure, so it's unit-testable independent of disk I/O."""
+    cut5 = now - 5 * 3600
+    cut7 = now - 7 * 24 * 3600
+    w5 = w7 = 0
+    for ts, work in events:
+        if ts is None or ts < cut7:
+            continue
+        w7 += work
+        if ts >= cut5:
+            w5 += work
+    return w5, w7
+
+
+# Per-file cache of parsed (timestamp, work) token events, keyed by path and
+# invalidated when (size, mtime) change. Most files modified within 7d are NOT
+# being actively appended (only the 1–2 live sessions are), so this skips
+# re-reading/parsing dozens of recent-but-idle transcripts on every poll.
+_TOKEN_EVENT_CACHE: dict[str, tuple[int, float, list[tuple[float, int]]]] = {}
+
+
+def _file_token_events(fp: Path) -> list[tuple[float, int]]:
+    """Parse one transcript into a list of (timestamp, input+output) for every
+    assistant turn that has usage + a timestamp."""
+    events: list[tuple[float, int]] = []
+    try:
+        with fp.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = ev.get("message")
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
+                usage = msg.get("usage")
+                if not isinstance(usage, dict):
+                    continue
+                ts = parse_iso_ts(ev.get("timestamp"))
+                if ts is None:
+                    continue
+                work = 0
+                for k in ("input_tokens", "output_tokens"):
+                    try:
+                        work += int(usage.get(k) or 0)
+                    except (TypeError, ValueError):
+                        pass
+                events.append((ts, work))
+    except OSError:
+        return []
+    return events
+
+
+def account_window_tokens(now: float, root: Path | None = None) -> tuple[int, int]:
+    """Account-wide input+output token totals for the 5h and 7d windows, summed
+    across every transcript.
+
+    Only files modified within 7d are read (an older file can't hold an in-window
+    event), and each file's parsed events are cached by (size, mtime) so an
+    unchanged file isn't re-parsed. Does disk I/O — call it off the UI thread.
+    """
+    if root is None:
+        root = Path.home() / ".claude" / "projects"
+    cut7 = now - 7 * 24 * 3600
+
+    all_events: list[tuple[float, int]] = []
+    seen: set[str] = set()
+    for fp in root.rglob("*.jsonl"):
+        try:
+            st = fp.stat()
+        except OSError:
+            continue
+        if st.st_mtime < cut7:
+            continue
+        key = str(fp)
+        seen.add(key)
+        cached = _TOKEN_EVENT_CACHE.get(key)
+        if cached and cached[0] == st.st_size and cached[1] == st.st_mtime:
+            events = cached[2]
+        else:
+            events = _file_token_events(fp)
+            _TOKEN_EVENT_CACHE[key] = (st.st_size, st.st_mtime, events)
+        all_events.extend(events)
+
+    # Drop cache entries for files that aged out of the 7d window / rotated away.
+    for key in [k for k in _TOKEN_EVENT_CACHE if k not in seen]:
+        del _TOKEN_EVENT_CACHE[key]
+
+    return sum_token_windows(all_events, now)
 
 
 def select_active(
@@ -342,13 +517,49 @@ def any_agent_active(agents: list[AgentState]) -> bool:
     )
 
 
-def _classify(content: list) -> tuple[Activity, str | None]:
-    """Return (activity, tool_name) for the latest assistant content blocks.
+def _tool_target(name: str, tool_input: dict | None) -> str | None:
+    """The 'what' a tool is acting on, from its input — the file being edited,
+    the search pattern, the URL host, etc. Returns None when there's no natural
+    target, so callers fall back to showing the tool name.
+    """
+    if not isinstance(tool_input, dict):
+        return None
+    lower = name.lower()
 
-    Walks the blocks back-to-front; the last tool_use wins. If there are no
+    def field(key: str) -> str | None:
+        v = tool_input.get(key)
+        return v.strip() if isinstance(v, str) and v.strip() else None
+
+    if lower in ("read", "edit", "write", "multiedit"):
+        p = field("file_path")
+        return Path(p).name if p else None
+    if lower == "notebookedit":
+        p = field("notebook_path") or field("file_path")
+        return Path(p).name if p else None
+    if lower in ("grep", "glob"):
+        return field("pattern")
+    if lower in ("bash", "powershell"):
+        cmd = field("command")
+        return cmd.split()[0] if cmd else None
+    if lower == "webfetch":
+        url = field("url")
+        return url.split("://", 1)[-1].split("/", 1)[0] if url else None
+    if lower == "websearch":
+        return field("query")
+    if lower in ("task", "agent"):
+        return field("description") or field("subagent_type")
+    return None
+
+
+def _classify(content: list) -> tuple[Activity, str | None, str | None]:
+    """Return (activity, tool_name, target) for the latest assistant content.
+
+    Walks the blocks back-to-front; the last tool_use wins. `target` is what the
+    winning tool is acting on (file, pattern, …), or None. If there are no
     tool_use blocks but there are thinking/text blocks, returns THINKING.
     """
     last_tool: str | None = None
+    last_input: dict | None = None
     has_thinking_or_text = False
     for block in content:
         if not isinstance(block, dict):
@@ -358,13 +569,17 @@ def _classify(content: list) -> tuple[Activity, str | None]:
             name = block.get("name")
             if isinstance(name, str):
                 last_tool = name
+                inp = block.get("input")
+                last_input = inp if isinstance(inp, dict) else None
         elif btype in ("thinking", "text"):
             has_thinking_or_text = True
     if last_tool is not None:
-        return _activity_for_tool(last_tool), _pretty_tool_name(last_tool)
+        return (_activity_for_tool(last_tool),
+                _pretty_tool_name(last_tool),
+                _tool_target(last_tool, last_input))
     if has_thinking_or_text:
-        return Activity.THINKING, None
-    return Activity.IDLE, None
+        return Activity.THINKING, None, None
+    return Activity.IDLE, None, None
 
 
 class _SessionTail:
@@ -383,10 +598,12 @@ class _SessionTail:
         self.offset = 0
         self.last_activity: Activity | None = None
         self.last_tool: str | None = None
+        self.last_target: str | None = None
         self.last_event_ts: float | None = None
         self.cwd: str | None = None
         self.ai_title: str | None = None
         self.custom_title: str | None = None
+        self.tokens = TokenUsage()
 
     def poll(self, now: float) -> TranscriptState:
         """Read any newly-appended bytes and return this session's current state."""
@@ -402,8 +619,12 @@ class _SessionTail:
             return self._state(Activity.IDLE, None, is_stale=True)
 
         if size < self.offset:
-            # Truncated/rotated under us; restart from the top.
+            # Truncated/rotated under us; restart from the top. Reset the
+            # additive token tally too — without this, re-reading the whole file
+            # re-adds every usage block on top of the existing total (the
+            # activity/title fields are idempotent on re-read; tokens are not).
             self.offset = 0
+            self.tokens = TokenUsage()
         if size > self.offset:
             self._read_new(size)
 
@@ -470,15 +691,26 @@ class _SessionTail:
             return
         if msg.get("role") != "assistant":
             return
+        # Token usage rides EVERY assistant turn (text/thinking turns too, not
+        # just tool calls), so accumulate it before the activity early-return.
+        usage = msg.get("usage")
+        if isinstance(usage, dict):
+            self.tokens.add_usage(usage)
         content = msg.get("content")
         if not isinstance(content, list):
             return
-        activity, tool = _classify(content)
+        activity, tool, target = _classify(content)
         if activity == Activity.IDLE:
             return
         self.last_activity = activity
         self.last_tool = tool
-        self.last_event_ts = time.time()
+        self.last_target = target
+        # Use the event's OWN timestamp (truthful "last active") rather than
+        # wall-clock-at-read — otherwise restarting the app reads the whole
+        # backlog and stamps every old action as "just now". Fall back to
+        # wall-clock only if the timestamp is missing/unparseable. Staleness
+        # still keys off the file's mtime in poll(); this only drives display.
+        self.last_event_ts = parse_iso_ts(ev.get("timestamp")) or time.time()
 
     def _state(
         self, activity: Activity, tool: str | None, is_stale: bool = False
@@ -486,6 +718,7 @@ class _SessionTail:
         return TranscriptState(
             activity=activity,
             tool_name=tool if activity != Activity.IDLE else None,
+            target=self.last_target if activity != Activity.IDLE else None,
             transcript_path=self.path,
             last_event_ts=self.last_event_ts,
             session_id=self.path.stem,
@@ -494,6 +727,9 @@ class _SessionTail:
                 self.custom_title, self.ai_title, self.cwd, self.path
             ),
             is_stale=is_stale,
+            # Snapshot so the emitted state doesn't share the tail's mutable
+            # tally (which keeps growing on later polls).
+            tokens=replace(self.tokens),
         )
 
 

@@ -50,7 +50,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QScrollArea,
     QSystemTrayIcon,
@@ -67,16 +66,22 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 from reset_notify import ResetDecision, ResetNotifier
-from session_shelf import SessionShelf
+from session_shelf import (
+    _BAR_OVERAGE, CompactView, SessionShelf, UsageBar, square_caret_icon,
+)
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
     ACTIVITY_ANIMS,
     ACTIVITY_LABELS,
     Activity as TranscriptActivity,
     AgentState as TranscriptAgentState,
+    TokenUsage,
     TranscriptState,
     TranscriptWatcher,
+    account_window_tokens,
+    fmt_tokens,
 )
+from uiutil import format_minutes as _format_minutes, heat as _heat
 
 
 # Stable tile id used in single-mascot mode (Settings: show multiple sessions
@@ -117,6 +122,10 @@ def _should_release_autofit(height_changed, fitting, armed, max_involved, titleb
     )
 
 
+# Valid view modes, largest -> smallest.
+VIEW_ORDER = ("full", "compact", "mini")
+
+
 STYLESHEET = """
 QWidget#root {
     background-color: #0e1116;
@@ -153,14 +162,6 @@ QPushButton {
 }
 QPushButton:hover { background-color: #374151; }
 QPushButton:disabled { background-color: #161b22; color: #4b5563; border-color: #21262d; }
-
-QProgressBar {
-    background-color: #1f2937; border: 1px solid #374151; border-radius: 0px;
-    height: 14px; text-align: center; color: transparent;
-}
-QProgressBar::chunk { background-color: #CE7D6B; border-radius: 0px; }
-QProgressBar[heat="warm"]::chunk { background-color: #B85C42; }
-QProgressBar[heat="hot"]::chunk  { background-color: #8B2E1A; }
 
 QWidget#settingsPanel {
     background-color: #0a0d12;
@@ -203,13 +204,13 @@ QCheckBox::indicator:checked {
 }
 QWidget#scrim { background-color: rgba(0, 0, 0, 60); }
 
-QWidget#compactRoot {
+QWidget#miniRoot {
     background-color: #0e1116;
     border: 1px solid #CE7D6B;
 }
-QLabel#compactPct { font-size: 17px; font-weight: 700; color: #e6edf3; }
-QLabel#compactPctSub { font-size: 13px; font-weight: 700; color: #9ca3af; }
-QLabel#compactReset { font-size: 12px; color: #9ca3af; }
+QLabel#miniPct { font-size: 17px; font-weight: 700; color: #e6edf3; }
+QLabel#miniPctSub { font-size: 13px; font-weight: 700; color: #9ca3af; }
+QLabel#miniReset { font-size: 12px; color: #9ca3af; }
 
 QWidget#toastRoot {
     background-color: #0e1116;
@@ -220,26 +221,6 @@ QLabel#toastTitle {
 }
 QLabel#toastBody { font-size: 12px; color: #9ca3af; }
 """
-
-
-def _format_minutes(mins: int) -> str:
-    if mins <= 0:
-        return "-"
-    if mins < 60:
-        return f"{mins}m"
-    hours, m = divmod(mins, 60)
-    if hours < 24:
-        return f"{hours}h {m:02d}m"
-    days, h = divmod(hours, 24)
-    return f"{days}d {h:02d}h"
-
-
-def _heat(pct: int) -> str:
-    if pct >= 80:
-        return "hot"
-    if pct >= 50:
-        return "warm"
-    return "cool"
 
 
 def _tray_pixmap(pct: int) -> QPixmap:
@@ -300,7 +281,7 @@ def _dispatch_push(title: str, body: str) -> tuple[bool, str]:
     )
 
 
-class CompactWidget(QWidget):
+class MiniWidget(QWidget):
     """Tiny always-on-top floating readout: mini mascot + session/weekly bars.
 
     A frameless, draggable tool window with no taskbar entry. Double-click (or
@@ -315,7 +296,7 @@ class CompactWidget(QWidget):
 
     def __init__(self) -> None:
         super().__init__(None)
-        self.setObjectName("compactRoot")
+        self.setObjectName("miniRoot")
         self.setWindowTitle("Clawdmeter")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(STYLESHEET)
@@ -343,8 +324,8 @@ class CompactWidget(QWidget):
         # rolling 5h / 7d windows are visible at a glance.
         stack = QVBoxLayout()
         stack.setSpacing(2)
-        self.session_pct, self.session_reset = self._row(stack, "compactPct")
-        self.weekly_pct, self.weekly_reset = self._row(stack, "compactPctSub")
+        self.session_pct, self.session_reset = self._row(stack, "miniPct")
+        self.weekly_pct, self.weekly_reset = self._row(stack, "miniPctSub")
         row.addLayout(stack, 1)
 
         menu = QMenu(self)
@@ -368,7 +349,7 @@ class CompactWidget(QWidget):
         pct = QLabel("-", objectName=pct_object)
         pct.setMinimumWidth(42)
         pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        reset = QLabel("", objectName="compactReset")
+        reset = QLabel("", objectName="miniReset")
         reset.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         line.addWidget(pct)
         line.addWidget(reset)
@@ -472,7 +453,7 @@ class ResetToast(QWidget):
         self.setWindowFlags(
             Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         )
-        # Opaque, like the main/compact windows. NOT WA_TranslucentBackground:
+        # Opaque, like the main/mini windows. NOT WA_TranslucentBackground:
         # the slim frozen build prunes opengl32sw.dll, without which translucent
         # compositing renders wrong. windowOpacity (the fade) is a separate OS
         # layered-window feature and keeps working.
@@ -604,7 +585,7 @@ class TitleBar(QWidget):
     HEIGHT = 48
     ICON_SIZE = 36
 
-    def __init__(self, window: QMainWindow, on_settings, on_compact) -> None:
+    def __init__(self, window: QMainWindow, on_settings, on_toggle, on_mini) -> None:
         super().__init__(window)
         self.setObjectName("titleBar")
         # Allow vertical animation: min=0, max=HEIGHT. Auto-hide animates
@@ -642,9 +623,25 @@ class TitleBar(QWidget):
         self.settings_btn.clicked.connect(on_settings)
         row.addWidget(self.settings_btn)
 
-        self.compact_btn = self._tool_btn("", "Compact mode")  # BackToWindow
-        self.compact_btn.clicked.connect(on_compact)
-        row.addWidget(self.compact_btn)
+        # Full<->Compact toggle: a square-caret that points DOWN in full (click
+        # to collapse to compact) and UP in compact (click to expand to full).
+        self.caret_btn = QToolButton()
+        self.caret_btn.setObjectName("titleBtn")
+        self.caret_btn.setToolTip("Compact view")
+        self.caret_btn.setIconSize(QSize(16, 16))
+        self.caret_btn.setCursor(Qt.PointingHandCursor)
+        self.caret_btn.setFocusPolicy(Qt.NoFocus)
+        self.caret_btn.clicked.connect(on_toggle)
+        row.addWidget(self.caret_btn)
+
+        # Mini button (always available): Windows' restore-to-center glyph.
+        self.mini_btn = self._tool_btn("", "Mini view")  # BackToWindow
+        self.mini_btn.setText("")   # BackToWindow / arrows-to-center
+        self.mini_btn.setText(chr(0xE73F))   # BackToWindow / arrows-to-center
+        self.mini_btn.clicked.connect(on_mini)
+        row.addWidget(self.mini_btn)
+
+        self.set_active_mode("full")
 
         self.min_btn = self._tool_btn("", "Minimize")        # ChromeMinimize
         self.min_btn.clicked.connect(self._win.showMinimized)
@@ -667,6 +664,13 @@ class TitleBar(QWidget):
         b.setCursor(Qt.PointingHandCursor)
         b.setFocusPolicy(Qt.NoFocus)
         return b
+
+    def set_active_mode(self, mode: str) -> None:
+        """Point the caret toward what the toggle does next: DOWN in full (click
+        -> compact), UP in compact (click -> full)."""
+        up = mode == "compact"
+        self.caret_btn.setIcon(square_caret_icon(up=up))
+        self.caret_btn.setToolTip("Full view" if up else "Compact view")
 
     def _toggle_max(self) -> None:
         if self._win.isMaximized():
@@ -727,7 +731,8 @@ class SettingsPanel(QWidget):
 
     def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested,
                  on_refresh_token=None, on_auto_refresh_changed=None,
-                 on_poll_interval_changed=None, on_sessions_view_changed=None) -> None:
+                 on_poll_interval_changed=None, on_sessions_view_changed=None,
+                 on_token_view_changed=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -739,6 +744,7 @@ class SettingsPanel(QWidget):
         self._on_auto_refresh_changed = on_auto_refresh_changed
         self._on_poll_interval_changed = on_poll_interval_changed
         self._on_sessions_view_changed = on_sessions_view_changed
+        self._on_token_view_changed = on_token_view_changed
         self.hide()
 
         outer = QVBoxLayout(self)
@@ -844,6 +850,21 @@ class SettingsPanel(QWidget):
         self.subagents_check.setChecked(app_settings.get_show_subagents())
         self.subagents_check.toggled.connect(self._on_subagents_toggled)
         layout.addWidget(self.subagents_check)
+
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("TOKEN USAGE", objectName="sectionLabel"))
+        tokens_hint = QLabel(
+            "Show how many tokens you've used — input+output for the 5h/7d "
+            "windows beside the bars, with a full per-session breakdown when you "
+            "hover a mascot. Read from your local transcripts, not the API.",
+            objectName="sectionHint",
+        )
+        tokens_hint.setWordWrap(True)
+        layout.addWidget(tokens_hint)
+        self.token_usage_check = QCheckBox("Show token usage")
+        self.token_usage_check.setChecked(app_settings.get_show_token_usage())
+        self.token_usage_check.toggled.connect(self._on_token_usage_toggled)
+        layout.addWidget(self.token_usage_check)
 
         layout.addSpacing(10)
         layout.addWidget(QLabel("USAGE POLLING", objectName="sectionLabel"))
@@ -1146,6 +1167,11 @@ class SettingsPanel(QWidget):
         if self._on_sessions_view_changed:
             self._on_sessions_view_changed()
 
+    def _on_token_usage_toggled(self, checked: bool) -> None:
+        app_settings.set_show_token_usage(checked)
+        if self._on_token_view_changed:
+            self._on_token_view_changed()
+
     def _on_notify_toggled(self, checked: bool) -> None:
         app_settings.set_reset_notify(checked)
         self._sync_notify_subtoggles()
@@ -1340,7 +1366,8 @@ class Dashboard(QMainWindow):
         self._outer.setSpacing(0)
 
         self.title_bar = TitleBar(self, on_settings=self._toggle_settings,
-                                  on_compact=self._enter_compact)
+                                  on_toggle=self._toggle_full_compact,
+                                  on_mini=lambda: self._set_view_mode("mini"))
         self._outer.addWidget(self.title_bar)
 
         content = QWidget()
@@ -1376,10 +1403,10 @@ class Dashboard(QMainWindow):
         group_session.setContentsMargins(0, 0, 0, 0)
         group_session.setSpacing(6)
         group_session.addWidget(self.group_label)
-        self.session_row, self.session_pct, self.session_bar, self.session_reset = self._build_row("SESSION (5h)")
+        self.session_row, _, self.session_pct, self.session_bar, self.session_reset = self._build_row("SESSION (5h)")
         group_session.addLayout(self.session_row)
         layout.addLayout(group_session)
-        self.weekly_row, self.weekly_pct, self.weekly_bar, self.weekly_reset = self._build_row("WEEKLY (7d)")
+        self.weekly_row, self.weekly_title, self.weekly_pct, self.weekly_bar, self.weekly_reset = self._build_row("WEEKLY (7d)")
         layout.addLayout(self.weekly_row)
 
         # Status badge: only visible when nearing/at the rate limit. When
@@ -1413,6 +1440,7 @@ class Dashboard(QMainWindow):
             on_auto_refresh_changed=self._set_auto_refresh,
             on_poll_interval_changed=self._set_poll_interval,
             on_sessions_view_changed=self._apply_session_view,
+            on_token_view_changed=self._apply_token_view,
         )
         self.settings_panel.place_closed()
         content.installEventFilter(self)
@@ -1470,25 +1498,33 @@ class Dashboard(QMainWindow):
 
         self._transcript = TranscriptWatcher(self)
         # sessions_changed drives the whole multi-mascot path (shelf + the
-        # focused-session compact mascot + empty-state mood). state_changed is
+        # focused-session mini mascot + empty-state mood). state_changed is
         # the back-compat single-session signal; sessions_changed[0] carries the
         # same focused state, so we listen to the richer one only.
         self._transcript.sessions_changed.connect(self._on_sessions)
         # NOTE: started at the END of __init__, not here. start() does a
         # synchronous first poll that emits sessions_changed, and _on_sessions
-        # touches widgets (self.compact, self.sprite, self.shelf) that aren't
+        # touches widgets (self.mini, self.sprite, self.shelf) that aren't
         # built until later in __init__ — starting here AttributeErrors on
         # real-mode launch.
 
         self._tray = QSystemTrayIcon(self)
         self._tray.setIcon(QIcon(str(icon_path)) if icon_path.exists() else QIcon(_tray_pixmap(0)))
-        tray_menu = QMenu()
+        tray_menu = QMenu(self)
+        self._tray_menu = tray_menu   # keep a reference so it isn't GC'd
         show_action = QAction("Show", self)
-        show_action.triggered.connect(self._show_window)
-        quit_action = QAction("Quit", self)
-        quit_action.triggered.connect(self._real_quit)
+        show_action.triggered.connect(self._restore_view)
         tray_menu.addAction(show_action)
         tray_menu.addSeparator()
+        # Explicit per-mode entries.
+        for label, mode in (("Full view", "full"), ("Compact view", "compact"),
+                            ("Mini view", "mini")):
+            act = QAction(label, self)
+            act.triggered.connect(lambda _=False, m=mode: self._set_view_mode(m))
+            tray_menu.addAction(act)
+        tray_menu.addSeparator()
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self._real_quit)
         tray_menu.addAction(quit_action)
         self._tray.setContextMenu(tray_menu)
         self._tray.activated.connect(self._on_tray_activated)
@@ -1504,10 +1540,22 @@ class Dashboard(QMainWindow):
         self._flash_remaining = 0
         self._flash_on = False
 
-        # Compact mode: a tiny always-on-top floating widget mirroring usage.
-        self.compact = CompactWidget()
-        self.compact.expand_requested.connect(self._exit_compact)
-        self.compact.quit_requested.connect(self._real_quit)
+        # Mini mode: a tiny always-on-top floating widget mirroring usage.
+        self._view_mode = "full"
+        self._mini_return_mode = "full"   # the view mini was entered from
+        self.mini = MiniWidget()
+        # Double-click / Expand on mini returns to whichever view it came from.
+        self.mini.expand_requested.connect(
+            lambda: self._set_view_mode(self._mini_return_mode))
+        self.mini.quit_requested.connect(self._real_quit)
+
+        # Compact mode: a denser list view (one row per session).
+        self.compact_view = CompactView()
+        self.compact_view.set_mode_requested.connect(self._set_view_mode)
+        # Double-click the compact title bar also expands to full.
+        self.compact_view.grow_requested.connect(lambda: self._set_view_mode("full"))
+        self.compact_view.hide_requested.connect(self._stash_compact)  # to tray
+        self.compact_view.quit_requested.connect(self._real_quit)
 
         # Custom limit-reset toast (replaces the native OS notification);
         # clicking it brings the dashboard forward.
@@ -1523,9 +1571,10 @@ class Dashboard(QMainWindow):
             self._start_mock()
         else:
             self._start_poller()
-            # Now that self.compact / self.sprite / self.shelf exist, the
+            # Now that self.mini / self.sprite / self.shelf exist, the
             # watcher's initial synchronous poll can safely drive the shelf.
             self._transcript.start()
+
 
     def eventFilter(self, obj, ev):
         if obj is self._content and ev.type() == ev.Type.Resize:
@@ -1666,14 +1715,12 @@ class Dashboard(QMainWindow):
         header.addWidget(label)
         header.addStretch(1)
         header.addWidget(pct)
-        bar = QProgressBar()
-        bar.setRange(0, 100)
-        bar.setValue(0)
+        bar = UsageBar(height=14)
         reset = QLabel("resets in -", objectName="reset")
         outer.addLayout(header)
         outer.addWidget(bar)
         outer.addWidget(reset)
-        return outer, pct, bar, reset
+        return outer, label, pct, bar, reset
 
     def _start_poller(self) -> None:
         self._poller = UsagePoller(interval_seconds=app_settings.get_poll_interval())
@@ -1711,6 +1758,9 @@ class Dashboard(QMainWindow):
 
         def sample_tick():
             self._mock_pct = (self._mock_pct + 1) % 100
+            # Occasionally drive overage > 0 so the self-hiding red overage
+            # state on the weekly bar is visible in mock mode.
+            overage = max(0, self._mock_pct - 75)
             self._on_sample(UsageSample(
                 session_pct=self._mock_pct,
                 session_reset_minutes=140,
@@ -1720,6 +1770,10 @@ class Dashboard(QMainWindow):
                 ok=True,
                 error=None,
                 timestamp=time.time(),
+                overage_pct=overage,
+                overage_reset_minutes=12 * 24 * 60,
+                tokens_5h=914_000,
+                tokens_7d=19_400_000,
             ))
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
@@ -1847,6 +1901,21 @@ class Dashboard(QMainWindow):
                     transcript_path=None, last_event_ts=now, session_id=sid, cwd=None,
                     project_name=project, is_stale=False,
                 ))
+        # Give each mock session a distinct token tally (hover breakdown) and a
+        # demo "target" so the sub-label shows what's being acted on.
+        mock_targets = {
+            TranscriptActivity.CODING: "dashboard.py",
+            TranscriptActivity.READING: "transcript.py",
+            TranscriptActivity.SEARCHING: "qt elided label",
+            TranscriptActivity.INTEGRATING: "list_issues",
+        }
+        for i, st in enumerate(states):
+            base = i + 1
+            st.tokens = TokenUsage(
+                input=base * 220_000, output=base * 410_000,
+                cache_read=base * 9_800_000, cache_write=base * 180_000,
+            )
+            st.target = mock_targets.get(st.activity)
         self._on_sessions(states)
 
     def _on_sample(self, s: UsageSample) -> None:
@@ -1861,26 +1930,38 @@ class Dashboard(QMainWindow):
             return
 
         self.session_pct.setText(f"{s.session_pct}%")
-        self.session_bar.setValue(s.session_pct)
-        self.session_bar.setProperty("heat", _heat(s.session_pct))
-        self.session_bar.style().unpolish(self.session_bar)
-        self.session_bar.style().polish(self.session_bar)
-        self.session_reset.setText(f"resets in {_format_minutes(s.session_reset_minutes)}")
+        self.session_bar.set_values(s.session_pct, 0, _heat(s.session_pct))
 
-        self.weekly_pct.setText(f"{s.weekly_pct}%")
-        self.weekly_bar.setValue(s.weekly_pct)
-        self.weekly_bar.setProperty("heat", _heat(s.weekly_pct))
-        self.weekly_bar.style().unpolish(self.weekly_bar)
-        self.weekly_bar.style().polish(self.weekly_bar)
-        self.weekly_reset.setText(f"resets in {_format_minutes(s.weekly_reset_minutes)}")
+        if s.overage_pct > 0:
+            # Past the weekly cap into paid overage: the weekly bar stays full in
+            # its normal colour, a red OVERAGE tag joins the label, and a red
+            # segment continues past 100% (so 20% overage reads 120%).
+            self.weekly_title.setText(
+                f'WEEKLY (7d) <span style="color:{_BAR_OVERAGE}; font-weight:700">'
+                'OVERAGE</span>')
+            self.weekly_pct.setText(f"{100 + s.overage_pct}%")
+            # Base stays the normal (coral) fill so the red overage clearly
+            # continues after it, left-to-right — not a wall of red.
+            self.weekly_bar.set_values(100, s.overage_pct, "cool")
+        else:
+            self.weekly_title.setText("WEEKLY (7d)")
+            self.weekly_pct.setText(f"{s.weekly_pct}%")
+            self.weekly_bar.set_values(s.weekly_pct, 0, _heat(s.weekly_pct))
 
-        self._sync_compact(s)
+        self._refresh_reset_lines(
+            s, s.session_reset_minutes, s.weekly_reset_minutes,
+            s.overage_reset_minutes)
+
+        self._sync_mini(s)
+        self._update_compact_usage(
+            s, s.session_reset_minutes, s.weekly_reset_minutes,
+            s.overage_reset_minutes)
 
         self._rate.observe(s.session_pct)
         # While the shelf is up it owns the mascots (per-session tiles + the
-        # compact widget via _drive_compact_from), so the rate-based mood must
+        # mini widget via _drive_mini_from), so the rate-based mood must
         # NOT also drive them here — two paths with different set_anims keys for
-        # the same activity would restart and flicker the compact animation on
+        # the same activity would restart and flicker the mini animation on
         # every usage poll. Only refresh the rate mood in the empty state.
         if not self._shelf_active:
             self._update_sprite_selection()
@@ -1957,6 +2038,12 @@ class Dashboard(QMainWindow):
             f"Session {session_pct}% (resets {_format_minutes(session_reset)})\n"
             f"Weekly {weekly_pct}% (resets {_format_minutes(weekly_reset)})"
         )
+        s = self._last_sample
+        if s is not None and app_settings.get_show_token_usage():
+            text += (
+                f"\nTokens {fmt_tokens(s.tokens_5h)} (5h) · "
+                f"{fmt_tokens(s.tokens_7d)} (7d)"
+            )
         if text != self._last_tooltip:
             self._last_tooltip = text
             self._tray.setToolTip(text)
@@ -2064,6 +2151,25 @@ class Dashboard(QMainWindow):
         # show it (and shrinks back when it clears) with no dead space.
         self._fit_window_height()
 
+    def _reset_line(self, minutes: int, tokens: int) -> str:
+        line = f"resets in {_format_minutes(minutes)}"
+        if app_settings.get_show_token_usage():
+            line += f" · {fmt_tokens(tokens)}"
+        return line
+
+    def _refresh_reset_lines(self, s: UsageSample, sr: int, wr: int, ovr: int) -> None:
+        """Render the session/weekly reset lines (overage-aware) with the
+        per-window token total appended when the token display is on. Shared by
+        the poll handler and the 1s countdown so they never disagree (and so the
+        countdown can't clobber the overage line)."""
+        self.session_reset.setText(self._reset_line(sr, s.tokens_5h))
+        # The weekly bar stays the weekly bar even in overage (overage is the red
+        # overflow on top), so its reset line is always the weekly reset + tokens;
+        # the overage's own (longer) reset rides a tooltip on the bar.
+        self.weekly_reset.setText(self._reset_line(wr, s.tokens_7d))
+        self.weekly_bar.setToolTip(
+            f"Overage resets in {_format_minutes(ovr)}" if s.overage_pct > 0 else "")
+
     def _tick_countdown(self) -> None:
         s = self._last_sample
         if not s or not s.ok:
@@ -2071,9 +2177,10 @@ class Dashboard(QMainWindow):
         elapsed_min = int((time.time() - s.timestamp) // 60)
         sr = max(0, s.session_reset_minutes - elapsed_min)
         wr = max(0, s.weekly_reset_minutes - elapsed_min)
-        self.session_reset.setText(f"resets in {_format_minutes(sr)}")
-        self.weekly_reset.setText(f"resets in {_format_minutes(wr)}")
-        self.compact.set_resets(sr, wr)
+        ovr = max(0, s.overage_reset_minutes - elapsed_min)
+        self._refresh_reset_lines(s, sr, wr, ovr)
+        self.mini.set_resets(sr, wr)
+        self._update_compact_usage(s, sr, wr, ovr)
         self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
 
     def _on_sessions(self, states: list[TranscriptState]) -> None:
@@ -2088,14 +2195,19 @@ class Dashboard(QMainWindow):
         child agents when 'show subagents' is off. Called on each watcher update
         and whenever a toggle changes, so a flip takes effect immediately.
 
-        With >=1 live session the shelf takes over the mascot slot and the compact
+        With >=1 live session the shelf takes over the mascot slot and the mini
         widget mirrors the focused (newest) session; with 0 the hero returns and
-        the rate-based mood drives hero + compact + group_label."""
+        the rate-based mood drives hero + mini + group_label."""
         states = _view_states(
             self._last_raw_states,
             app_settings.get_show_multiple_sessions(),
             app_settings.get_show_subagents(),
         )
+
+        cv = getattr(self, "compact_view", None)
+        if cv is not None and cv.isVisible():
+            cv.set_show_tokens(app_settings.get_show_token_usage())
+            cv.set_sessions(states)
 
         if states:
             self._shelf_active = True
@@ -2109,41 +2221,68 @@ class Dashboard(QMainWindow):
             self.shelf.show()
             # The "ACTIVE SESSIONS — N" count is only meaningful in multi mode.
             self.shelf.set_header_visible(app_settings.get_show_multiple_sessions())
+            self.shelf.set_show_tokens(app_settings.get_show_token_usage())
             self.shelf.set_sessions(states)
-            # The compact widget stays single-mascot for now (full multi-session
-            # compact is Variant D), so it follows the focused session.
+            # The mini widget stays single-mascot, so it follows the focused
+            # (newest) session.
             self._transcript_state = states[0]
-            self._drive_compact_from(states[0])
+            self._drive_mini_from(states[0])
         else:
             self._shelf_active = False
             self.shelf.hide()
             self.shelf.set_sessions([])  # drop any leftover tiles + reset header
             self.hero.show()
             self.group_label.show()
-            # No session: fall back to today's rate-driven mood for hero/compact.
+            # No session: fall back to today's rate-driven mood for hero/mini.
             self._transcript_state = None
             self._update_sprite_selection()
-            # set_anims no-ops on an unchanged key, so re-show the paused hero.
-            self.sprite.resume()
+            # set_anims no-ops on an unchanged key, so re-show the paused hero —
+            # but only when the full window is actually the visible view (in
+            # compact/mini the hero is hidden and must stay paused).
+            if self._view_mode == "full":
+                self.sprite.resume()
 
         # Resize the window to hug the new content (no dead space below the bars).
         self._fit_window_height()
 
-    def _drive_compact_from(self, state: TranscriptState) -> None:
-        """Mirror one session's activity on the compact mascot only — the hero
+    def _apply_token_view(self) -> None:
+        """Token-usage display toggled in Settings: re-render the per-bar token
+        figures + tray and refresh the shelf's hover breakdown immediately."""
+        s = self._last_sample
+        if s is not None and s.ok:
+            # Toggled ON: the last sample was polled with tokens off (windows 0),
+            # so fill them in now rather than showing "· 0" until the next poll.
+            if (app_settings.get_show_token_usage()
+                    and not s.tokens_5h and not s.tokens_7d):
+                try:
+                    s.tokens_5h, s.tokens_7d = account_window_tokens(time.time())
+                except OSError:
+                    pass
+            elapsed_min = int((time.time() - s.timestamp) // 60)
+            sr = max(0, s.session_reset_minutes - elapsed_min)
+            wr = max(0, s.weekly_reset_minutes - elapsed_min)
+            ovr = max(0, s.overage_reset_minutes - elapsed_min)
+            self._refresh_reset_lines(s, sr, wr, ovr)
+            self._update_compact_usage(s, sr, wr, ovr)
+            self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
+        # Re-render the shelf so mascot-hover tooltips appear/disappear at once.
+        self._apply_session_view()
+
+    def _drive_mini_from(self, state: TranscriptState) -> None:
+        """Mirror one session's activity on the mini mascot only — the hero
         is hidden while the shelf is up, so it isn't driven here. Idle/stale
         sessions fall back to the calm group-0 loop."""
         idle = state.is_stale or state.activity == TranscriptActivity.IDLE
         anims = None if idle else ACTIVITY_ANIMS.get(state.activity)
         if anims:
-            self.compact.sprite.set_anims(f"compact:{state.activity.value}", anims)
+            self.mini.sprite.set_anims(f"mini:{state.activity.value}", anims)
         else:
-            self.compact.sprite.set_anims("compact:idle", GROUP_ANIMS[0])
+            self.mini.sprite.set_anims("mini:idle", GROUP_ANIMS[0])
 
     def _set_sprite_anims(self, key: str, names) -> None:
-        """Drive both the full-window and compact mascots in lockstep."""
+        """Drive both the full-window and mini mascots in lockstep."""
         self.sprite.set_anims(key, names)
-        self.compact.sprite.set_anims(key, names)
+        self.mini.sprite.set_anims(key, names)
 
     def _update_sprite_selection(self) -> None:
         """Transcript-driven activity takes precedence; rate-based when idle."""
@@ -2164,54 +2303,149 @@ class Dashboard(QMainWindow):
 
     def _on_tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.Trigger:
-            self._show_window()
+            self._restore_view()
 
-    def _sync_compact(self, s: UsageSample) -> None:
-        """Push a usage sample into the compact widget. Reset times use the same
+    def _sync_mini(self, s: UsageSample) -> None:
+        """Push a usage sample into the mini widget. Reset times use the same
         relative 'resets in 4h 56m' form as the main window."""
-        self.compact.update_usage(
+        self.mini.update_usage(
             s.session_pct, s.weekly_pct,
             s.session_reset_minutes, s.weekly_reset_minutes,
         )
 
-    def _enter_compact(self) -> None:
-        """Hide the full window and show the tiny floating widget."""
+    # The title-bar button cycles forward (full -> compact -> mini -> full);
+    # double-click / "grow" steps back toward full; the tray restores the last
+    # mode. Order math lives in module-level next_view_mode/grow_view_mode.
+    def _set_view_mode(self, mode: str, persist: bool = True) -> None:
+        """Switch to full / compact / mini. Persists the choice unless persist
+        is False (transient foregrounding for a notification must not overwrite
+        the user's chosen mode)."""
+        if mode not in VIEW_ORDER:
+            mode = "full"
+        # Remember which view we drop into mini FROM, so expanding mini returns
+        # there (full->mini->full, compact->mini->compact).
+        if mode == "mini" and self._view_mode in ("full", "compact"):
+            self._mini_return_mode = self._view_mode
+        self._view_mode = mode
+        if persist:
+            app_settings.set_view_mode(mode)
+        # Keep both switchers' active segment in sync with the real mode.
+        self.title_bar.set_active_mode(mode)
+        self.compact_view.set_active_mode(mode)
         if self.settings_panel.is_open():
             self._close_settings()
-
-        pos = app_settings.get_compact_pos()
-        self.compact.lock_size()
-        if pos is None:
-            scr = self.screen() or QGuiApplication.primaryScreen()
-            geo = scr.availableGeometry()
-            x = geo.right() - self.compact.width() - 24
-            y = geo.bottom() - self.compact.height() - 24
-            self.compact.move(x, y)
+        self._stash_mini()
+        self._stash_compact()
+        if mode == "full":
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+            # The hero only animates in the empty (0-session) full view; resume
+            # it here in case it was paused while hidden in compact/mini.
+            if not self._shelf_active:
+                self.sprite.resume()
         else:
-            self.compact.move(pos[0], pos[1])
+            # Hidden in compact/mini — pause the full window's hero so its
+            # 240px mascot isn't animating offscreen.
+            self.sprite.stop()
+            self.hide()
+            self._show_compact() if mode == "compact" else self._show_mini()
 
+    def _toggle_full_compact(self) -> None:
+        """The square-caret toggle: full <-> compact."""
+        self._set_view_mode("full" if self._view_mode == "compact" else "compact")
+
+    def _restore_view(self) -> None:
+        """Tray click / 'Show' / pop-to-front: re-show the last-used mode without
+        re-persisting it (it's already the saved value)."""
+        self._set_view_mode(getattr(self, "_view_mode", "full"), persist=False)
+
+    def show_initial(self) -> None:
+        """Launch into the last-used view mode directly (no full-window flash)."""
+        mode = app_settings.get_view_mode()
+        if mode == "full":
+            self.show()
+        else:
+            self._set_view_mode(mode, persist=False)
+
+    def _stash_mini(self) -> None:
+        if self.mini.isVisible():
+            app_settings.set_mini_pos(self.mini.x(), self.mini.y())
+            self.mini.hide()
+
+    def _stash_compact(self) -> None:
+        if self.compact_view.isVisible():
+            app_settings.set_compact_pos(
+                self.compact_view.x(), self.compact_view.y())
+            self.compact_view.hide()
+
+    def _default_corner(self, w: int, h: int, top: bool) -> tuple[int, int]:
+        scr = self.screen() or QGuiApplication.primaryScreen()
+        geo = scr.availableGeometry()
+        x = geo.right() - w - 24
+        y = (geo.top() + 24) if top else (geo.bottom() - h - 24)
+        return x, y
+
+    def _onscreen(self, x: int, y: int, w: int) -> bool:
+        """True if a chunk of the window's top edge lands on some screen — so a
+        position saved on a now-disconnected monitor doesn't open off-screen
+        and ungrabbable."""
+        return QGuiApplication.screenAt(QPoint(int(x + w / 2), int(y + 10))) is not None
+
+    def _show_mini(self) -> None:
+        self.mini.lock_size()
+        pos = app_settings.get_mini_pos()
+        if pos is None or not self._onscreen(pos[0], pos[1], self.mini.width()):
+            pos = self._default_corner(self.mini.width(), self.mini.height(), top=False)
+        self.mini.move(pos[0], pos[1])
         s = self._last_sample
         if s and s.ok:
-            self._sync_compact(s)
+            self._sync_mini(s)
+        self.mini.show()
+        self.mini.raise_()
+        self.mini.activateWindow()
 
-        self.hide()
-        self.compact.show()
-        self.compact.raise_()
-        self.compact.activateWindow()
+    def _show_compact(self) -> None:
+        self._sync_compact_view()
+        pos = app_settings.get_compact_pos()
+        if pos is None or not self._onscreen(pos[0], pos[1], self.compact_view.width()):
+            pos = self._default_corner(
+                self.compact_view.width(), self.compact_view.height(), top=True)
+        self.compact_view.move(pos[0], pos[1])
+        self.compact_view.show()
+        self.compact_view.raise_()
+        self.compact_view.activateWindow()
 
-    def _exit_compact(self) -> None:
-        if self.compact.isVisible():
-            app_settings.set_compact_pos(self.compact.x(), self.compact.y())
-            self.compact.hide()
-        self._show_window()
+    def _sync_compact_view(self) -> None:
+        """Push the current sessions + usage into the compact view."""
+        cv = getattr(self, "compact_view", None)
+        if cv is None:
+            return
+        cv.set_show_tokens(app_settings.get_show_token_usage())
+        cv.set_sessions(_view_states(
+            self._last_raw_states,
+            app_settings.get_show_multiple_sessions(),
+            app_settings.get_show_subagents(),
+        ))
+        s = self._last_sample
+        if s and s.ok:
+            e = int((time.time() - s.timestamp) // 60)
+            cv.update_usage(s,
+                            max(0, s.session_reset_minutes - e),
+                            max(0, s.weekly_reset_minutes - e),
+                            max(0, s.overage_reset_minutes - e),
+                            app_settings.get_show_token_usage())
+
+    def _update_compact_usage(self, s, sr: int, wr: int, ovr: int) -> None:
+        cv = getattr(self, "compact_view", None)
+        if cv is not None and cv.isVisible():
+            cv.update_usage(s, sr, wr, ovr, app_settings.get_show_token_usage())
 
     def _show_window(self) -> None:
-        if self.compact.isVisible():
-            app_settings.set_compact_pos(self.compact.x(), self.compact.y())
-            self.compact.hide()
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
+        """Bring the app to the front for a notification / toast click / second
+        launch. Restores whatever mode the user last chose (NOT forced to full)
+        so 'pop to front' never silently overwrites their compact/mini choice."""
+        self._restore_view()
 
     def closeEvent(self, event) -> None:
         # Minimize to tray unless the user opted into quit-on-close (or the tray
@@ -2230,10 +2464,15 @@ class Dashboard(QMainWindow):
         self._transcript.stop()
         self.sprite.stop()
         self.shelf.stop_all()
-        if self.compact.isVisible():
-            app_settings.set_compact_pos(self.compact.x(), self.compact.y())
-        self.compact.sprite.stop()
-        self.compact.close()
+        if self.mini.isVisible():
+            app_settings.set_mini_pos(self.mini.x(), self.mini.y())
+        self.mini.sprite.stop()
+        self.mini.close()
+        if self.compact_view.isVisible():
+            app_settings.set_compact_pos(
+                self.compact_view.x(), self.compact_view.y())
+        self.compact_view.stop_all()
+        self.compact_view.close()
         self._toast.sprite.stop()
         self._toast.close()
         self._tray.hide()

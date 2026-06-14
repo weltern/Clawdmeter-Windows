@@ -13,26 +13,41 @@ owns the multiplied mascot/activity layer.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 from PySide6.QtCore import (
+    Property,
     QEasingCurve,
     QParallelAnimationGroup,
+    QPoint,
+    QPointF,
     QPropertyAnimation,
+    QRectF,
+    QSize,
     Qt,
+    Signal,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLayout,
+    QMenu,
     QScrollArea,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import (
+    QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap,
+    QPolygonF,
+)
 
+import winutil
 from mood import GROUP_ANIMS
-from sprite_player import SpritePlayer
+from sprite_player import SpritePlayer, assets_root
+from uiutil import format_minutes, heat
 from transcript import (
     ACTIVITY_ANIMS,
     ACTIVITY_COLORS,
@@ -40,6 +55,7 @@ from transcript import (
     Activity,
     AgentState,
     TranscriptState,
+    fmt_tokens,
 )
 
 
@@ -62,12 +78,10 @@ QLabel#shelfHeader {{
     font-size: 13px; font-weight: 600; color: {_MUTED}; letter-spacing: 2px;
 }}
 QWidget#sessionTile {{ background: transparent; }}
-QLabel#tileProject {{ color: {_TEXT}; }}
 QLabel#tileActivity {{
     font-size: 11px; font-weight: 600; letter-spacing: 1px;
 }}
 QLabel#tileDot {{ font-size: 11px; }}
-QLabel#tileSub {{ font-size: 10px; color: {_MUTED}; }}
 QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 0 2px; }}
 QScrollBar::handle:horizontal {{
     background: #374151; border-radius: 4px; min-width: 24px;
@@ -98,10 +112,34 @@ def _ago_text(last_event_ts: float | None) -> str:
     return f"last active {hours}h {m:02d}m ago"
 
 
+def _abs_time_text(last_event_ts: float | None) -> str:
+    """Absolute local time of the last activity, for the idle tile's tooltip
+    (the relative 'Nm ago' is shown inline; hover gives the exact wall time)."""
+    if not last_event_ts:
+        return ""
+    return "Last active " + datetime.fromtimestamp(last_event_ts).strftime(
+        "%a %b %d, %I:%M %p"
+    )
+
+
+def _token_tooltip(t) -> str:
+    """Per-session token breakdown shown when hovering the mascot. Headline is
+    'work' (input+output); the cache buckets are listed separately so the big
+    cache-read figure is visible but doesn't distort the headline."""
+    return (
+        f"This session — {fmt_tokens(t.work)} tokens (input + output)\n"
+        f"  input  {fmt_tokens(t.input)}\n"
+        f"  output {fmt_tokens(t.output)}\n"
+        f"  cache  {fmt_tokens(t.cache_read + t.cache_write)} "
+        f"(read {fmt_tokens(t.cache_read)} + write {fmt_tokens(t.cache_write)})"
+    )
+
+
 # Cap for the project/title label. Session titles (from ai-title/custom-title)
-# are far longer than a cwd leaf, so the label is elided to at most this width
-# (or the mascot's width if larger) and the full title moves to a tooltip — a
-# long title can't stretch a tile far wider than its mascot.
+# are far longer than a cwd leaf, so the label is capped at this width (or the
+# mascot's width if larger): a long title can't stretch a tile far wider than
+# its mascot. At rest it's elided; on hover it scrolls to reveal the full text
+# (see ScrollingLabel).
 _LABEL_MIN_W = 150
 
 # Child-mascot (subagent) sizing.
@@ -111,6 +149,244 @@ AGENTS_ROW_SPACING = 4
 # Height reserved for the agents row before a real one can be measured; once a
 # tile has agents the true measured height is used instead (see _agent_extra).
 AGENT_ROW_FALLBACK = 46
+
+
+class ScrollingLabel(QWidget):
+    """A single-line title that elides at rest and, on hover, smoothly scrolls
+    (ping-pong) to reveal the full text — but only when it doesn't fit. The full
+    text is also exposed as a tooltip.
+
+    Hand-painted on purpose: elidedText() must measure with the SAME font we
+    render with (a QSS-applied font isn't seen by QFontMetrics, so it would
+    mis-measure and never truncate), and QLabel can't scroll its text.
+    """
+
+    _START_PAUSE = 0.18      # fraction of the cycle spent paused at each end
+    _SPEED_PX_S = 42         # scroll speed in px/sec (drives the duration)
+    _END_GAP_PX = 12         # trailing gap so the last glyph isn't flush to edge
+
+    def __init__(self, parent=None, *, px: int = 13, bold: bool = True,
+                 color: str = _TEXT, letter_spacing: float = 0.5,
+                 max_w: int = _LABEL_MIN_W, align=Qt.AlignHCenter) -> None:
+        super().__init__(parent)
+        self._full = ""
+        self._offset = 0
+        self._hovering = False
+        self._align = align           # how non-scrolling text sits (centre vs left)
+        self._explicit_tt: str | None = None   # None = auto (overflow-based)
+        self._font = QFont()
+        self._font.setPixelSize(px)
+        self._font.setBold(bold)
+        if letter_spacing:
+            self._font.setLetterSpacing(QFont.AbsoluteSpacing, letter_spacing)
+        self._fm = QFontMetrics(self._font)
+        self._color = QColor(color)
+        self.setFixedHeight(self._fm.height())
+        self.setMaximumWidth(max_w)
+        self._anim = QPropertyAnimation(self, b"scrollOffset", self)
+        self._anim.setEasingCurve(QEasingCurve.InOutSine)
+
+    # --- public API (QLabel-like) -------------------------------------------
+    def setText(self, text: str, tooltip: str | None = None) -> None:
+        """Set the label text. `tooltip=None` → auto (full text shown on hover
+        only when it overflows); pass an explicit string to override (e.g. the
+        idle line shows the absolute last-active time instead)."""
+        text = text or ""
+        self._explicit_tt = tooltip
+        if text == self._full:
+            self._refresh_tooltip()
+            return
+        self._full = text
+        self._offset = 0
+        self._refresh_tooltip()
+        self.updateGeometry()
+        self.update()
+
+    def text(self) -> str:
+        return self._full
+
+    # --- geometry -----------------------------------------------------------
+    def _avail(self) -> int:
+        # Realized width once laid out; the cap as a fallback before show (and in
+        # headless tests) so overflow/elision decisions stay deterministic.
+        return self.width() or self.maximumWidth()
+
+    def _text_w(self) -> int:
+        return self._fm.horizontalAdvance(self._full)
+
+    def _overflows(self) -> bool:
+        return self._text_w() > self._avail()
+
+    def sizeHint(self) -> QSize:
+        return QSize(min(self._text_w(), self.maximumWidth()), self._fm.height())
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, self._fm.height())
+
+    def _refresh_tooltip(self) -> None:
+        if self._explicit_tt is not None:
+            self.setToolTip(self._explicit_tt)
+        else:
+            self.setToolTip(self._full if self._overflows() else "")
+
+    # --- animatable scroll offset -------------------------------------------
+    def _get_offset(self) -> int:
+        return self._offset
+
+    def _set_offset(self, v: int) -> None:
+        self._offset = int(v)
+        self.update()
+
+    scrollOffset = Property(int, _get_offset, _set_offset)
+
+    # --- events -------------------------------------------------------------
+    def enterEvent(self, e) -> None:
+        self._hovering = True
+        self._maybe_scroll()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e) -> None:
+        self._hovering = False
+        self._anim.stop()
+        self._offset = 0
+        self.update()
+        super().leaveEvent(e)
+
+    def resizeEvent(self, e) -> None:
+        self._refresh_tooltip()
+        if self._hovering:
+            self._maybe_scroll()
+        else:
+            self._offset = 0
+        super().resizeEvent(e)
+
+    def _maybe_scroll(self) -> None:
+        self._anim.stop()
+        span = self._text_w() + self._END_GAP_PX - self._avail()
+        if span <= 0:
+            self._offset = 0
+            self.update()
+            return
+        # Ping-pong: pause, scroll out, pause, scroll back — loop while hovered.
+        travel_s = span / self._SPEED_PX_S
+        total = max(1.2, 2 * travel_s / (1 - 2 * self._START_PAUSE))
+        self._anim.setDuration(int(total * 1000))
+        p = self._START_PAUSE
+        self._anim.setKeyValueAt(0.0, 0)
+        self._anim.setKeyValueAt(p, 0)
+        self._anim.setKeyValueAt(0.5 - p / 2, span)
+        self._anim.setKeyValueAt(0.5 + p / 2, span)
+        self._anim.setKeyValueAt(1.0 - p, 0)
+        self._anim.setKeyValueAt(1.0, 0)
+        self._anim.setLoopCount(-1)
+        self._anim.start()
+
+    def paintEvent(self, e) -> None:
+        if not self._full:
+            return
+        p = QPainter(self)
+        p.setFont(self._font)
+        p.setPen(self._color)
+        rect = self.rect()
+        if not self._overflows():
+            p.drawText(rect, self._align | Qt.AlignVCenter, self._full)
+        elif self._hovering:
+            y = self._fm.ascent() + (self.height() - self._fm.height()) // 2
+            p.drawText(-self._offset, y, self._full)
+        else:
+            elided = self._fm.elidedText(self._full, Qt.ElideRight, self._avail())
+            p.drawText(rect, self._align | Qt.AlignVCenter, elided)
+        p.end()
+
+
+# Usage-bar palette (was QProgressBar QSS; now painted so the bar can render
+# past 100% with a distinct overage colour).
+_BAR_TRACK = "#1f2937"
+_BAR_BORDER = "#374151"
+_BAR_OVERAGE = "#A50F1A"   # deep fire-truck red — the overage overflow
+_BAR_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
+
+
+def square_caret_icon(up: bool, color: str = "#CE7D6B", px: int = 16) -> QIcon:
+    """Hand-drawn 'square-caret' icon — a caret inside a rounded square, pointing
+    up or down (the Full<->Compact view toggle; FA's SVG can't render in the
+    size-pruned frozen build, so we paint it). Rendered at 2x for crispness."""
+    ratio = 2
+    pm = QPixmap(px * ratio, px * ratio)
+    pm.setDevicePixelRatio(ratio)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    c = QColor(color)
+    pen = QPen(c)
+    pen.setWidthF(1.4)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    m = 1.6
+    p.drawRoundedRect(QRectF(m, m, px - 2 * m, px - 2 * m), 2.5, 2.5)
+    p.setPen(Qt.NoPen)
+    p.setBrush(c)
+    cx, half = px / 2.0, 3.0
+    if up:
+        tri = [QPointF(cx - half, px * 0.60), QPointF(cx + half, px * 0.60),
+               QPointF(cx, px * 0.40)]
+    else:
+        tri = [QPointF(cx - half, px * 0.40), QPointF(cx + half, px * 0.40),
+               QPointF(cx, px * 0.60)]
+    p.drawPolygon(QPolygonF(tri))
+    p.end()
+    return QIcon(pm)
+
+
+class UsageBar(QWidget):
+    """A usage bar that can render PAST 100%. The base fills 0–100% in its heat
+    colour; any overage continues in red, with the scale extended so the 100%
+    mark sits proportionally (20% overage -> the bar is full, its last 1/6 red).
+    Shared by the full window and the compact view."""
+
+    def __init__(self, parent=None, *, height: int = 14) -> None:
+        super().__init__(parent)
+        self._value = 0      # base utilisation 0..100
+        self._overage = 0    # overage beyond 100 (0 = none)
+        self._heat = "cool"
+        self.setFixedHeight(height)
+
+    def set_values(self, value: int, overage: int = 0, heat: str = "cool") -> None:
+        value = max(0, int(value))
+        overage = max(0, int(overage))
+        heat = heat if heat in _BAR_HEAT else "cool"
+        if (value, overage, heat) == (self._value, self._overage, self._heat):
+            return
+        self._value, self._overage, self._heat = value, overage, heat
+        self.update()
+
+    def paintEvent(self, e) -> None:
+        p = QPainter(self)
+        rect = self.rect().adjusted(0, 0, -1, -1)
+        p.setPen(QColor(_BAR_BORDER))
+        p.setBrush(QColor(_BAR_TRACK))
+        p.drawRect(rect)
+
+        inner = rect.adjusted(1, 1, 0, 0)
+        w, h, x, y = inner.width(), inner.height(), inner.x(), inner.y()
+        p.setPen(Qt.NoPen)
+        if self._overage > 0:
+            # Bar represents 0..(100+overage). The overage builds from the LEFT
+            # in red, then the normal (coral) weekly fill continues to its right
+            # — so the red grows left-to-right as overage climbs.
+            scale = 100 + self._overage
+            over_w = int(round(w * self._overage / scale))
+            if over_w > 0:
+                p.setBrush(QColor(_BAR_OVERAGE))
+                p.drawRect(x, y, over_w, h)
+            p.setBrush(QColor(_BAR_HEAT[self._heat]))
+            p.drawRect(x + over_w, y, w - over_w, h)
+        else:
+            base_w = int(round(w * min(self._value, 100) / 100))
+            if base_w > 0:
+                p.setBrush(QColor(_BAR_HEAT[self._heat]))
+                p.drawRect(x, y, base_w, h)
+        p.end()
 
 
 class AgentMascot(QWidget):
@@ -157,6 +433,7 @@ class SessionTile(QWidget):
         self.setObjectName("sessionTile")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self._session_id = session_id
+        self._show_tokens = True   # mascot-hover token breakdown (gated by Settings)
 
         col = QVBoxLayout(self)
         # Side margins double as the inter-tile gap (the row spacing is 0) so a
@@ -184,22 +461,11 @@ class SessionTile(QWidget):
         self.sprite.setGraphicsEffect(self._glow)
         col.addWidget(self.sprite, 0, Qt.AlignHCenter)
 
-        self.project_label = QLabel("…", objectName="tileProject")
-        self.project_label.setAlignment(Qt.AlignHCenter)
-        # Set the font in code (not just QSS): elidedText() measures via the
-        # widget's fontMetrics(), which does NOT reflect a QSS-applied font, so
-        # eliding against the QSS font would under-measure and never truncate.
-        _pf = QFont()
-        _pf.setPixelSize(13)
-        _pf.setBold(True)
-        _pf.setLetterSpacing(QFont.AbsoluteSpacing, 0.5)
-        self.project_label.setFont(_pf)
-        # Full (un-elided) label text, kept so we can re-elide when the tile
-        # resizes and expose the whole title as a tooltip.
-        self._project_text = ""
+        # Title label: elides at rest, scrolls on hover, full text in a tooltip.
+        self.project_label = ScrollingLabel()
         self._label_max_w = max(sprite_size, _LABEL_MIN_W)
         self.project_label.setMaximumWidth(self._label_max_w)
-        col.addWidget(self.project_label)
+        col.addWidget(self.project_label, 0, Qt.AlignHCenter)
 
         # Activity + a leading status dot share one row so the dot reads as a
         # badge on the label rather than floating loose.
@@ -212,10 +478,12 @@ class SessionTile(QWidget):
         act_row.addWidget(self.activity_label)
         col.addLayout(act_row)
 
-        # Secondary line — tool name when live, "last active Nm ago" when idle.
-        self.sub_label = QLabel("", objectName="tileSub")
-        self.sub_label.setAlignment(Qt.AlignHCenter)
-        col.addWidget(self.sub_label)
+        # Secondary line — the target being acted on (file/pattern/…, else the
+        # tool name) when live, "last active Nm ago" when idle. Scrolls on hover
+        # like the title, since file paths/queries can be long.
+        self.sub_label = ScrollingLabel(px=10, bold=False, color=_MUTED,
+                                        letter_spacing=0, max_w=self._label_max_w)
+        col.addWidget(self.sub_label, 0, Qt.AlignHCenter)
 
         # Row of child mascots for live subagents — hidden until the session has any.
         self._agents: dict[str, AgentMascot] = {}
@@ -258,27 +526,26 @@ class SessionTile(QWidget):
         # early-returns when the size is unchanged, so calling it every poll is
         # cheap and won't churn the layout.
         self.sprite.set_size(px)
-        # Keep the label cap in step with the mascot width and re-elide.
+        # Keep the label cap in step with the mascot width; the label re-elides
+        # / re-evaluates its scroll on the resulting resize.
         new_w = max(px, _LABEL_MIN_W)
         if new_w != self._label_max_w:
             self._label_max_w = new_w
-            self._apply_project_label()
-
-    def _apply_project_label(self) -> None:
-        """Show the title elided to the tile width, with the full text as a
-        tooltip when it doesn't fit."""
-        w = self._label_max_w
-        self.project_label.setMaximumWidth(w)
-        text = self._project_text or "unknown"
-        elided = self.project_label.fontMetrics().elidedText(text, Qt.ElideRight, w)
-        self.project_label.setText(elided)
-        self.project_label.setToolTip(text if elided != text else "")
+            self.project_label.setMaximumWidth(new_w)
+            self.sub_label.setMaximumWidth(new_w)
 
     def update_state(self, state: TranscriptState) -> None:
         """Reflect one session's state: name, activity color/label, glow, dot,
         and the mascot animation (idle sessions get the calm sleep loop)."""
-        self._project_text = state.project_name or "unknown"
-        self._apply_project_label()
+        self.project_label.setText(state.project_name or "unknown")
+
+        # Per-session token breakdown on mascot hover (when enabled and there's
+        # something to show).
+        tokens = getattr(state, "tokens", None)
+        if self._show_tokens and tokens is not None and tokens.total > 0:
+            self.sprite.setToolTip(_token_tooltip(tokens))
+        else:
+            self.sprite.setToolTip("")
 
         idle = state.is_stale or state.activity == Activity.IDLE
         color = ACTIVITY_COLORS.get(state.activity, _IDLE_COLOR)
@@ -292,7 +559,8 @@ class SessionTile(QWidget):
             self.activity_label.setText(ACTIVITY_LABELS[Activity.IDLE])
             self.activity_label.setStyleSheet(f"color: {_IDLE_COLOR};")
             self.status_dot.setStyleSheet(f"color: {_IDLE_COLOR};")
-            self.sub_label.setText(_ago_text(state.last_event_ts))
+            self.sub_label.setText(_ago_text(state.last_event_ts),
+                                   tooltip=_abs_time_text(state.last_event_ts))
             self.sprite.set_anims(f"{self._session_id}:idle", _IDLE_ANIMS)
         else:
             self._glow.setColor(QColor(color))
@@ -301,7 +569,8 @@ class SessionTile(QWidget):
             self.activity_label.setStyleSheet(f"color: {color};")
             # Live dot tracks the activity color so the tile reads as a unit.
             self.status_dot.setStyleSheet(f"color: {color};")
-            self.sub_label.setText(state.tool_name or "")
+            # Show what's being acted on (file/pattern/…); fall back to the tool.
+            self.sub_label.setText(state.target or state.tool_name or "")
             anims = ACTIVITY_ANIMS.get(state.activity) or _IDLE_ANIMS
             self.sprite.set_anims(f"{self._session_id}:{state.activity.value}", anims)
 
@@ -373,6 +642,9 @@ class SessionShelf(QWidget):
         self.setStyleSheet(SHELF_STYLESHEET)
 
         self._tiles: dict[str, SessionTile] = {}
+        # Whether tiles expose the per-session token breakdown on mascot hover
+        # (mirrors the Settings "Show token usage" toggle; applied to new tiles).
+        self._show_tokens = True
         # Tiles mid-leave (animating out, still in the layout) keyed by id, and
         # the live animation groups keyed by tile so they aren't GC'd and so we
         # can tell when the shelf is "settled" (safe to reorder).
@@ -444,6 +716,7 @@ class SessionShelf(QWidget):
                 tile = self._resurrect(sid)  # a session that reappeared mid-leave
                 if tile is None:
                     tile = SessionTile(sid, sprite_size=size, parent=self._row_widget)
+                    tile._show_tokens = self._show_tokens
                     self._tiles[sid] = tile
                     self._insert_live(tile, index)
                     tile.set_sprite_size(size)
@@ -474,6 +747,13 @@ class SessionShelf(QWidget):
         """Show/hide the 'ACTIVE SESSIONS — N' header (hidden in single-mascot
         mode, where the count is meaningless)."""
         self.header.setVisible(on)
+
+    def set_show_tokens(self, on: bool) -> None:
+        """Enable/disable the per-session token breakdown on mascot hover. The
+        actual tooltip text is (re)applied by the next update_state."""
+        self._show_tokens = bool(on)
+        for tile in (*self._tiles.values(), *self._leaving.values()):
+            tile._show_tokens = self._show_tokens
 
     def _start_enter(self, tile: SessionTile) -> None:
         anim = tile.build_enter_anim()
@@ -645,3 +925,374 @@ class SessionShelf(QWidget):
         self._anims.clear()
         for tile in list(self._tiles.values()) + list(self._leaving.values()):
             tile.stop()
+
+
+# ---------------------------------------------------------------------------
+# Compact mode — a denser list view (one horizontal row per session) for when
+# you're running many sessions. Distinct from the shelf (vertical mascots) and
+# from mini (the tiny readout).
+# ---------------------------------------------------------------------------
+
+COMPACT_MASCOT = 38
+
+COMPACT_STYLESHEET = f"""
+QWidget#compactRoot {{ background: {_BG}; }}
+QWidget#compactTitleBar {{ background: #0b0e13; }}
+QLabel#compactTitle {{ font-size: 12px; font-weight: 700; color: {_TEXT};
+                       letter-spacing: 1.5px; }}
+QToolButton#compactBtn {{ background: transparent; color: #CE7D6B; border: none;
+                          font-size: 13px; padding: 2px 7px; }}
+QToolButton#compactBtn:hover {{ background: #1f2937; }}
+QWidget#compactRow:hover {{ background: #161b22; }}
+QLabel#compactBarLabel {{ font-size: 10px; font-weight: 600; color: {_MUTED};
+                          letter-spacing: 1px; }}
+QLabel#compactPctLbl {{ font-size: 11px; font-weight: 700; color: {_TEXT}; }}
+QLabel#compactReset {{ font-size: 10px; color: {_MUTED}; }}
+QLabel#compactRowTokens {{ font-size: 11px; font-weight: 700; color: {_MUTED}; }}
+QLabel#compactRowDot {{ font-size: 11px; }}
+QLabel#compactRowActivity {{ font-size: 10px; font-weight: 600; letter-spacing: 1px; }}
+QLabel#compactRowAgents {{ font-size: 10px; font-weight: 700; color: {_MUTED}; }}
+QScrollArea#compactScroll {{ background: transparent; border: none; }}
+QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px 0; }}
+QScrollBar::handle:vertical {{ background: #374151; border-radius: 4px; min-height: 24px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+"""
+
+
+class CompactRow(QWidget):
+    """One session as a horizontal row: small mascot | title + tokens, then a
+    second line of ``● activity · target`` (or 'last active …' when idle)."""
+
+    _DOT = "●"
+
+    def __init__(self, session_id: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("compactRow")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self._sid = session_id
+        self._show_tokens = True
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(10, 5, 10, 5)
+        h.setSpacing(9)
+
+        self.sprite = SpritePlayer(size=COMPACT_MASCOT)
+        self._glow = QGraphicsDropShadowEffect(self)
+        self._glow.setBlurRadius(14)
+        self._glow.setOffset(0, 0)
+        self._glow.setColor(QColor(_IDLE_COLOR))
+        self.sprite.setGraphicsEffect(self._glow)
+        h.addWidget(self.sprite, 0, Qt.AlignVCenter)
+
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        col.setContentsMargins(0, 0, 0, 0)
+
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        self.title = ScrollingLabel(px=12, bold=True, color=_TEXT, max_w=230,
+                                    align=Qt.AlignLeft)
+        self.tokens = QLabel("", objectName="compactRowTokens")
+        self.tokens.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        top.addWidget(self.title, 1)
+        top.addWidget(self.tokens, 0)
+        col.addLayout(top)
+
+        bot = QHBoxLayout()
+        bot.setSpacing(5)
+        self.dot = QLabel(self._DOT, objectName="compactRowDot")
+        self.activity = QLabel("", objectName="compactRowActivity")
+        self.sep = QLabel("·", objectName="compactRowActivity")
+        self.target = ScrollingLabel(px=10, bold=False, color=_MUTED,
+                                     letter_spacing=0, max_w=170, align=Qt.AlignLeft)
+        self.agents = QLabel("", objectName="compactRowAgents")
+        bot.addWidget(self.dot, 0)
+        bot.addWidget(self.activity, 0)
+        bot.addWidget(self.sep, 0)
+        bot.addWidget(self.target, 1)
+        bot.addWidget(self.agents, 0)
+        col.addLayout(bot)
+
+        h.addLayout(col, 1)
+
+    def set_show_tokens(self, on: bool) -> None:
+        self._show_tokens = bool(on)
+
+    def update_state(self, state: TranscriptState) -> None:
+        self.title.setText(state.project_name or "unknown")
+        idle = state.is_stale or state.activity == Activity.IDLE
+        color = ACTIVITY_COLORS.get(state.activity, _IDLE_COLOR)
+        if idle:
+            self._glow.setColor(QColor(_IDLE_COLOR))
+            self._glow.setBlurRadius(6)
+            self.dot.setStyleSheet(f"color: {_IDLE_COLOR};")
+            self.activity.setText(ACTIVITY_LABELS[Activity.IDLE])
+            self.activity.setStyleSheet(f"color: {_IDLE_COLOR};")
+            self.sep.hide()
+            self.target.setText(_ago_text(state.last_event_ts),
+                                tooltip=_abs_time_text(state.last_event_ts))
+            self.sprite.set_anims(f"crow:{self._sid}:idle", _IDLE_ANIMS)
+        else:
+            self._glow.setColor(QColor(color))
+            self._glow.setBlurRadius(14)
+            self.dot.setStyleSheet(f"color: {color};")
+            self.activity.setText(ACTIVITY_LABELS.get(state.activity, ""))
+            self.activity.setStyleSheet(f"color: {color};")
+            tgt = state.target or state.tool_name or ""
+            self.sep.setVisible(bool(tgt))
+            self.target.setText(tgt)
+            anims = ACTIVITY_ANIMS.get(state.activity) or _IDLE_ANIMS
+            self.sprite.set_anims(f"crow:{self._sid}:{state.activity.value}", anims)
+
+        tk = getattr(state, "tokens", None)
+        if self._show_tokens and tk is not None and tk.work > 0:
+            self.tokens.setText(fmt_tokens(tk.work))
+            self.sprite.setToolTip(_token_tooltip(tk))
+        else:
+            self.tokens.setText("")
+            self.sprite.setToolTip("")
+
+    def update_agents(self, agents) -> None:
+        n = len(agents)
+        self.agents.setText(f"+{n}" if n else "")
+        self.agents.setToolTip(
+            f"{n} subagent{'s' if n != 1 else ''}" if n else "")
+
+    def stop(self) -> None:
+        self.sprite.stop()
+
+
+class CompactView(QWidget):
+    """Compact mode window: slim usage bars over a scrollable list of session
+    rows. Frameless, draggable by its title bar, always-on-top, no taskbar."""
+
+    set_mode_requested = Signal(str)  # a view segment -> switch to that mode
+    grow_requested = Signal()    # double-click title / menu -> full view
+    hide_requested = Signal()    # close button -> hide to tray
+    quit_requested = Signal()
+
+    WIDTH = 400
+    MAX_ROWS = 6
+    ROW_H = 50
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.setObjectName("compactRoot")
+        self.setWindowTitle("Clawdmeter")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet(COMPACT_STYLESHEET)
+        self.setWindowFlags(
+            Qt.Window | Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+        )
+        icon_path = assets_root() / "icon.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+        self.setFixedWidth(self.WIDTH)
+        self._press_pos: QPoint | None = None
+        self._rows: dict[str, CompactRow] = {}
+        self._show_tokens = True
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # title bar
+        self._title_bar = QWidget(objectName="compactTitleBar")
+        trow = QHBoxLayout(self._title_bar)
+        trow.setContentsMargins(10, 6, 6, 6)
+        trow.setSpacing(6)
+        icon_lbl = QLabel()
+        if icon_path.exists():
+            icon_lbl.setPixmap(QIcon(str(icon_path)).pixmap(18, 18))
+        trow.addWidget(icon_lbl)
+        trow.addWidget(QLabel("CLAWDMETER", objectName="compactTitle"))
+        trow.addStretch(1)
+        # Caret toggle (points UP in compact -> click expands to full) + the
+        # mini button, matching the full window's switcher.
+        self.caret_btn = self._tbtn("", "Full view")
+        self.caret_btn.setIcon(square_caret_icon(up=True))
+        self.caret_btn.setIconSize(QSize(16, 16))
+        self.caret_btn.clicked.connect(lambda: self.set_mode_requested.emit("full"))
+        trow.addWidget(self.caret_btn)
+        self.mini_btn = self._tbtn(chr(0xE73F), "Mini view")  # BackToWindow
+        # The glyph is a Segoe icon-font codepoint; the compact stylesheet
+        # doesn't set that family (unlike the full title bar), so apply it here
+        # or it falls back to a default font and renders as tofu.
+        _iconf = self.mini_btn.font()
+        _iconf.setFamilies(["Segoe Fluent Icons", "Segoe MDL2 Assets"])
+        self.mini_btn.setFont(_iconf)
+        self.mini_btn.clicked.connect(lambda: self.set_mode_requested.emit("mini"))
+        trow.addWidget(self.mini_btn)
+        self.close_btn = self._tbtn("✕", "Hide to tray")  # ✕
+        self.close_btn.clicked.connect(self.hide_requested.emit)
+        trow.addSpacing(4)
+        trow.addWidget(self.close_btn)
+        outer.addWidget(self._title_bar)
+
+        # slim bars
+        bars = QWidget()
+        bcol = QVBoxLayout(bars)
+        bcol.setContentsMargins(12, 6, 12, 8)
+        bcol.setSpacing(3)
+        self.s_label, self.s_pct, self.s_bar, self.s_reset = self._slim_bar(bcol)
+        bcol.addSpacing(4)
+        self.w_label, self.w_pct, self.w_bar, self.w_reset = self._slim_bar(bcol)
+        outer.addWidget(bars)
+
+        # scrollable session list
+        self._scroll = QScrollArea(objectName="compactScroll")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._list_widget = QWidget(objectName="compactList")
+        self._list_widget.setStyleSheet("QWidget#compactList { background: transparent; }")
+        self._list = QVBoxLayout(self._list_widget)
+        self._list.setContentsMargins(0, 0, 0, 4)
+        self._list.setSpacing(0)
+        self._list.addStretch(1)
+        self._scroll.setWidget(self._list_widget)
+        outer.addWidget(self._scroll, 1)
+
+        menu = QMenu(self)
+        act_full = QAction("Full view", self)
+        act_full.triggered.connect(self.grow_requested.emit)
+        act_quit = QAction("Quit", self)
+        act_quit.triggered.connect(self.quit_requested.emit)
+        menu.addAction(act_full)
+        menu.addSeparator()
+        menu.addAction(act_quit)
+        self._menu = menu
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(
+            lambda p: self._menu.exec(self.mapToGlobal(p)))
+
+    def _tbtn(self, glyph: str, tip: str) -> QToolButton:
+        b = QToolButton()
+        b.setObjectName("compactBtn")
+        b.setText(glyph)
+        b.setToolTip(tip)
+        b.setCursor(Qt.PointingHandCursor)
+        return b
+
+    def set_active_mode(self, mode: str) -> None:
+        """Compact's caret always points up (click -> full); kept for parity
+        with the full title bar's switcher API."""
+        self.caret_btn.setIcon(square_caret_icon(up=True))
+
+    def _slim_bar(self, parent_col: QVBoxLayout):
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        label = QLabel("", objectName="compactBarLabel")
+        pct = QLabel("-", objectName="compactPctLbl")
+        pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        head.addWidget(label)
+        head.addStretch(1)
+        head.addWidget(pct)
+        bar = UsageBar(height=8)
+        reset = QLabel("", objectName="compactReset")
+        parent_col.addLayout(head)
+        parent_col.addWidget(bar)
+        parent_col.addWidget(reset)
+        return label, pct, bar, reset
+
+    @staticmethod
+    def _apply_bar(label, pct, bar, reset, title, value, overage,
+                   reset_min, tokens, show_tokens) -> None:
+        if overage > 0:
+            # Bar stays full in its normal colour with a red overflow past 100%;
+            # the label gets a red OVERAGE tag and the % reads e.g. 120%.
+            label.setText(
+                f'{title} <span style="color:{_BAR_OVERAGE}; font-weight:700">'
+                f'OVERAGE</span>')
+            pct.setText(f"{100 + overage}%")
+            # Base keeps the normal (coral) colour so the red overage reads as a
+            # distinct overflow after it, left-to-right.
+            bar.set_values(100, overage, "cool")
+        else:
+            label.setText(title)
+            pct.setText(f"{value}%")
+            bar.set_values(value, 0, heat(value))
+        line = f"resets in {format_minutes(reset_min)}"
+        if show_tokens:
+            line += f" · {fmt_tokens(tokens)}"
+        reset.setText(line)
+
+    def update_usage(self, s, sr: int, wr: int, ovr: int, show_tokens: bool) -> None:
+        self._apply_bar(self.s_label, self.s_pct, self.s_bar, self.s_reset,
+                        "SESSION 5h", s.session_pct, 0, sr, s.tokens_5h, show_tokens)
+        ov = getattr(s, "overage_pct", 0)
+        self._apply_bar(self.w_label, self.w_pct, self.w_bar, self.w_reset,
+                        "WEEKLY 7d", s.weekly_pct, ov, wr, s.tokens_7d, show_tokens)
+        self.w_bar.setToolTip(
+            f"Overage resets in {format_minutes(ovr)}" if ov > 0 else "")
+
+    def set_show_tokens(self, on: bool) -> None:
+        self._show_tokens = bool(on)
+        for row in self._rows.values():
+            row.set_show_tokens(on)
+
+    def set_sessions(self, states) -> None:
+        incoming = {s.session_id: s for s in states if s.session_id}
+        for sid in list(self._rows):
+            if sid not in incoming:
+                row = self._rows.pop(sid)
+                self._list.removeWidget(row)
+                row.stop()
+                row.deleteLater()
+        # Only churn the layout (detach + re-insert every row) when the roster
+        # ORDER actually changed; a steady roster just updates rows in place.
+        new_order = list(incoming)
+        if new_order != list(self._rows):
+            for row in self._rows.values():
+                self._list.removeWidget(row)
+            ordered = {}
+            for index, sid in enumerate(new_order):
+                row = self._rows.get(sid)
+                if row is None:
+                    row = CompactRow(sid, parent=self._list_widget)
+                    row.set_show_tokens(self._show_tokens)
+                self._list.insertWidget(index, row)
+                row.show()
+                ordered[sid] = row
+            self._rows = ordered
+        for sid, st in incoming.items():
+            row = self._rows[sid]
+            row.update_state(st)
+            row.update_agents(getattr(st, "agents", []) or [])
+        self._relayout()
+
+    def _relayout(self) -> None:
+        visible = min(max(1, len(self._rows)), self.MAX_ROWS)
+        if visible == getattr(self, "_last_visible_rows", None):
+            return
+        self._last_visible_rows = visible
+        self._scroll.setFixedHeight(visible * self.ROW_H + 6)
+        self.adjustSize()
+
+    def stop_all(self) -> None:
+        for row in self._rows.values():
+            row.stop()
+
+    # --- frameless drag + grow-on-double-click (title bar only) -------------
+    def _in_title(self, e) -> bool:
+        return self._title_bar.geometry().contains(e.position().toPoint())
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton and self._in_title(e):
+            self._press_pos = e.globalPosition().toPoint()
+            e.accept()
+
+    def mouseMoveEvent(self, e) -> None:
+        if (e.buttons() & Qt.LeftButton) and self._press_pos is not None:
+            moved = (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
+            if moved >= QApplication.startDragDistance():
+                self._press_pos = None
+                winutil.start_native_move(int(self.winId()))
+            e.accept()
+
+    def mouseReleaseEvent(self, e) -> None:
+        self._press_pos = None
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton and self._in_title(e):
+            self.grow_requested.emit()
