@@ -16,9 +16,11 @@ import time
 from datetime import datetime
 
 from PySide6.QtCore import (
+    Property,
     QEasingCurve,
     QParallelAnimationGroup,
     QPropertyAnimation,
+    QSize,
     Qt,
 )
 from PySide6.QtWidgets import (
@@ -30,7 +32,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 
 from mood import GROUP_ANIMS
 from sprite_player import SpritePlayer
@@ -110,9 +112,10 @@ def _abs_time_text(last_event_ts: float | None) -> str:
 
 
 # Cap for the project/title label. Session titles (from ai-title/custom-title)
-# are far longer than a cwd leaf, so the label is elided to at most this width
-# (or the mascot's width if larger) and the full title moves to a tooltip — a
-# long title can't stretch a tile far wider than its mascot.
+# are far longer than a cwd leaf, so the label is capped at this width (or the
+# mascot's width if larger): a long title can't stretch a tile far wider than
+# its mascot. At rest it's elided; on hover it scrolls to reveal the full text
+# (see ScrollingLabel).
 _LABEL_MIN_W = 150
 
 # Child-mascot (subagent) sizing.
@@ -122,6 +125,141 @@ AGENTS_ROW_SPACING = 4
 # Height reserved for the agents row before a real one can be measured; once a
 # tile has agents the true measured height is used instead (see _agent_extra).
 AGENT_ROW_FALLBACK = 46
+
+
+class ScrollingLabel(QWidget):
+    """A single-line title that elides at rest and, on hover, smoothly scrolls
+    (ping-pong) to reveal the full text — but only when it doesn't fit. The full
+    text is also exposed as a tooltip.
+
+    Hand-painted on purpose: elidedText() must measure with the SAME font we
+    render with (a QSS-applied font isn't seen by QFontMetrics, so it would
+    mis-measure and never truncate), and QLabel can't scroll its text.
+    """
+
+    _START_PAUSE = 0.18      # fraction of the cycle spent paused at each end
+    _SPEED_PX_S = 42         # scroll speed in px/sec (drives the duration)
+    _END_GAP_PX = 12         # trailing gap so the last glyph isn't flush to edge
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._full = ""
+        self._offset = 0
+        self._hovering = False
+        self._font = QFont()
+        self._font.setPixelSize(13)
+        self._font.setBold(True)
+        self._font.setLetterSpacing(QFont.AbsoluteSpacing, 0.5)
+        self._fm = QFontMetrics(self._font)
+        self._color = QColor(_TEXT)
+        self.setFixedHeight(self._fm.height())
+        self.setMaximumWidth(_LABEL_MIN_W)
+        self._anim = QPropertyAnimation(self, b"scrollOffset", self)
+        self._anim.setEasingCurve(QEasingCurve.InOutSine)
+
+    # --- public API (QLabel-like) -------------------------------------------
+    def setText(self, text: str) -> None:
+        text = text or ""
+        if text == self._full:
+            return
+        self._full = text
+        self._offset = 0
+        self._refresh_tooltip()
+        self.updateGeometry()
+        self.update()
+
+    def text(self) -> str:
+        return self._full
+
+    # --- geometry -----------------------------------------------------------
+    def _avail(self) -> int:
+        # Realized width once laid out; the cap as a fallback before show (and in
+        # headless tests) so overflow/elision decisions stay deterministic.
+        return self.width() or self.maximumWidth()
+
+    def _text_w(self) -> int:
+        return self._fm.horizontalAdvance(self._full)
+
+    def _overflows(self) -> bool:
+        return self._text_w() > self._avail()
+
+    def sizeHint(self) -> QSize:
+        return QSize(min(self._text_w(), self.maximumWidth()), self._fm.height())
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, self._fm.height())
+
+    def _refresh_tooltip(self) -> None:
+        self.setToolTip(self._full if self._overflows() else "")
+
+    # --- animatable scroll offset -------------------------------------------
+    def _get_offset(self) -> int:
+        return self._offset
+
+    def _set_offset(self, v: int) -> None:
+        self._offset = int(v)
+        self.update()
+
+    scrollOffset = Property(int, _get_offset, _set_offset)
+
+    # --- events -------------------------------------------------------------
+    def enterEvent(self, e) -> None:
+        self._hovering = True
+        self._maybe_scroll()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e) -> None:
+        self._hovering = False
+        self._anim.stop()
+        self._offset = 0
+        self.update()
+        super().leaveEvent(e)
+
+    def resizeEvent(self, e) -> None:
+        self._refresh_tooltip()
+        if self._hovering:
+            self._maybe_scroll()
+        else:
+            self._offset = 0
+        super().resizeEvent(e)
+
+    def _maybe_scroll(self) -> None:
+        self._anim.stop()
+        span = self._text_w() + self._END_GAP_PX - self._avail()
+        if span <= 0:
+            self._offset = 0
+            self.update()
+            return
+        # Ping-pong: pause, scroll out, pause, scroll back — loop while hovered.
+        travel_s = span / self._SPEED_PX_S
+        total = max(1.2, 2 * travel_s / (1 - 2 * self._START_PAUSE))
+        self._anim.setDuration(int(total * 1000))
+        p = self._START_PAUSE
+        self._anim.setKeyValueAt(0.0, 0)
+        self._anim.setKeyValueAt(p, 0)
+        self._anim.setKeyValueAt(0.5 - p / 2, span)
+        self._anim.setKeyValueAt(0.5 + p / 2, span)
+        self._anim.setKeyValueAt(1.0 - p, 0)
+        self._anim.setKeyValueAt(1.0, 0)
+        self._anim.setLoopCount(-1)
+        self._anim.start()
+
+    def paintEvent(self, e) -> None:
+        if not self._full:
+            return
+        p = QPainter(self)
+        p.setFont(self._font)
+        p.setPen(self._color)
+        rect = self.rect()
+        if not self._overflows():
+            p.drawText(rect, Qt.AlignHCenter | Qt.AlignVCenter, self._full)
+        elif self._hovering:
+            y = self._fm.ascent() + (self.height() - self._fm.height()) // 2
+            p.drawText(-self._offset, y, self._full)
+        else:
+            elided = self._fm.elidedText(self._full, Qt.ElideRight, self._avail())
+            p.drawText(rect, Qt.AlignHCenter | Qt.AlignVCenter, elided)
+        p.end()
 
 
 class AgentMascot(QWidget):
@@ -195,22 +333,11 @@ class SessionTile(QWidget):
         self.sprite.setGraphicsEffect(self._glow)
         col.addWidget(self.sprite, 0, Qt.AlignHCenter)
 
-        self.project_label = QLabel("…", objectName="tileProject")
-        self.project_label.setAlignment(Qt.AlignHCenter)
-        # Set the font in code (not just QSS): elidedText() measures via the
-        # widget's fontMetrics(), which does NOT reflect a QSS-applied font, so
-        # eliding against the QSS font would under-measure and never truncate.
-        _pf = QFont()
-        _pf.setPixelSize(13)
-        _pf.setBold(True)
-        _pf.setLetterSpacing(QFont.AbsoluteSpacing, 0.5)
-        self.project_label.setFont(_pf)
-        # Full (un-elided) label text, kept so we can re-elide when the tile
-        # resizes and expose the whole title as a tooltip.
-        self._project_text = ""
+        # Title label: elides at rest, scrolls on hover, full text in a tooltip.
+        self.project_label = ScrollingLabel()
         self._label_max_w = max(sprite_size, _LABEL_MIN_W)
         self.project_label.setMaximumWidth(self._label_max_w)
-        col.addWidget(self.project_label)
+        col.addWidget(self.project_label, 0, Qt.AlignHCenter)
 
         # Activity + a leading status dot share one row so the dot reads as a
         # badge on the label rather than floating loose.
@@ -269,27 +396,17 @@ class SessionTile(QWidget):
         # early-returns when the size is unchanged, so calling it every poll is
         # cheap and won't churn the layout.
         self.sprite.set_size(px)
-        # Keep the label cap in step with the mascot width and re-elide.
+        # Keep the label cap in step with the mascot width; the label re-elides
+        # / re-evaluates its scroll on the resulting resize.
         new_w = max(px, _LABEL_MIN_W)
         if new_w != self._label_max_w:
             self._label_max_w = new_w
-            self._apply_project_label()
-
-    def _apply_project_label(self) -> None:
-        """Show the title elided to the tile width, with the full text as a
-        tooltip when it doesn't fit."""
-        w = self._label_max_w
-        self.project_label.setMaximumWidth(w)
-        text = self._project_text or "unknown"
-        elided = self.project_label.fontMetrics().elidedText(text, Qt.ElideRight, w)
-        self.project_label.setText(elided)
-        self.project_label.setToolTip(text if elided != text else "")
+            self.project_label.setMaximumWidth(new_w)
 
     def update_state(self, state: TranscriptState) -> None:
         """Reflect one session's state: name, activity color/label, glow, dot,
         and the mascot animation (idle sessions get the calm sleep loop)."""
-        self._project_text = state.project_name or "unknown"
-        self._apply_project_label()
+        self.project_label.setText(state.project_name or "unknown")
 
         idle = state.is_stale or state.activity == Activity.IDLE
         color = ACTIVITY_COLORS.get(state.activity, _IDLE_COLOR)

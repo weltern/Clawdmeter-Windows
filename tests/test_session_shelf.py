@@ -228,36 +228,36 @@ def test_enter_starts_collapsed_and_leave_defers_removal():
     shelf.stop_all()
 
 
-def test_long_title_is_elided_with_full_text_in_tooltip():
+def test_long_title_keeps_full_text_and_tooltips_it():
     # A session title (much longer than a cwd leaf) must not stretch the tile:
-    # it's elided to the label width and the full text moves to the tooltip.
+    # ScrollingLabel keeps the full text (scrolls/elides only when painting) and
+    # surfaces the whole title as a tooltip when it overflows.
     tile = SessionTile("s", sprite_size=110)
     long = "Review clawdmeter UI design and implementation"
     tile.update_state(_state("s", Activity.READING, project=long))
-    shown = tile.project_label.text()
-    assert shown != long                      # truncated
-    assert shown.endswith("…")                # with an ellipsis
-    assert tile.project_label.toolTip() == long   # full title preserved on hover
+    assert tile.project_label.text() == long          # full text retained
+    assert tile.project_label.toolTip() == long       # full title on hover
+    assert tile.project_label._overflows() is True    # would scroll on hover
 
 
-def test_short_label_not_elided_and_has_no_tooltip():
+def test_short_label_has_no_tooltip_and_does_not_overflow():
     tile = SessionTile("s", sprite_size=200)
     tile.update_state(_state("s", Activity.CODING, project="api-gateway"))
     assert tile.project_label.text() == "api-gateway"
     assert tile.project_label.toolTip() == ""
+    assert tile.project_label._overflows() is False
 
 
-def test_label_re_elides_when_tile_shrinks():
-    # Growing the session count shrinks tiles; a borderline label should re-elide
-    # against the new (smaller) width rather than staying at the old measurement.
+def test_label_cap_tracks_sprite_size():
+    # Growing the session count shrinks tiles; the title cap follows the mascot
+    # width (floored at _LABEL_MIN_W) so a long title can't widen a small tile.
     tile = SessionTile("s", sprite_size=200)
     label = "a-fairly-long-project-directory-name"
     tile.update_state(_state("s", Activity.CODING, project=label))
+    assert tile.project_label.maximumWidth() == max(200, session_shelf._LABEL_MIN_W)
     tile.set_sprite_size(110)
     assert tile._label_max_w == max(110, session_shelf._LABEL_MIN_W)
-    # full text still recoverable via tooltip if it no longer fits
-    if tile.project_label.text() != label:
-        assert tile.project_label.toolTip() == label
+    assert tile.project_label.maximumWidth() == max(110, session_shelf._LABEL_MIN_W)
 
 
 if __name__ == "__main__":
