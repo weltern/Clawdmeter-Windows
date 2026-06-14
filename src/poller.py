@@ -22,6 +22,7 @@ from PySide6.QtCore import QThread, Signal
 
 import app_settings
 import token_refresh
+from transcript import account_window_tokens
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_HEADERS_TEMPLATE = {
@@ -52,6 +53,15 @@ class UsageSample:
     ok: bool
     error: str | None = None
     timestamp: float = 0.0
+    # Usage past the weekly cap (paid "overage" tier). 0 for the vast majority
+    # of accounts/time; the UI only surfaces it when overage_pct > 0. Its own
+    # reset clock (longer than weekly), so it's tracked separately.
+    overage_pct: int = 0
+    overage_reset_minutes: int = 0
+    # Account-wide input+output token totals over the 5h / 7d windows, summed
+    # from the local transcripts (0 when the token-usage display is off).
+    tokens_5h: int = 0
+    tokens_7d: int = 0
 
 
 def credentials_path() -> Path:
@@ -91,24 +101,19 @@ def read_token() -> str | None:
     return _extract_access_token(raw)
 
 
-def _poll_once(token: str) -> UsageSample:
-    """Make one rate-limit probe. Returns a sample with ok=False on failure."""
-    headers = dict(API_HEADERS_TEMPLATE)
-    headers["Authorization"] = f"Bearer {token}"
-    now = time.time()
-    try:
-        with httpx.Client(timeout=20.0) as http:
-            resp = http.post(API_URL, headers=headers, json=API_BODY)
-    except httpx.HTTPError as exc:
-        return UsageSample(0, 0, 0, 0, "error", False, str(exc), now)
+def sample_from_headers(headers, now: float) -> UsageSample:
+    """Build a UsageSample from the API's rate-limit response headers.
 
+    Pure (no network) so it's unit-testable. ``headers`` is any mapping with a
+    ``.get(name, default)`` method (httpx ``Headers`` or a plain dict).
+    """
     def hdr(name: str, default: str = "0") -> str:
-        return resp.headers.get(name, default)
+        return headers.get(name, default)
 
     def reset_minutes(reset_ts: str) -> int:
         try:
             r = float(reset_ts)
-        except ValueError:
+        except (TypeError, ValueError):
             return 0
         mins = (r - now) / 60.0
         return int(round(mins)) if mins > 0 else 0
@@ -116,7 +121,7 @@ def _poll_once(token: str) -> UsageSample:
     def pct(util: str) -> int:
         try:
             return int(round(float(util) * 100))
-        except ValueError:
+        except (TypeError, ValueError):
             return 0
 
     return UsageSample(
@@ -128,7 +133,32 @@ def _poll_once(token: str) -> UsageSample:
         ok=True,
         error=None,
         timestamp=now,
+        overage_pct=pct(hdr("anthropic-ratelimit-unified-overage-utilization")),
+        overage_reset_minutes=reset_minutes(
+            hdr("anthropic-ratelimit-unified-overage-reset")
+        ),
     )
+
+
+def _poll_once(token: str) -> UsageSample:
+    """Make one rate-limit probe. Returns a sample with ok=False on failure."""
+    headers = dict(API_HEADERS_TEMPLATE)
+    headers["Authorization"] = f"Bearer {token}"
+    now = time.time()
+    try:
+        with httpx.Client(timeout=20.0) as http:
+            resp = http.post(API_URL, headers=headers, json=API_BODY)
+    except httpx.HTTPError as exc:
+        return UsageSample(0, 0, 0, 0, "error", False, str(exc), now)
+    sample = sample_from_headers(resp.headers, now)
+    # Sum the local transcripts' input+output over the 5h/7d windows — only when
+    # the token display is on, so we don't scan files for nothing.
+    if app_settings.get_show_token_usage():
+        try:
+            sample.tokens_5h, sample.tokens_7d = account_window_tokens(now)
+        except OSError:
+            pass
+    return sample
 
 
 class UsagePoller(QThread):
@@ -161,6 +191,13 @@ class UsagePoller(QThread):
 
     def set_auto_refresh(self, on: bool) -> None:
         self._auto_refresh = bool(on)
+
+    def set_interval(self, seconds: int) -> None:
+        """Change the poll cadence. Takes effect on the next cycle: the current
+        sleep already snapshotted the old interval via range(), so a mid-sleep
+        change won't wake it early (instant apply would need a wake flag like
+        _manual_refresh — deferred for now)."""
+        self._interval = max(1, int(seconds))
 
     def request_manual_refresh(self) -> None:
         """Ask the poll thread to refresh the token ASAP (bypasses cooldown)."""
