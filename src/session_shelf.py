@@ -74,12 +74,10 @@ QLabel#shelfHeader {{
     font-size: 13px; font-weight: 600; color: {_MUTED}; letter-spacing: 2px;
 }}
 QWidget#sessionTile {{ background: transparent; }}
-QLabel#tileProject {{ color: {_TEXT}; }}
 QLabel#tileActivity {{
     font-size: 11px; font-weight: 600; letter-spacing: 1px;
 }}
 QLabel#tileDot {{ font-size: 11px; }}
-QLabel#tileSub {{ font-size: 10px; color: {_MUTED}; }}
 QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 0 2px; }}
 QScrollBar::handle:horizontal {{
     background: #374151; border-radius: 4px; min-width: 24px;
@@ -1098,10 +1096,14 @@ class CompactView(QWidget):
                    reset_min, tokens, show_tokens) -> None:
         label.setText(title)
         pct.setText(f"{value}%")
-        bar.setValue(value)
-        bar.setProperty("heat", hheat)
-        bar.style().unpolish(bar)
-        bar.style().polish(bar)
+        bar.setValue(value)   # Qt no-ops when unchanged
+        # Restyle only when the heat bucket actually changes — the per-second
+        # countdown calls this every tick and unpolish/polish is comparatively
+        # expensive.
+        if bar.property("heat") != hheat:
+            bar.setProperty("heat", hheat)
+            bar.style().unpolish(bar)
+            bar.style().polish(bar)
         line = f"resets in {format_minutes(reset_min)}"
         if show_tokens:
             line += f" · {fmt_tokens(tokens)}"
@@ -1132,23 +1134,33 @@ class CompactView(QWidget):
                 self._list.removeWidget(row)
                 row.stop()
                 row.deleteLater()
-        # Re-add all live rows in the incoming (newest-first) order.
-        for row in self._rows.values():
-            self._list.removeWidget(row)
-        for index, (sid, st) in enumerate(incoming.items()):
-            row = self._rows.get(sid)
-            if row is None:
-                row = CompactRow(sid, parent=self._list_widget)
-                row.set_show_tokens(self._show_tokens)
-                self._rows[sid] = row
-            self._list.insertWidget(index, row)
-            row.show()
+        # Only churn the layout (detach + re-insert every row) when the roster
+        # ORDER actually changed; a steady roster just updates rows in place.
+        new_order = list(incoming)
+        if new_order != list(self._rows):
+            for row in self._rows.values():
+                self._list.removeWidget(row)
+            ordered = {}
+            for index, sid in enumerate(new_order):
+                row = self._rows.get(sid)
+                if row is None:
+                    row = CompactRow(sid, parent=self._list_widget)
+                    row.set_show_tokens(self._show_tokens)
+                self._list.insertWidget(index, row)
+                row.show()
+                ordered[sid] = row
+            self._rows = ordered
+        for sid, st in incoming.items():
+            row = self._rows[sid]
             row.update_state(st)
             row.update_agents(getattr(st, "agents", []) or [])
         self._relayout()
 
     def _relayout(self) -> None:
         visible = min(max(1, len(self._rows)), self.MAX_ROWS)
+        if visible == getattr(self, "_last_visible_rows", None):
+            return
+        self._last_visible_rows = visible
         self._scroll.setFixedHeight(visible * self.ROW_H + 6)
         self.adjustSize()
 

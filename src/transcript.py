@@ -337,56 +337,84 @@ def sum_token_windows(events, now: float) -> tuple[int, int]:
     return w5, w7
 
 
+# Per-file cache of parsed (timestamp, work) token events, keyed by path and
+# invalidated when (size, mtime) change. Most files modified within 7d are NOT
+# being actively appended (only the 1–2 live sessions are), so this skips
+# re-reading/parsing dozens of recent-but-idle transcripts on every poll.
+_TOKEN_EVENT_CACHE: dict[str, tuple[int, float, list[tuple[float, int]]]] = {}
+
+
+def _file_token_events(fp: Path) -> list[tuple[float, int]]:
+    """Parse one transcript into a list of (timestamp, input+output) for every
+    assistant turn that has usage + a timestamp."""
+    events: list[tuple[float, int]] = []
+    try:
+        with fp.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = ev.get("message")
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
+                usage = msg.get("usage")
+                if not isinstance(usage, dict):
+                    continue
+                ts = parse_iso_ts(ev.get("timestamp"))
+                if ts is None:
+                    continue
+                work = 0
+                for k in ("input_tokens", "output_tokens"):
+                    try:
+                        work += int(usage.get(k) or 0)
+                    except (TypeError, ValueError):
+                        pass
+                events.append((ts, work))
+    except OSError:
+        return []
+    return events
+
+
 def account_window_tokens(now: float, root: Path | None = None) -> tuple[int, int]:
     """Account-wide input+output token totals for the 5h and 7d windows, summed
     across every transcript.
 
     Only files modified within 7d are read (an older file can't hold an in-window
-    event), so the scan stays cheap once the backlog is past. Does disk I/O —
-    call it off the UI thread.
+    event), and each file's parsed events are cached by (size, mtime) so an
+    unchanged file isn't re-parsed. Does disk I/O — call it off the UI thread.
     """
     if root is None:
         root = Path.home() / ".claude" / "projects"
     cut7 = now - 7 * 24 * 3600
 
-    def _events():
-        for fp in root.rglob("*.jsonl"):
-            try:
-                if fp.stat().st_mtime < cut7:
-                    continue
-            except OSError:
-                continue
-            try:
-                with fp.open(encoding="utf-8", errors="replace") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            ev = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        msg = ev.get("message")
-                        if (not isinstance(msg, dict)
-                                or msg.get("role") != "assistant"):
-                            continue
-                        usage = msg.get("usage")
-                        if not isinstance(usage, dict):
-                            continue
-                        ts = parse_iso_ts(ev.get("timestamp"))
-                        if ts is None:
-                            continue
-                        work = 0
-                        for k in ("input_tokens", "output_tokens"):
-                            try:
-                                work += int(usage.get(k) or 0)
-                            except (TypeError, ValueError):
-                                pass
-                        yield ts, work
-            except OSError:
-                continue
+    all_events: list[tuple[float, int]] = []
+    seen: set[str] = set()
+    for fp in root.rglob("*.jsonl"):
+        try:
+            st = fp.stat()
+        except OSError:
+            continue
+        if st.st_mtime < cut7:
+            continue
+        key = str(fp)
+        seen.add(key)
+        cached = _TOKEN_EVENT_CACHE.get(key)
+        if cached and cached[0] == st.st_size and cached[1] == st.st_mtime:
+            events = cached[2]
+        else:
+            events = _file_token_events(fp)
+            _TOKEN_EVENT_CACHE[key] = (st.st_size, st.st_mtime, events)
+        all_events.extend(events)
 
-    return sum_token_windows(_events(), now)
+    # Drop cache entries for files that aged out of the 7d window / rotated away.
+    for key in [k for k in _TOKEN_EVENT_CACHE if k not in seen]:
+        del _TOKEN_EVENT_CACHE[key]
+
+    return sum_token_windows(all_events, now)
 
 
 def select_active(
@@ -591,8 +619,12 @@ class _SessionTail:
             return self._state(Activity.IDLE, None, is_stale=True)
 
         if size < self.offset:
-            # Truncated/rotated under us; restart from the top.
+            # Truncated/rotated under us; restart from the top. Reset the
+            # additive token tally too — without this, re-reading the whole file
+            # re-adds every usage block on top of the existing total (the
+            # activity/title fields are idempotent on re-read; tokens are not).
             self.offset = 0
+            self.tokens = TokenUsage()
         if size > self.offset:
             self._read_new(size)
 

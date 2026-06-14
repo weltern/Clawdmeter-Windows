@@ -108,6 +108,37 @@ def test_fmt_tokens_humanizes():
     assert fmt_tokens(2_170_000_000) == "2.2B"
 
 
+def test_account_window_tokens_sums_5h_and_7d(tmp_path):
+    import json
+    from transcript import account_window_tokens, _TOKEN_EVENT_CACHE
+    _TOKEN_EVENT_CACHE.clear()
+    now = time.time()
+
+    def iso(epoch):
+        return datetime.fromtimestamp(epoch, timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.000Z")
+
+    def ev(ts, inp, out):
+        return json.dumps({
+            "type": "assistant", "timestamp": iso(ts),
+            "message": {"role": "assistant", "content": [{"type": "text"}],
+                        "usage": {"input_tokens": inp, "output_tokens": out,
+                                  "cache_read_input_tokens": 99999}},
+        })
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "a.jsonl").write_text(
+        ev(now - 60, 10, 20) + "\n" + ev(now - 6 * 3600, 5, 5), encoding="utf-8")
+    # File freshly written (recent mtime) but its only event is 8 days old:
+    # excluded by the per-event window even though the file passes the mtime gate.
+    (proj / "b.jsonl").write_text(ev(now - 8 * 24 * 3600, 1000, 1000), encoding="utf-8")
+
+    w5, w7 = account_window_tokens(now, root=tmp_path)
+    assert w5 == 30          # only the now-60 event (10+20); cache excluded
+    assert w7 == 40          # + the now-6h event (5+5); 8-day-old event excluded
+
+
 def test_sum_token_windows_respects_5h_and_7d():
     now = 1_000_000.0
     events = [
@@ -299,6 +330,22 @@ def test_classify_extracts_target_from_tool_input():
     # no natural target -> None (display falls back to the tool name)
     assert _classify([{"type": "tool_use", "name": "TodoWrite",
                        "input": {"todos": []}}])[2] is None
+
+
+def test_tool_target_covers_more_tools():
+    def tgt(name, inp):
+        return _classify([{"type": "tool_use", "name": name, "input": inp}])[2]
+    assert tgt("Write", {"file_path": "/a/b/out.json"}) == "out.json"
+    assert tgt("MultiEdit", {"file_path": "/a/b/c.py"}) == "c.py"
+    assert tgt("NotebookEdit", {"notebook_path": "/n/book.ipynb"}) == "book.ipynb"
+    assert tgt("NotebookEdit", {"file_path": "/n/fallback.ipynb"}) == "fallback.ipynb"
+    assert tgt("Glob", {"pattern": "**/*.ts"}) == "**/*.ts"
+    assert tgt("PowerShell", {"command": "Get-ChildItem -Recurse"}) == "Get-ChildItem"
+    assert tgt("WebSearch", {"query": "qt elide label"}) == "qt elide label"
+    assert tgt("Task", {"description": "scan logs", "subagent_type": "x"}) == "scan logs"
+    assert tgt("Task", {"subagent_type": "Explore"}) == "Explore"   # description fallback
+    assert tgt("Read", {}) is None                                   # missing field -> None
+    assert tgt("Bash", {"command": "   "}) is None                   # blank -> None
 
 
 def test_session_tail_target_in_state():

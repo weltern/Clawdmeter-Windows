@@ -36,7 +36,7 @@ def main() -> int:
         app.setWindowIcon(QIcon(str(icon_path)))
 
     win = Dashboard(mock=mock)
-    win.show()
+    win.show_initial()   # launch directly into the last-used view mode
 
     # Listen for later launches so they surface this window instead of
     # spawning a duplicate. Kept on `app` so it isn't garbage-collected.

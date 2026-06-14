@@ -18,6 +18,8 @@ from dashboard import (  # noqa: E402
     _SINGLE_TILE_ID,
     _should_release_autofit,
     _view_states,
+    grow_view_mode,
+    next_view_mode,
 )
 
 
@@ -83,6 +85,20 @@ def test_autofit_kept_for_non_user_resizes():
     assert _should_release_autofit(True, False, True, True, False) is False
     # the auto-hide title-bar animation
     assert _should_release_autofit(True, False, True, False, True) is False
+
+
+def test_view_mode_cycle_and_grow_order():
+    # cycle goes full -> compact -> mini -> full
+    assert next_view_mode("full") == "compact"
+    assert next_view_mode("compact") == "mini"
+    assert next_view_mode("mini") == "full"
+    # grow steps one tier toward full and clamps there
+    assert grow_view_mode("mini") == "compact"
+    assert grow_view_mode("compact") == "full"
+    assert grow_view_mode("full") == "full"
+    # unknown input is treated as full
+    assert next_view_mode("bogus") == "compact"
+    assert grow_view_mode("bogus") == "full"
 
 
 def test_view_mode_round_trips_and_clamps(tmp_path):

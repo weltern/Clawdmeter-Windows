@@ -77,6 +77,7 @@ from transcript import (
     TokenUsage,
     TranscriptState,
     TranscriptWatcher,
+    account_window_tokens,
     fmt_tokens,
 )
 from uiutil import format_minutes as _format_minutes, heat as _heat
@@ -118,6 +119,23 @@ def _should_release_autofit(height_changed, fitting, armed, max_involved, titleb
         and not max_involved
         and not titlebar_animating
     )
+
+
+# View modes, largest -> smallest. Pure helpers so the cycle/grow order is
+# unit-testable without constructing a Dashboard.
+VIEW_ORDER = ("full", "compact", "mini")
+
+
+def next_view_mode(mode: str) -> str:
+    """The next mode when cycling forward (full -> compact -> mini -> full)."""
+    i = VIEW_ORDER.index(mode) if mode in VIEW_ORDER else 0
+    return VIEW_ORDER[(i + 1) % len(VIEW_ORDER)]
+
+
+def grow_view_mode(mode: str) -> str:
+    """One step toward full (mini -> compact -> full; full stays full)."""
+    i = VIEW_ORDER.index(mode) if mode in VIEW_ORDER else 0
+    return VIEW_ORDER[max(0, i - 1)]
 
 
 STYLESHEET = """
@@ -288,8 +306,9 @@ class MiniWidget(QWidget):
     """Tiny always-on-top floating readout: mini mascot + session/weekly bars.
 
     A frameless, draggable tool window with no taskbar entry. Double-click (or
-    right-click -> Expand) returns to the full dashboard. The owning Dashboard
-    feeds it usage values and sprite animations so it mirrors the main window.
+    right-click -> Grow) steps up to the compact view; cycle/grow again for full.
+    The owning Dashboard feeds it usage values and sprite animations so it
+    mirrors the main window.
     """
 
     expand_requested = Signal()
@@ -332,7 +351,7 @@ class MiniWidget(QWidget):
         row.addLayout(stack, 1)
 
         menu = QMenu(self)
-        act_expand = QAction("Expand", self)
+        act_expand = QAction("Grow", self)
         act_expand.triggered.connect(self.expand_requested.emit)
         act_quit = QAction("Quit", self)
         act_quit.triggered.connect(self.quit_requested.emit)
@@ -344,7 +363,7 @@ class MiniWidget(QWidget):
         self.customContextMenuRequested.connect(
             lambda pos: self._menu.exec(self.mapToGlobal(pos))
         )
-        self.setToolTip("Session (top) · Weekly (bottom)\nDouble-click to expand · drag to move")
+        self.setToolTip("Session (top) · Weekly (bottom)\nDouble-click to grow · drag to move")
 
     def _row(self, parent_layout: QVBoxLayout, pct_object: str):
         line = QHBoxLayout()
@@ -626,9 +645,9 @@ class TitleBar(QWidget):
         self.settings_btn.clicked.connect(on_settings)
         row.addWidget(self.settings_btn)
 
-        self.mini_btn = self._tool_btn("", "Switch view (full → compact → mini)")  # BackToWindow
-        self.mini_btn.clicked.connect(on_cycle)
-        row.addWidget(self.mini_btn)
+        self.cycle_btn = self._tool_btn("", "Switch view (full → compact → mini)")  # BackToWindow
+        self.cycle_btn.clicked.connect(on_cycle)
+        row.addWidget(self.cycle_btn)
 
         self.min_btn = self._tool_btn("", "Minimize")        # ChromeMinimize
         self.min_btn.clicked.connect(self._win.showMinimized)
@@ -1489,7 +1508,8 @@ class Dashboard(QMainWindow):
 
         self._tray = QSystemTrayIcon(self)
         self._tray.setIcon(QIcon(str(icon_path)) if icon_path.exists() else QIcon(_tray_pixmap(0)))
-        tray_menu = QMenu()
+        tray_menu = QMenu(self)
+        self._tray_menu = tray_menu   # keep a reference so it isn't GC'd
         show_action = QAction("Show", self)
         show_action.triggered.connect(self._restore_view)
         tray_menu.addAction(show_action)
@@ -1549,11 +1569,6 @@ class Dashboard(QMainWindow):
             # watcher's initial synchronous poll can safely drive the shelf.
             self._transcript.start()
 
-        # Restore the last-used view mode once the event loop is running (after
-        # main.py's show() puts the full window up first).
-        _saved_mode = app_settings.get_view_mode()
-        if _saved_mode != "full":
-            QTimer.singleShot(0, lambda: self._set_view_mode(_saved_mode))
 
     def eventFilter(self, obj, ev):
         if obj is self._content and ev.type() == ev.Type.Resize:
@@ -2219,8 +2234,11 @@ class Dashboard(QMainWindow):
             # No session: fall back to today's rate-driven mood for hero/mini.
             self._transcript_state = None
             self._update_sprite_selection()
-            # set_anims no-ops on an unchanged key, so re-show the paused hero.
-            self.sprite.resume()
+            # set_anims no-ops on an unchanged key, so re-show the paused hero —
+            # but only when the full window is actually the visible view (in
+            # compact/mini the hero is hidden and must stay paused).
+            if self._view_mode == "full":
+                self.sprite.resume()
 
         # Resize the window to hug the new content (no dead space below the bars).
         self._fit_window_height()
@@ -2230,6 +2248,14 @@ class Dashboard(QMainWindow):
         figures + tray and refresh the shelf's hover breakdown immediately."""
         s = self._last_sample
         if s is not None and s.ok:
+            # Toggled ON: the last sample was polled with tokens off (windows 0),
+            # so fill them in now rather than showing "· 0" until the next poll.
+            if (app_settings.get_show_token_usage()
+                    and not s.tokens_5h and not s.tokens_7d):
+                try:
+                    s.tokens_5h, s.tokens_7d = account_window_tokens(time.time())
+                except OSError:
+                    pass
             elapsed_min = int((time.time() - s.timestamp) // 60)
             sr = max(0, s.session_reset_minutes - elapsed_min)
             wr = max(0, s.weekly_reset_minutes - elapsed_min)
@@ -2285,17 +2311,18 @@ class Dashboard(QMainWindow):
             s.session_reset_minutes, s.weekly_reset_minutes,
         )
 
-    # View modes, largest -> smallest. The title-bar button cycles forward
-    # (full -> compact -> mini -> full); double-click / "grow" steps back toward
-    # full; the tray restores whichever was last shown.
-    _VIEW_ORDER = ("full", "compact", "mini")
-
-    def _set_view_mode(self, mode: str) -> None:
-        """Switch to full / compact / mini, persisting the choice."""
-        if mode not in self._VIEW_ORDER:
+    # The title-bar button cycles forward (full -> compact -> mini -> full);
+    # double-click / "grow" steps back toward full; the tray restores the last
+    # mode. Order math lives in module-level next_view_mode/grow_view_mode.
+    def _set_view_mode(self, mode: str, persist: bool = True) -> None:
+        """Switch to full / compact / mini. Persists the choice unless persist
+        is False (transient foregrounding for a notification must not overwrite
+        the user's chosen mode)."""
+        if mode not in VIEW_ORDER:
             mode = "full"
         self._view_mode = mode
-        app_settings.set_view_mode(mode)
+        if persist:
+            app_settings.set_view_mode(mode)
         if self.settings_panel.is_open():
             self._close_settings()
         self._stash_mini()
@@ -2304,24 +2331,35 @@ class Dashboard(QMainWindow):
             self.showNormal()
             self.raise_()
             self.activateWindow()
-        elif mode == "compact":
+            # The hero only animates in the empty (0-session) full view; resume
+            # it here in case it was paused while hidden in compact/mini.
+            if not self._shelf_active:
+                self.sprite.resume()
+        else:
+            # Hidden in compact/mini — pause the full window's hero so its
+            # 240px mascot isn't animating offscreen.
+            self.sprite.stop()
             self.hide()
-            self._show_compact()
-        else:  # mini
-            self.hide()
-            self._show_mini()
+            self._show_compact() if mode == "compact" else self._show_mini()
 
     def _cycle_view(self) -> None:
-        i = self._VIEW_ORDER.index(getattr(self, "_view_mode", "full"))
-        self._set_view_mode(self._VIEW_ORDER[(i + 1) % len(self._VIEW_ORDER)])
+        self._set_view_mode(next_view_mode(getattr(self, "_view_mode", "full")))
 
     def _grow_view(self) -> None:
-        i = self._VIEW_ORDER.index(getattr(self, "_view_mode", "full"))
-        self._set_view_mode(self._VIEW_ORDER[max(0, i - 1)])
+        self._set_view_mode(grow_view_mode(getattr(self, "_view_mode", "full")))
 
     def _restore_view(self) -> None:
-        """Tray click / 'Show': re-show the last-used mode."""
-        self._set_view_mode(getattr(self, "_view_mode", "full"))
+        """Tray click / 'Show' / pop-to-front: re-show the last-used mode without
+        re-persisting it (it's already the saved value)."""
+        self._set_view_mode(getattr(self, "_view_mode", "full"), persist=False)
+
+    def show_initial(self) -> None:
+        """Launch into the last-used view mode directly (no full-window flash)."""
+        mode = app_settings.get_view_mode()
+        if mode == "full":
+            self.show()
+        else:
+            self._set_view_mode(mode, persist=False)
 
     def _stash_mini(self) -> None:
         if self.mini.isVisible():
@@ -2341,10 +2379,16 @@ class Dashboard(QMainWindow):
         y = (geo.top() + 24) if top else (geo.bottom() - h - 24)
         return x, y
 
+    def _onscreen(self, x: int, y: int, w: int) -> bool:
+        """True if a chunk of the window's top edge lands on some screen — so a
+        position saved on a now-disconnected monitor doesn't open off-screen
+        and ungrabbable."""
+        return QGuiApplication.screenAt(QPoint(int(x + w / 2), int(y + 10))) is not None
+
     def _show_mini(self) -> None:
         self.mini.lock_size()
         pos = app_settings.get_mini_pos()
-        if pos is None:
+        if pos is None or not self._onscreen(pos[0], pos[1], self.mini.width()):
             pos = self._default_corner(self.mini.width(), self.mini.height(), top=False)
         self.mini.move(pos[0], pos[1])
         s = self._last_sample
@@ -2357,7 +2401,7 @@ class Dashboard(QMainWindow):
     def _show_compact(self) -> None:
         self._sync_compact_view()
         pos = app_settings.get_compact_pos()
-        if pos is None:
+        if pos is None or not self._onscreen(pos[0], pos[1], self.compact_view.width()):
             pos = self._default_corner(
                 self.compact_view.width(), self.compact_view.height(), top=True)
         self.compact_view.move(pos[0], pos[1])
@@ -2391,8 +2435,10 @@ class Dashboard(QMainWindow):
             cv.update_usage(s, sr, wr, ovr, app_settings.get_show_token_usage())
 
     def _show_window(self) -> None:
-        """Force the full view to the front (notifications 'pop to front')."""
-        self._set_view_mode("full")
+        """Bring the app to the front for a notification / toast click / second
+        launch. Restores whatever mode the user last chose (NOT forced to full)
+        so 'pop to front' never silently overwrites their compact/mini choice."""
+        self._restore_view()
 
     def closeEvent(self, event) -> None:
         # Minimize to tray unless the user opted into quit-on-close (or the tray

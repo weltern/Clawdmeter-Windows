@@ -36,7 +36,13 @@ if not hasattr(transcript, "ACTIVITY_COLORS"):
 
 from transcript import Activity, AgentState, TranscriptState  # noqa: E402
 import session_shelf  # noqa: E402
-from session_shelf import SessionShelf, SessionTile  # noqa: E402
+from session_shelf import (  # noqa: E402
+    CompactRow,
+    CompactView,
+    SessionShelf,
+    SessionTile,
+)
+from transcript import TokenUsage  # noqa: E402
 
 
 _app = QApplication.instance() or QApplication([])
@@ -258,6 +264,62 @@ def test_label_cap_tracks_sprite_size():
     tile.set_sprite_size(110)
     assert tile._label_max_w == max(110, session_shelf._LABEL_MIN_W)
     assert tile.project_label.maximumWidth() == max(110, session_shelf._LABEL_MIN_W)
+
+
+def test_ago_text_and_abs_time():
+    import time as _t
+    assert session_shelf._ago_text(None) == "idle"
+    now = _t.time()
+    assert session_shelf._ago_text(now - 5) == "last active 5s ago"
+    assert session_shelf._ago_text(now - 90) == "last active 1m ago"
+    assert session_shelf._ago_text(now - 3700) == "last active 1h 01m ago"
+    assert session_shelf._abs_time_text(None) == ""
+    assert session_shelf._abs_time_text(now).startswith("Last active ")
+
+
+def test_compact_row_live_then_idle():
+    row = CompactRow("s")
+    live = TranscriptState(
+        activity=Activity.CODING, tool_name="Edit", target="x.py",
+        transcript_path=None, last_event_ts=1000.0, session_id="s",
+        project_name="proj", tokens=TokenUsage(input=1000, output=2000))
+    row.update_state(live)
+    row.update_agents([AgentState("g1", Activity.CODING, None),
+                       AgentState("g2", Activity.READING, None)])
+    assert row.activity.text() == "CODING"
+    assert row.target.text() == "x.py"
+    assert row.tokens.text() == "3.0K"          # work = input+output = 3000
+    assert row.sep.isVisibleTo(row) is True
+    assert row.agents.text() == "+2"
+
+    idle = TranscriptState(
+        activity=Activity.IDLE, tool_name=None, transcript_path=None,
+        last_event_ts=1000.0, session_id="s", project_name="proj", is_stale=True)
+    row.update_state(idle)
+    row.update_agents([])
+    assert row.activity.text() == "IDLE"
+    assert "last active" in row.target.text()
+    assert row.sep.isVisibleTo(row) is False
+    assert row.agents.text() == ""
+
+
+def test_compact_view_overage_bar_self_hides():
+    import types
+    cv = CompactView()
+    s = types.SimpleNamespace(
+        session_pct=10, weekly_pct=50, overage_pct=23,
+        session_reset_minutes=120, weekly_reset_minutes=1000,
+        overage_reset_minutes=5000, tokens_5h=1000, tokens_7d=2000)
+    cv.update_usage(s, 120, 1000, 5000, True)
+    assert cv.w_label.text() == "OVERAGE"
+    assert cv.w_pct.text() == "23%"
+    assert cv.w_bar.property("heat") == "over"
+    # overage clears -> the weekly bar returns
+    s.overage_pct = 0
+    cv.update_usage(s, 120, 1000, 5000, True)
+    assert cv.w_label.text() == "WEEKLY 7d"
+    assert cv.w_pct.text() == "50%"
+    assert cv.w_bar.property("heat") != "over"
 
 
 if __name__ == "__main__":
