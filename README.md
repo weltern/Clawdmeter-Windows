@@ -3,7 +3,7 @@
 Standalone Windows desktop dashboard for Claude Code usage.
 
 <p align="center">
-  <img src="assets/ClawdMeter.gif" width="420"
+  <img src="assets/ClawdMeter-Windows-New-Hero.gif" width="420"
        alt="Clawdmeter-Windows — the Clawd mascot reacting live to Claude Code activity, with session and weekly usage">
 </p>
 
@@ -26,14 +26,17 @@ in near-real-time — read from the local transcript:
 
 |  |  |
 |:--:|:--:|
-| ![Coding](assets/Screenshot-4.png) | ![Reading](assets/Screenshot-3.png) |
+| ![Coding](assets/mood-coding.png) | ![Reading](assets/mood-reading.png) |
 | **CODING** — editing, writing, running commands | **READING** — reading, grepping, globbing |
-| ![Searching](assets/Screenshot-7.png) | ![Planning](assets/Screenshot-9.png) |
-| **SEARCHING** — web fetch / search | **PLANNING** — todos, sub-agents & task management |
+| ![Searching](assets/mood-searching.png) | ![Thinking](assets/mood-thinking.png) |
+| **SEARCHING** — web fetch / search | **THINKING** — reasoning between tool calls |
+| ![Integrating](assets/mood-integrating.png) | ![Planning](assets/mood-planning.png) |
+| **INTEGRATING** — MCP server tool | **PLANNING** — todos, sub-agents & task management |
 
-There's also an **INTEGRATING** mood for when Claude Code reaches out through an
-MCP server tool — the label shows which server it's talking to (e.g.
-`INTEGRATING — github/list_issues`).
+The small line under the label is the actual tool in flight (`Edit`, `Read`,
+`WebSearch`, …). For an **INTEGRATING** mood it names the MCP server and tool it's
+talking to (e.g. `github/list_issues`), so you can tell which integration Claude
+Code reached for.
 
 When Claude Code goes quiet, the mascot falls back to a mood driven by your
 usage rate — sleepy when you're idle, dancing when you're burning through
@@ -154,7 +157,11 @@ Open the settings panel from the gear icon in the title bar.
   nearest allowed value.
 - **Notifications** — **Notify on limit reset** pings you the moment a usage
   limit resets so you know you can resume — but only when you were actually near
-  the limit (or already throttled), so it stays quiet otherwise. It shows a tray
+  the limit (or already throttled), so it stays quiet otherwise.
+
+  ![Clawdmeter-Windows limit-reset notification — "Claude limit reset: Session limit has reset, you can resume"](assets/Screenshot-Session-Limit-Reset.png)
+
+  It shows a tray
   notification and briefly flashes the tray icon; **Play a sound**, **Pop the
   window to front**, and **Send a push to my phone** are optional extras you can
   switch off. The phone push reaches you via either **ntfy** or **Telegram**:
