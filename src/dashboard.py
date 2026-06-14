@@ -1542,9 +1542,11 @@ class Dashboard(QMainWindow):
 
         # Mini mode: a tiny always-on-top floating widget mirroring usage.
         self._view_mode = "full"
+        self._mini_return_mode = "full"   # the view mini was entered from
         self.mini = MiniWidget()
-        # Double-click / Expand on mini goes straight back to the full view.
-        self.mini.expand_requested.connect(lambda: self._set_view_mode("full"))
+        # Double-click / Expand on mini returns to whichever view it came from.
+        self.mini.expand_requested.connect(
+            lambda: self._set_view_mode(self._mini_return_mode))
         self.mini.quit_requested.connect(self._real_quit)
 
         # Compact mode: a denser list view (one row per session).
@@ -2320,6 +2322,10 @@ class Dashboard(QMainWindow):
         the user's chosen mode)."""
         if mode not in VIEW_ORDER:
             mode = "full"
+        # Remember which view we drop into mini FROM, so expanding mini returns
+        # there (full->mini->full, compact->mini->compact).
+        if mode == "mini" and self._view_mode in ("full", "compact"):
+            self._mini_return_mode = self._view_mode
         self._view_mode = mode
         if persist:
             app_settings.set_view_mode(mode)
