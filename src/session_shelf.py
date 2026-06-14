@@ -32,7 +32,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLayout,
     QMenu,
-    QProgressBar,
     QScrollArea,
     QToolButton,
     QVBoxLayout,
@@ -292,6 +291,60 @@ class ScrollingLabel(QWidget):
         else:
             elided = self._fm.elidedText(self._full, Qt.ElideRight, self._avail())
             p.drawText(rect, self._align | Qt.AlignVCenter, elided)
+        p.end()
+
+
+# Usage-bar palette (was QProgressBar QSS; now painted so the bar can render
+# past 100% with a distinct overage colour).
+_BAR_TRACK = "#1f2937"
+_BAR_BORDER = "#374151"
+_BAR_OVERAGE = "#dc2626"   # bright red — the overage overflow
+_BAR_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
+
+
+class UsageBar(QWidget):
+    """A usage bar that can render PAST 100%. The base fills 0–100% in its heat
+    colour; any overage continues in red, with the scale extended so the 100%
+    mark sits proportionally (20% overage -> the bar is full, its last 1/6 red).
+    Shared by the full window and the compact view."""
+
+    def __init__(self, parent=None, *, height: int = 14) -> None:
+        super().__init__(parent)
+        self._value = 0      # base utilisation 0..100
+        self._overage = 0    # overage beyond 100 (0 = none)
+        self._heat = "cool"
+        self.setFixedHeight(height)
+
+    def set_values(self, value: int, overage: int = 0, heat: str = "cool") -> None:
+        value = max(0, int(value))
+        overage = max(0, int(overage))
+        heat = heat if heat in _BAR_HEAT else "cool"
+        if (value, overage, heat) == (self._value, self._overage, self._heat):
+            return
+        self._value, self._overage, self._heat = value, overage, heat
+        self.update()
+
+    def paintEvent(self, e) -> None:
+        p = QPainter(self)
+        rect = self.rect().adjusted(0, 0, -1, -1)
+        p.setPen(QColor(_BAR_BORDER))
+        p.setBrush(QColor(_BAR_TRACK))
+        p.drawRect(rect)
+
+        inner = rect.adjusted(1, 1, 0, 0)
+        w, h, x, y = inner.width(), inner.height(), inner.x(), inner.y()
+        scale = 100 + self._overage if self._overage > 0 else 100
+        p.setPen(Qt.NoPen)
+        base = min(self._value, 100)
+        base_w = int(round(w * base / scale))
+        if base_w > 0:
+            p.setBrush(QColor(_BAR_HEAT[self._heat]))
+            p.drawRect(x, y, base_w, h)
+        if self._overage > 0:
+            start = int(round(w * 100 / scale))
+            over_w = w - start
+            p.setBrush(QColor(_BAR_OVERAGE))
+            p.drawRect(x + start, y, over_w, h)
         p.end()
 
 
@@ -858,12 +911,6 @@ QLabel#compactRowTokens {{ font-size: 11px; font-weight: 700; color: {_MUTED}; }
 QLabel#compactRowDot {{ font-size: 11px; }}
 QLabel#compactRowActivity {{ font-size: 10px; font-weight: 600; letter-spacing: 1px; }}
 QLabel#compactRowAgents {{ font-size: 10px; font-weight: 700; color: {_MUTED}; }}
-QProgressBar {{ background: #1f2937; border: 1px solid #374151; border-radius: 0px;
-                height: 8px; text-align: center; color: transparent; }}
-QProgressBar::chunk {{ background-color: #CE7D6B; }}
-QProgressBar[heat="warm"]::chunk {{ background-color: #B85C42; }}
-QProgressBar[heat="hot"]::chunk {{ background-color: #8B2E1A; }}
-QProgressBar[heat="over"]::chunk {{ background-color: #dc2626; }}
 QScrollArea#compactScroll {{ background: transparent; border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px 0; }}
 QScrollBar::handle:vertical {{ background: #374151; border-radius: 4px; min-height: 24px; }}
@@ -1081,10 +1128,7 @@ class CompactView(QWidget):
         head.addWidget(label)
         head.addStretch(1)
         head.addWidget(pct)
-        bar = QProgressBar()
-        bar.setRange(0, 100)
-        bar.setValue(0)
-        bar.setTextVisible(False)
+        bar = UsageBar(height=8)
         reset = QLabel("", objectName="compactReset")
         parent_col.addLayout(head)
         parent_col.addWidget(bar)
@@ -1092,18 +1136,20 @@ class CompactView(QWidget):
         return label, pct, bar, reset
 
     @staticmethod
-    def _apply_bar(label, pct, bar, reset, title, value, hheat,
+    def _apply_bar(label, pct, bar, reset, title, value, overage,
                    reset_min, tokens, show_tokens) -> None:
-        label.setText(title)
-        pct.setText(f"{value}%")
-        bar.setValue(value)   # Qt no-ops when unchanged
-        # Restyle only when the heat bucket actually changes — the per-second
-        # countdown calls this every tick and unpolish/polish is comparatively
-        # expensive.
-        if bar.property("heat") != hheat:
-            bar.setProperty("heat", hheat)
-            bar.style().unpolish(bar)
-            bar.style().polish(bar)
+        if overage > 0:
+            # Bar stays full in its normal colour with a red overflow past 100%;
+            # the label gets a red OVERAGE tag and the % reads e.g. 120%.
+            label.setText(
+                f'{title} <span style="color:{_BAR_OVERAGE}; font-weight:700">'
+                f'OVERAGE</span>')
+            pct.setText(f"{100 + overage}%")
+            bar.set_values(100, overage, heat(100))
+        else:
+            label.setText(title)
+            pct.setText(f"{value}%")
+            bar.set_values(value, 0, heat(value))
         line = f"resets in {format_minutes(reset_min)}"
         if show_tokens:
             line += f" · {fmt_tokens(tokens)}"
@@ -1111,15 +1157,12 @@ class CompactView(QWidget):
 
     def update_usage(self, s, sr: int, wr: int, ovr: int, show_tokens: bool) -> None:
         self._apply_bar(self.s_label, self.s_pct, self.s_bar, self.s_reset,
-                        "SESSION 5h", s.session_pct, heat(s.session_pct), sr,
-                        s.tokens_5h, show_tokens)
-        if getattr(s, "overage_pct", 0) > 0:
-            self._apply_bar(self.w_label, self.w_pct, self.w_bar, self.w_reset,
-                            "OVERAGE", s.overage_pct, "over", ovr, 0, False)
-        else:
-            self._apply_bar(self.w_label, self.w_pct, self.w_bar, self.w_reset,
-                            "WEEKLY 7d", s.weekly_pct, heat(s.weekly_pct), wr,
-                            s.tokens_7d, show_tokens)
+                        "SESSION 5h", s.session_pct, 0, sr, s.tokens_5h, show_tokens)
+        ov = getattr(s, "overage_pct", 0)
+        self._apply_bar(self.w_label, self.w_pct, self.w_bar, self.w_reset,
+                        "WEEKLY 7d", s.weekly_pct, ov, wr, s.tokens_7d, show_tokens)
+        self.w_bar.setToolTip(
+            f"Overage resets in {format_minutes(ovr)}" if ov > 0 else "")
 
     def set_show_tokens(self, on: bool) -> None:
         self._show_tokens = bool(on)

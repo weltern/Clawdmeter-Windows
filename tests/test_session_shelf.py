@@ -303,23 +303,26 @@ def test_compact_row_live_then_idle():
     assert row.agents.text() == ""
 
 
-def test_compact_view_overage_bar_self_hides():
+def test_compact_view_overage_overflow_bar():
     import types
     cv = CompactView()
     s = types.SimpleNamespace(
-        session_pct=10, weekly_pct=50, overage_pct=23,
+        session_pct=10, weekly_pct=100, overage_pct=20,
         session_reset_minutes=120, weekly_reset_minutes=1000,
         overage_reset_minutes=5000, tokens_5h=1000, tokens_7d=2000)
     cv.update_usage(s, 120, 1000, 5000, True)
-    assert cv.w_label.text() == "OVERAGE"
-    assert cv.w_pct.text() == "23%"
-    assert cv.w_bar.property("heat") == "over"
-    # overage clears -> the weekly bar returns
+    # weekly bar stays the weekly bar, with a red OVERAGE tag and 120% (= 100+20)
+    assert "WEEKLY 7d" in cv.w_label.text()
+    assert "OVERAGE" in cv.w_label.text()
+    assert cv.w_pct.text() == "120%"
+    assert cv.w_bar._overage == 20 and cv.w_bar._value == 100
+    # overage clears -> plain weekly bar, no tag, no overflow
     s.overage_pct = 0
+    s.weekly_pct = 50
     cv.update_usage(s, 120, 1000, 5000, True)
     assert cv.w_label.text() == "WEEKLY 7d"
     assert cv.w_pct.text() == "50%"
-    assert cv.w_bar.property("heat") != "over"
+    assert cv.w_bar._overage == 0 and cv.w_bar._value == 50
 
 
 if __name__ == "__main__":
