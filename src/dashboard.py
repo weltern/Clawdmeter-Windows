@@ -206,13 +206,13 @@ QCheckBox::indicator:checked {
 }
 QWidget#scrim { background-color: rgba(0, 0, 0, 60); }
 
-QWidget#compactRoot {
+QWidget#miniRoot {
     background-color: #0e1116;
     border: 1px solid #CE7D6B;
 }
-QLabel#compactPct { font-size: 17px; font-weight: 700; color: #e6edf3; }
-QLabel#compactPctSub { font-size: 13px; font-weight: 700; color: #9ca3af; }
-QLabel#compactReset { font-size: 12px; color: #9ca3af; }
+QLabel#miniPct { font-size: 17px; font-weight: 700; color: #e6edf3; }
+QLabel#miniPctSub { font-size: 13px; font-weight: 700; color: #9ca3af; }
+QLabel#miniReset { font-size: 12px; color: #9ca3af; }
 
 QWidget#toastRoot {
     background-color: #0e1116;
@@ -303,7 +303,7 @@ def _dispatch_push(title: str, body: str) -> tuple[bool, str]:
     )
 
 
-class CompactWidget(QWidget):
+class MiniWidget(QWidget):
     """Tiny always-on-top floating readout: mini mascot + session/weekly bars.
 
     A frameless, draggable tool window with no taskbar entry. Double-click (or
@@ -318,7 +318,7 @@ class CompactWidget(QWidget):
 
     def __init__(self) -> None:
         super().__init__(None)
-        self.setObjectName("compactRoot")
+        self.setObjectName("miniRoot")
         self.setWindowTitle("Clawdmeter")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(STYLESHEET)
@@ -346,8 +346,8 @@ class CompactWidget(QWidget):
         # rolling 5h / 7d windows are visible at a glance.
         stack = QVBoxLayout()
         stack.setSpacing(2)
-        self.session_pct, self.session_reset = self._row(stack, "compactPct")
-        self.weekly_pct, self.weekly_reset = self._row(stack, "compactPctSub")
+        self.session_pct, self.session_reset = self._row(stack, "miniPct")
+        self.weekly_pct, self.weekly_reset = self._row(stack, "miniPctSub")
         row.addLayout(stack, 1)
 
         menu = QMenu(self)
@@ -371,7 +371,7 @@ class CompactWidget(QWidget):
         pct = QLabel("-", objectName=pct_object)
         pct.setMinimumWidth(42)
         pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        reset = QLabel("", objectName="compactReset")
+        reset = QLabel("", objectName="miniReset")
         reset.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         line.addWidget(pct)
         line.addWidget(reset)
@@ -475,7 +475,7 @@ class ResetToast(QWidget):
         self.setWindowFlags(
             Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
         )
-        # Opaque, like the main/compact windows. NOT WA_TranslucentBackground:
+        # Opaque, like the main/mini windows. NOT WA_TranslucentBackground:
         # the slim frozen build prunes opengl32sw.dll, without which translucent
         # compositing renders wrong. windowOpacity (the fade) is a separate OS
         # layered-window feature and keeps working.
@@ -607,7 +607,7 @@ class TitleBar(QWidget):
     HEIGHT = 48
     ICON_SIZE = 36
 
-    def __init__(self, window: QMainWindow, on_settings, on_compact) -> None:
+    def __init__(self, window: QMainWindow, on_settings, on_mini) -> None:
         super().__init__(window)
         self.setObjectName("titleBar")
         # Allow vertical animation: min=0, max=HEIGHT. Auto-hide animates
@@ -645,9 +645,9 @@ class TitleBar(QWidget):
         self.settings_btn.clicked.connect(on_settings)
         row.addWidget(self.settings_btn)
 
-        self.compact_btn = self._tool_btn("", "Compact mode")  # BackToWindow
-        self.compact_btn.clicked.connect(on_compact)
-        row.addWidget(self.compact_btn)
+        self.mini_btn = self._tool_btn("", "Mini mode")  # BackToWindow
+        self.mini_btn.clicked.connect(on_mini)
+        row.addWidget(self.mini_btn)
 
         self.min_btn = self._tool_btn("", "Minimize")        # ChromeMinimize
         self.min_btn.clicked.connect(self._win.showMinimized)
@@ -1365,7 +1365,7 @@ class Dashboard(QMainWindow):
         self._outer.setSpacing(0)
 
         self.title_bar = TitleBar(self, on_settings=self._toggle_settings,
-                                  on_compact=self._enter_compact)
+                                  on_mini=self._enter_mini)
         self._outer.addWidget(self.title_bar)
 
         content = QWidget()
@@ -1496,13 +1496,13 @@ class Dashboard(QMainWindow):
 
         self._transcript = TranscriptWatcher(self)
         # sessions_changed drives the whole multi-mascot path (shelf + the
-        # focused-session compact mascot + empty-state mood). state_changed is
+        # focused-session mini mascot + empty-state mood). state_changed is
         # the back-compat single-session signal; sessions_changed[0] carries the
         # same focused state, so we listen to the richer one only.
         self._transcript.sessions_changed.connect(self._on_sessions)
         # NOTE: started at the END of __init__, not here. start() does a
         # synchronous first poll that emits sessions_changed, and _on_sessions
-        # touches widgets (self.compact, self.sprite, self.shelf) that aren't
+        # touches widgets (self.mini, self.sprite, self.shelf) that aren't
         # built until later in __init__ — starting here AttributeErrors on
         # real-mode launch.
 
@@ -1530,10 +1530,10 @@ class Dashboard(QMainWindow):
         self._flash_remaining = 0
         self._flash_on = False
 
-        # Compact mode: a tiny always-on-top floating widget mirroring usage.
-        self.compact = CompactWidget()
-        self.compact.expand_requested.connect(self._exit_compact)
-        self.compact.quit_requested.connect(self._real_quit)
+        # Mini mode: a tiny always-on-top floating widget mirroring usage.
+        self.mini = MiniWidget()
+        self.mini.expand_requested.connect(self._exit_mini)
+        self.mini.quit_requested.connect(self._real_quit)
 
         # Custom limit-reset toast (replaces the native OS notification);
         # clicking it brings the dashboard forward.
@@ -1549,7 +1549,7 @@ class Dashboard(QMainWindow):
             self._start_mock()
         else:
             self._start_poller()
-            # Now that self.compact / self.sprite / self.shelf exist, the
+            # Now that self.mini / self.sprite / self.shelf exist, the
             # watcher's initial synchronous poll can safely drive the shelf.
             self._transcript.start()
 
@@ -1934,13 +1934,13 @@ class Dashboard(QMainWindow):
             s, s.session_reset_minutes, s.weekly_reset_minutes,
             s.overage_reset_minutes)
 
-        self._sync_compact(s)
+        self._sync_mini(s)
 
         self._rate.observe(s.session_pct)
         # While the shelf is up it owns the mascots (per-session tiles + the
-        # compact widget via _drive_compact_from), so the rate-based mood must
+        # mini widget via _drive_mini_from), so the rate-based mood must
         # NOT also drive them here — two paths with different set_anims keys for
-        # the same activity would restart and flicker the compact animation on
+        # the same activity would restart and flicker the mini animation on
         # every usage poll. Only refresh the rate mood in the empty state.
         if not self._shelf_active:
             self._update_sprite_selection()
@@ -2157,7 +2157,7 @@ class Dashboard(QMainWindow):
         wr = max(0, s.weekly_reset_minutes - elapsed_min)
         ovr = max(0, s.overage_reset_minutes - elapsed_min)
         self._refresh_reset_lines(s, sr, wr, ovr)
-        self.compact.set_resets(sr, wr)
+        self.mini.set_resets(sr, wr)
         self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
 
     def _on_sessions(self, states: list[TranscriptState]) -> None:
@@ -2172,9 +2172,9 @@ class Dashboard(QMainWindow):
         child agents when 'show subagents' is off. Called on each watcher update
         and whenever a toggle changes, so a flip takes effect immediately.
 
-        With >=1 live session the shelf takes over the mascot slot and the compact
+        With >=1 live session the shelf takes over the mascot slot and the mini
         widget mirrors the focused (newest) session; with 0 the hero returns and
-        the rate-based mood drives hero + compact + group_label."""
+        the rate-based mood drives hero + mini + group_label."""
         states = _view_states(
             self._last_raw_states,
             app_settings.get_show_multiple_sessions(),
@@ -2195,17 +2195,17 @@ class Dashboard(QMainWindow):
             self.shelf.set_header_visible(app_settings.get_show_multiple_sessions())
             self.shelf.set_show_tokens(app_settings.get_show_token_usage())
             self.shelf.set_sessions(states)
-            # The compact widget stays single-mascot for now (full multi-session
-            # compact is Variant D), so it follows the focused session.
+            # The mini widget stays single-mascot, so it follows the focused
+            # (newest) session.
             self._transcript_state = states[0]
-            self._drive_compact_from(states[0])
+            self._drive_mini_from(states[0])
         else:
             self._shelf_active = False
             self.shelf.hide()
             self.shelf.set_sessions([])  # drop any leftover tiles + reset header
             self.hero.show()
             self.group_label.show()
-            # No session: fall back to today's rate-driven mood for hero/compact.
+            # No session: fall back to today's rate-driven mood for hero/mini.
             self._transcript_state = None
             self._update_sprite_selection()
             # set_anims no-ops on an unchanged key, so re-show the paused hero.
@@ -2228,21 +2228,21 @@ class Dashboard(QMainWindow):
         # Re-render the shelf so mascot-hover tooltips appear/disappear at once.
         self._apply_session_view()
 
-    def _drive_compact_from(self, state: TranscriptState) -> None:
-        """Mirror one session's activity on the compact mascot only — the hero
+    def _drive_mini_from(self, state: TranscriptState) -> None:
+        """Mirror one session's activity on the mini mascot only — the hero
         is hidden while the shelf is up, so it isn't driven here. Idle/stale
         sessions fall back to the calm group-0 loop."""
         idle = state.is_stale or state.activity == TranscriptActivity.IDLE
         anims = None if idle else ACTIVITY_ANIMS.get(state.activity)
         if anims:
-            self.compact.sprite.set_anims(f"compact:{state.activity.value}", anims)
+            self.mini.sprite.set_anims(f"mini:{state.activity.value}", anims)
         else:
-            self.compact.sprite.set_anims("compact:idle", GROUP_ANIMS[0])
+            self.mini.sprite.set_anims("mini:idle", GROUP_ANIMS[0])
 
     def _set_sprite_anims(self, key: str, names) -> None:
-        """Drive both the full-window and compact mascots in lockstep."""
+        """Drive both the full-window and mini mascots in lockstep."""
         self.sprite.set_anims(key, names)
-        self.compact.sprite.set_anims(key, names)
+        self.mini.sprite.set_anims(key, names)
 
     def _update_sprite_selection(self) -> None:
         """Transcript-driven activity takes precedence; rate-based when idle."""
@@ -2265,49 +2265,49 @@ class Dashboard(QMainWindow):
         if reason == QSystemTrayIcon.Trigger:
             self._show_window()
 
-    def _sync_compact(self, s: UsageSample) -> None:
-        """Push a usage sample into the compact widget. Reset times use the same
+    def _sync_mini(self, s: UsageSample) -> None:
+        """Push a usage sample into the mini widget. Reset times use the same
         relative 'resets in 4h 56m' form as the main window."""
-        self.compact.update_usage(
+        self.mini.update_usage(
             s.session_pct, s.weekly_pct,
             s.session_reset_minutes, s.weekly_reset_minutes,
         )
 
-    def _enter_compact(self) -> None:
+    def _enter_mini(self) -> None:
         """Hide the full window and show the tiny floating widget."""
         if self.settings_panel.is_open():
             self._close_settings()
 
-        pos = app_settings.get_compact_pos()
-        self.compact.lock_size()
+        pos = app_settings.get_mini_pos()
+        self.mini.lock_size()
         if pos is None:
             scr = self.screen() or QGuiApplication.primaryScreen()
             geo = scr.availableGeometry()
-            x = geo.right() - self.compact.width() - 24
-            y = geo.bottom() - self.compact.height() - 24
-            self.compact.move(x, y)
+            x = geo.right() - self.mini.width() - 24
+            y = geo.bottom() - self.mini.height() - 24
+            self.mini.move(x, y)
         else:
-            self.compact.move(pos[0], pos[1])
+            self.mini.move(pos[0], pos[1])
 
         s = self._last_sample
         if s and s.ok:
-            self._sync_compact(s)
+            self._sync_mini(s)
 
         self.hide()
-        self.compact.show()
-        self.compact.raise_()
-        self.compact.activateWindow()
+        self.mini.show()
+        self.mini.raise_()
+        self.mini.activateWindow()
 
-    def _exit_compact(self) -> None:
-        if self.compact.isVisible():
-            app_settings.set_compact_pos(self.compact.x(), self.compact.y())
-            self.compact.hide()
+    def _exit_mini(self) -> None:
+        if self.mini.isVisible():
+            app_settings.set_mini_pos(self.mini.x(), self.mini.y())
+            self.mini.hide()
         self._show_window()
 
     def _show_window(self) -> None:
-        if self.compact.isVisible():
-            app_settings.set_compact_pos(self.compact.x(), self.compact.y())
-            self.compact.hide()
+        if self.mini.isVisible():
+            app_settings.set_mini_pos(self.mini.x(), self.mini.y())
+            self.mini.hide()
         self.showNormal()
         self.raise_()
         self.activateWindow()
@@ -2329,10 +2329,10 @@ class Dashboard(QMainWindow):
         self._transcript.stop()
         self.sprite.stop()
         self.shelf.stop_all()
-        if self.compact.isVisible():
-            app_settings.set_compact_pos(self.compact.x(), self.compact.y())
-        self.compact.sprite.stop()
-        self.compact.close()
+        if self.mini.isVisible():
+            app_settings.set_mini_pos(self.mini.x(), self.mini.y())
+        self.mini.sprite.stop()
+        self.mini.close()
         self._toast.sprite.stop()
         self._toast.close()
         self._tray.hide()

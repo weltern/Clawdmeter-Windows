@@ -12,7 +12,7 @@ KEY_CRED_PATH = "credentials/path"
 KEY_ALWAYS_ON_TOP = "window/always_on_top"
 KEY_AUTO_HIDE_TITLEBAR = "window/auto_hide_titlebar"
 KEY_QUIT_ON_CLOSE = "window/quit_on_close"
-KEY_COMPACT_POS = "window/compact_pos"
+KEY_MINI_POS = "window/mini_pos"
 KEY_SHOW_MULTIPLE_SESSIONS = "sessions/show_multiple"
 KEY_SHOW_SUBAGENTS = "sessions/show_subagents"
 KEY_SHOW_TOKEN_USAGE = "tokens/show_usage"
@@ -83,9 +83,9 @@ def set_quit_on_close(on: bool) -> None:
     _settings().setValue(KEY_QUIT_ON_CLOSE, bool(on))
 
 
-def get_compact_pos() -> tuple[int, int] | None:
-    """Last on-screen position of the compact widget, or None if never moved."""
-    v = _settings().value(KEY_COMPACT_POS, "")
+def get_mini_pos() -> tuple[int, int] | None:
+    """Last on-screen position of the mini widget, or None if never moved."""
+    v = _settings().value(KEY_MINI_POS, "")
     if not v:
         return None
     try:
@@ -95,8 +95,8 @@ def get_compact_pos() -> tuple[int, int] | None:
         return None
 
 
-def set_compact_pos(x: int, y: int) -> None:
-    _settings().setValue(KEY_COMPACT_POS, f"{int(x)},{int(y)}")
+def set_mini_pos(x: int, y: int) -> None:
+    _settings().setValue(KEY_MINI_POS, f"{int(x)},{int(y)}")
 
 
 def get_show_multiple_sessions() -> bool:

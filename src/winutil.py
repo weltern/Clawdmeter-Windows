@@ -64,7 +64,7 @@ def start_native_move(hwnd: int) -> None:
 
     Releasing the mouse capture and posting WM_NCLBUTTONDOWN/HTCAPTION makes
     Windows move the window itself — DPI-aware, and without the per-step Qt
-    geometry recompute that ballooned the frameless compact window when it was
+    geometry recompute that ballooned the frameless mini window when it was
     dragged onto a higher-DPI monitor.
     """
     if not is_windows():
