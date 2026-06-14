@@ -66,7 +66,7 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 from reset_notify import ResetDecision, ResetNotifier
-from session_shelf import CompactView, SessionShelf, UsageBar
+from session_shelf import _BAR_OVERAGE, CompactView, SessionShelf, UsageBar
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
     ACTIVITY_ANIMS,
@@ -1941,7 +1941,7 @@ class Dashboard(QMainWindow):
             # its normal colour, a red OVERAGE tag joins the label, and a red
             # segment continues past 100% (so 20% overage reads 120%).
             self.weekly_title.setText(
-                'WEEKLY (7d) <span style="color:#dc2626; font-weight:700">'
+                f'WEEKLY (7d) <span style="color:{_BAR_OVERAGE}; font-weight:700">'
                 'OVERAGE</span>')
             self.weekly_pct.setText(f"{100 + s.overage_pct}%")
             # Base stays the normal (coral) fill so the red overage clearly
