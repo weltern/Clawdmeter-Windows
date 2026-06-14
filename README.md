@@ -3,7 +3,7 @@
 Standalone Windows desktop dashboard for Claude Code usage.
 
 <p align="center">
-  <img src="assets/ClawdMeter-Windows-New-Hero.gif" width="420"
+  <img src="assets/ClawdMeter-2.0-Hero.gif" width="420"
        alt="Clawdmeter-Windows — the Clawd mascot reacting live to Claude Code activity, with session and weekly usage">
 </p>
 
@@ -133,7 +133,7 @@ taskbar entry and is draggable (it remembers where you left it).
 ## Download
 
 Grab the latest `Clawdmeter.exe` from the
-[Releases](../../releases) page — it's a single self-contained file (~27 MB,
+[Releases](../../releases) page — it's a single self-contained file (~29 MB,
 bundling Python + Qt), no install needed. Just run it.
 
 > **Heads up:** the exe is not code-signed, so Windows SmartScreen may show a
@@ -174,7 +174,7 @@ Add `--mock` to drive the UI with synthetic data (no API calls):
 .\build.ps1
 ```
 
-Output: `dist\Clawdmeter.exe` — single-file, no console window, ~27 MB.
+Output: `dist\Clawdmeter.exe` — single-file, no console window, ~29 MB.
 
 `Clawdmeter.spec` prunes the parts of PySide6/Qt the app doesn't use (the
 QML/Quick stack, the ~20 MB software-OpenGL fallback, unused image-format and
