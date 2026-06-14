@@ -88,6 +88,47 @@ a.datas = [d for d in a.datas if 'translations' not in d[0].lower()]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# --- Windows version resource ------------------------------------------------
+# Give Explorer's Properties > Details tab (and Task Manager / the SmartScreen
+# prompt) a real File/Product version, name, and copyright. The version is
+# parsed from APP_VERSION in src/app_settings.py so it always matches the in-app
+# About box -- bump it there and rebuild; nothing here needs touching.
+import re
+from PyInstaller.utils.win32.versioninfo import (
+    VSVersionInfo, FixedFileInfo, StringFileInfo, StringTable,
+    StringStruct, VarFileInfo, VarStruct,
+)
+
+with open('src/app_settings.py', encoding='utf-8') as _f:
+    _m = re.search(r'APP_VERSION\s*=\s*["\']([0-9]+(?:\.[0-9]+)*)["\']', _f.read())
+_ver_str = _m.group(1) if _m else '0.0.0'
+_vtuple = tuple(([int(p) for p in _ver_str.split('.')] + [0, 0, 0, 0])[:4])
+
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(filevers=_vtuple, prodvers=_vtuple),
+    kids=[
+        StringFileInfo([
+            StringTable('040904B0', [
+                StringStruct('CompanyName', 'Nick Welter'),
+                StringStruct('FileDescription',
+                             'Clawdmeter-Windows — Claude Code usage dashboard'),
+                StringStruct('FileVersion', _ver_str),
+                StringStruct('InternalName', 'Clawdmeter'),
+                StringStruct('LegalCopyright',
+                             '© 2026 Nick Welter · MIT licensed · '
+                             'Clawd mascot © Anthropic PBC'),
+                StringStruct('OriginalFilename', 'Clawdmeter.exe'),
+                StringStruct('ProductName', 'Clawdmeter-Windows'),
+                StringStruct('ProductVersion', _ver_str),
+                StringStruct('Comments',
+                             'Unofficial; not affiliated with Anthropic. '
+                             'github.com/weltern/Clawdmeter-Windows'),
+            ]),
+        ]),
+        VarFileInfo([VarStruct('Translation', [0x0409, 0x04B0])]),
+    ],
+)
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -107,4 +148,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='assets/icon.ico',
+    version=version_info,
 )
