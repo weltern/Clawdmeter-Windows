@@ -211,6 +211,7 @@ class TranscriptState:
     session_id: str | None = None      # transcript file stem (the uuid) — stable tile key
     cwd: str | None = None
     project_name: str | None = None    # friendly name shown on the tile
+    target: str | None = None          # what the tool acts on (file/pattern/…); else tool_name
     is_stale: bool = False             # in the shelf window but quiet > STALE_SECONDS
     agents: list[AgentState] = field(default_factory=list)  # live subagents, newest-first
     tokens: TokenUsage = field(default_factory=TokenUsage)  # whole-session token tally
@@ -488,13 +489,49 @@ def any_agent_active(agents: list[AgentState]) -> bool:
     )
 
 
-def _classify(content: list) -> tuple[Activity, str | None]:
-    """Return (activity, tool_name) for the latest assistant content blocks.
+def _tool_target(name: str, tool_input: dict | None) -> str | None:
+    """The 'what' a tool is acting on, from its input — the file being edited,
+    the search pattern, the URL host, etc. Returns None when there's no natural
+    target, so callers fall back to showing the tool name.
+    """
+    if not isinstance(tool_input, dict):
+        return None
+    lower = name.lower()
 
-    Walks the blocks back-to-front; the last tool_use wins. If there are no
+    def field(key: str) -> str | None:
+        v = tool_input.get(key)
+        return v.strip() if isinstance(v, str) and v.strip() else None
+
+    if lower in ("read", "edit", "write", "multiedit"):
+        p = field("file_path")
+        return Path(p).name if p else None
+    if lower == "notebookedit":
+        p = field("notebook_path") or field("file_path")
+        return Path(p).name if p else None
+    if lower in ("grep", "glob"):
+        return field("pattern")
+    if lower in ("bash", "powershell"):
+        cmd = field("command")
+        return cmd.split()[0] if cmd else None
+    if lower == "webfetch":
+        url = field("url")
+        return url.split("://", 1)[-1].split("/", 1)[0] if url else None
+    if lower == "websearch":
+        return field("query")
+    if lower in ("task", "agent"):
+        return field("description") or field("subagent_type")
+    return None
+
+
+def _classify(content: list) -> tuple[Activity, str | None, str | None]:
+    """Return (activity, tool_name, target) for the latest assistant content.
+
+    Walks the blocks back-to-front; the last tool_use wins. `target` is what the
+    winning tool is acting on (file, pattern, …), or None. If there are no
     tool_use blocks but there are thinking/text blocks, returns THINKING.
     """
     last_tool: str | None = None
+    last_input: dict | None = None
     has_thinking_or_text = False
     for block in content:
         if not isinstance(block, dict):
@@ -504,13 +541,17 @@ def _classify(content: list) -> tuple[Activity, str | None]:
             name = block.get("name")
             if isinstance(name, str):
                 last_tool = name
+                inp = block.get("input")
+                last_input = inp if isinstance(inp, dict) else None
         elif btype in ("thinking", "text"):
             has_thinking_or_text = True
     if last_tool is not None:
-        return _activity_for_tool(last_tool), _pretty_tool_name(last_tool)
+        return (_activity_for_tool(last_tool),
+                _pretty_tool_name(last_tool),
+                _tool_target(last_tool, last_input))
     if has_thinking_or_text:
-        return Activity.THINKING, None
-    return Activity.IDLE, None
+        return Activity.THINKING, None, None
+    return Activity.IDLE, None, None
 
 
 class _SessionTail:
@@ -529,6 +570,7 @@ class _SessionTail:
         self.offset = 0
         self.last_activity: Activity | None = None
         self.last_tool: str | None = None
+        self.last_target: str | None = None
         self.last_event_ts: float | None = None
         self.cwd: str | None = None
         self.ai_title: str | None = None
@@ -625,11 +667,12 @@ class _SessionTail:
         content = msg.get("content")
         if not isinstance(content, list):
             return
-        activity, tool = _classify(content)
+        activity, tool, target = _classify(content)
         if activity == Activity.IDLE:
             return
         self.last_activity = activity
         self.last_tool = tool
+        self.last_target = target
         # Use the event's OWN timestamp (truthful "last active") rather than
         # wall-clock-at-read — otherwise restarting the app reads the whole
         # backlog and stamps every old action as "just now". Fall back to
@@ -643,6 +686,7 @@ class _SessionTail:
         return TranscriptState(
             activity=activity,
             tool_name=tool if activity != Activity.IDLE else None,
+            target=self.last_target if activity != Activity.IDLE else None,
             transcript_path=self.path,
             last_event_ts=self.last_event_ts,
             session_id=self.path.stem,

@@ -155,26 +155,35 @@ class ScrollingLabel(QWidget):
     _SPEED_PX_S = 42         # scroll speed in px/sec (drives the duration)
     _END_GAP_PX = 12         # trailing gap so the last glyph isn't flush to edge
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, *, px: int = 13, bold: bool = True,
+                 color: str = _TEXT, letter_spacing: float = 0.5,
+                 max_w: int = _LABEL_MIN_W) -> None:
         super().__init__(parent)
         self._full = ""
         self._offset = 0
         self._hovering = False
+        self._explicit_tt: str | None = None   # None = auto (overflow-based)
         self._font = QFont()
-        self._font.setPixelSize(13)
-        self._font.setBold(True)
-        self._font.setLetterSpacing(QFont.AbsoluteSpacing, 0.5)
+        self._font.setPixelSize(px)
+        self._font.setBold(bold)
+        if letter_spacing:
+            self._font.setLetterSpacing(QFont.AbsoluteSpacing, letter_spacing)
         self._fm = QFontMetrics(self._font)
-        self._color = QColor(_TEXT)
+        self._color = QColor(color)
         self.setFixedHeight(self._fm.height())
-        self.setMaximumWidth(_LABEL_MIN_W)
+        self.setMaximumWidth(max_w)
         self._anim = QPropertyAnimation(self, b"scrollOffset", self)
         self._anim.setEasingCurve(QEasingCurve.InOutSine)
 
     # --- public API (QLabel-like) -------------------------------------------
-    def setText(self, text: str) -> None:
+    def setText(self, text: str, tooltip: str | None = None) -> None:
+        """Set the label text. `tooltip=None` → auto (full text shown on hover
+        only when it overflows); pass an explicit string to override (e.g. the
+        idle line shows the absolute last-active time instead)."""
         text = text or ""
+        self._explicit_tt = tooltip
         if text == self._full:
+            self._refresh_tooltip()
             return
         self._full = text
         self._offset = 0
@@ -204,7 +213,10 @@ class ScrollingLabel(QWidget):
         return QSize(0, self._fm.height())
 
     def _refresh_tooltip(self) -> None:
-        self.setToolTip(self._full if self._overflows() else "")
+        if self._explicit_tt is not None:
+            self.setToolTip(self._explicit_tt)
+        else:
+            self.setToolTip(self._full if self._overflows() else "")
 
     # --- animatable scroll offset -------------------------------------------
     def _get_offset(self) -> int:
@@ -365,10 +377,12 @@ class SessionTile(QWidget):
         act_row.addWidget(self.activity_label)
         col.addLayout(act_row)
 
-        # Secondary line — tool name when live, "last active Nm ago" when idle.
-        self.sub_label = QLabel("", objectName="tileSub")
-        self.sub_label.setAlignment(Qt.AlignHCenter)
-        col.addWidget(self.sub_label)
+        # Secondary line — the target being acted on (file/pattern/…, else the
+        # tool name) when live, "last active Nm ago" when idle. Scrolls on hover
+        # like the title, since file paths/queries can be long.
+        self.sub_label = ScrollingLabel(px=10, bold=False, color=_MUTED,
+                                        letter_spacing=0, max_w=self._label_max_w)
+        col.addWidget(self.sub_label, 0, Qt.AlignHCenter)
 
         # Row of child mascots for live subagents — hidden until the session has any.
         self._agents: dict[str, AgentMascot] = {}
@@ -417,6 +431,7 @@ class SessionTile(QWidget):
         if new_w != self._label_max_w:
             self._label_max_w = new_w
             self.project_label.setMaximumWidth(new_w)
+            self.sub_label.setMaximumWidth(new_w)
 
     def update_state(self, state: TranscriptState) -> None:
         """Reflect one session's state: name, activity color/label, glow, dot,
@@ -443,8 +458,8 @@ class SessionTile(QWidget):
             self.activity_label.setText(ACTIVITY_LABELS[Activity.IDLE])
             self.activity_label.setStyleSheet(f"color: {_IDLE_COLOR};")
             self.status_dot.setStyleSheet(f"color: {_IDLE_COLOR};")
-            self.sub_label.setText(_ago_text(state.last_event_ts))
-            self.sub_label.setToolTip(_abs_time_text(state.last_event_ts))
+            self.sub_label.setText(_ago_text(state.last_event_ts),
+                                   tooltip=_abs_time_text(state.last_event_ts))
             self.sprite.set_anims(f"{self._session_id}:idle", _IDLE_ANIMS)
         else:
             self._glow.setColor(QColor(color))
@@ -453,8 +468,8 @@ class SessionTile(QWidget):
             self.activity_label.setStyleSheet(f"color: {color};")
             # Live dot tracks the activity color so the tile reads as a unit.
             self.status_dot.setStyleSheet(f"color: {color};")
-            self.sub_label.setText(state.tool_name or "")
-            self.sub_label.setToolTip("")
+            # Show what's being acted on (file/pattern/…); fall back to the tool.
+            self.sub_label.setText(state.target or state.tool_name or "")
             anims = ACTIVITY_ANIMS.get(state.activity) or _IDLE_ANIMS
             self.sprite.set_anims(f"{self._session_id}:{state.activity.value}", anims)
 

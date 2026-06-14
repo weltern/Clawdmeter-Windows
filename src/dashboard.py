@@ -1880,14 +1880,21 @@ class Dashboard(QMainWindow):
                     transcript_path=None, last_event_ts=now, session_id=sid, cwd=None,
                     project_name=project, is_stale=False,
                 ))
-        # Give each mock session a distinct token tally so the mascot-hover
-        # breakdown shows realistic numbers.
+        # Give each mock session a distinct token tally (hover breakdown) and a
+        # demo "target" so the sub-label shows what's being acted on.
+        mock_targets = {
+            TranscriptActivity.CODING: "dashboard.py",
+            TranscriptActivity.READING: "transcript.py",
+            TranscriptActivity.SEARCHING: "qt elided label",
+            TranscriptActivity.INTEGRATING: "list_issues",
+        }
         for i, st in enumerate(states):
             base = i + 1
             st.tokens = TokenUsage(
                 input=base * 220_000, output=base * 410_000,
                 cache_read=base * 9_800_000, cache_write=base * 180_000,
             )
+            st.target = mock_targets.get(st.activity)
         self._on_sessions(states)
 
     def _on_sample(self, s: UsageSample) -> None:

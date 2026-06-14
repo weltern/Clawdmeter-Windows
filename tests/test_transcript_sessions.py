@@ -245,13 +245,13 @@ def test_select_active_caps_at_limit():
 
 def test_classify_mcp_tool_is_integrating():
     content = [{"type": "tool_use", "name": "mcp__github__get_pr"}]
-    activity, tool = _classify(content)
+    activity, tool, target = _classify(content)
     assert activity is Activity.INTEGRATING
     assert tool == "github/get_pr"
 
 
 def test_classify_unknown_tool_is_coding():
-    activity, tool = _classify([{"type": "tool_use", "name": "SomeNewTool"}])
+    activity, tool, target = _classify([{"type": "tool_use", "name": "SomeNewTool"}])
     assert activity is Activity.CODING
     assert tool == "SomeNewTool"
 
@@ -262,9 +262,10 @@ def test_classify_thinking_or_text_is_thinking():
 
 
 def test_classify_empty_is_idle():
-    activity, tool = _classify([])
+    activity, tool, target = _classify([])
     assert activity is Activity.IDLE
     assert tool is None
+    assert target is None
 
 
 def test_classify_last_tool_use_wins():
@@ -274,9 +275,44 @@ def test_classify_last_tool_use_wins():
         {"type": "tool_use", "name": "Read"},
         {"type": "tool_use", "name": "Bash"},
     ]
-    activity, tool = _classify(content)
+    activity, tool, target = _classify(content)
     assert activity is Activity.CODING
     assert tool == "Bash"
+
+
+def test_classify_extracts_target_from_tool_input():
+    a, tool, target = _classify(
+        [{"type": "tool_use", "name": "Read",
+          "input": {"file_path": r"C:\x\thisisatest.txt"}}])
+    assert (a, tool, target) == (Activity.READING, "Read", "thisisatest.txt")
+    assert _classify([{"type": "tool_use", "name": "Grep",
+                       "input": {"pattern": "def foo"}}])[2] == "def foo"
+    assert _classify([{"type": "tool_use", "name": "Bash",
+                       "input": {"command": "npm run build"}}])[2] == "npm"
+    assert _classify([{"type": "tool_use", "name": "WebFetch",
+                       "input": {"url": "https://example.com/page"}}])[2] == "example.com"
+    # the winning (last) tool_use supplies the target
+    assert _classify([
+        {"type": "tool_use", "name": "Read", "input": {"file_path": "/a/first.py"}},
+        {"type": "tool_use", "name": "Edit", "input": {"file_path": "/b/second.py"}},
+    ])[2] == "second.py"
+    # no natural target -> None (display falls back to the tool name)
+    assert _classify([{"type": "tool_use", "name": "TodoWrite",
+                       "input": {"todos": []}}])[2] is None
+
+
+def test_session_tail_target_in_state():
+    tail = _SessionTail(Path("/p/proj/sess.jsonl"))
+    tail._consume_event({
+        "type": "assistant", "timestamp": "2026-06-14T03:00:00Z",
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Edit",
+             "input": {"file_path": "/proj/src/dashboard.py"}}]},
+    })
+    st = tail._state(Activity.CODING, "Edit")
+    assert st.target == "dashboard.py"
+    # idle state carries no target
+    assert tail._state(Activity.IDLE, None, is_stale=True).target is None
 
 
 def test_parent_transcript_for_subagent():
