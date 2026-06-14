@@ -161,6 +161,7 @@ QProgressBar {
 QProgressBar::chunk { background-color: #CE7D6B; border-radius: 0px; }
 QProgressBar[heat="warm"]::chunk { background-color: #B85C42; }
 QProgressBar[heat="hot"]::chunk  { background-color: #8B2E1A; }
+QProgressBar[heat="over"]::chunk { background-color: #dc2626; }
 
 QWidget#settingsPanel {
     background-color: #0a0d12;
@@ -1376,10 +1377,10 @@ class Dashboard(QMainWindow):
         group_session.setContentsMargins(0, 0, 0, 0)
         group_session.setSpacing(6)
         group_session.addWidget(self.group_label)
-        self.session_row, self.session_pct, self.session_bar, self.session_reset = self._build_row("SESSION (5h)")
+        self.session_row, _, self.session_pct, self.session_bar, self.session_reset = self._build_row("SESSION (5h)")
         group_session.addLayout(self.session_row)
         layout.addLayout(group_session)
-        self.weekly_row, self.weekly_pct, self.weekly_bar, self.weekly_reset = self._build_row("WEEKLY (7d)")
+        self.weekly_row, self.weekly_title, self.weekly_pct, self.weekly_bar, self.weekly_reset = self._build_row("WEEKLY (7d)")
         layout.addLayout(self.weekly_row)
 
         # Status badge: only visible when nearing/at the rate limit. When
@@ -1673,7 +1674,7 @@ class Dashboard(QMainWindow):
         outer.addLayout(header)
         outer.addWidget(bar)
         outer.addWidget(reset)
-        return outer, pct, bar, reset
+        return outer, label, pct, bar, reset
 
     def _start_poller(self) -> None:
         self._poller = UsagePoller(interval_seconds=app_settings.get_poll_interval())
@@ -1711,6 +1712,9 @@ class Dashboard(QMainWindow):
 
         def sample_tick():
             self._mock_pct = (self._mock_pct + 1) % 100
+            # Occasionally drive overage > 0 so the self-hiding red overage
+            # state on the weekly bar is visible in mock mode.
+            overage = max(0, self._mock_pct - 75)
             self._on_sample(UsageSample(
                 session_pct=self._mock_pct,
                 session_reset_minutes=140,
@@ -1720,6 +1724,8 @@ class Dashboard(QMainWindow):
                 ok=True,
                 error=None,
                 timestamp=time.time(),
+                overage_pct=overage,
+                overage_reset_minutes=12 * 24 * 60,
             ))
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
@@ -1867,12 +1873,25 @@ class Dashboard(QMainWindow):
         self.session_bar.style().polish(self.session_bar)
         self.session_reset.setText(f"resets in {_format_minutes(s.session_reset_minutes)}")
 
-        self.weekly_pct.setText(f"{s.weekly_pct}%")
-        self.weekly_bar.setValue(s.weekly_pct)
-        self.weekly_bar.setProperty("heat", _heat(s.weekly_pct))
+        if s.overage_pct > 0:
+            # Past the weekly cap into paid overage: the weekly bar turns red
+            # and tracks overage consumption, with the overage reset countdown.
+            # Self-hiding — the normal weekly bar returns the moment it's 0.
+            self.weekly_title.setText("OVERAGE")
+            self.weekly_pct.setText(f"{s.overage_pct}%")
+            self.weekly_bar.setValue(s.overage_pct)
+            self.weekly_bar.setProperty("heat", "over")
+            self.weekly_reset.setText(
+                f"resets in {_format_minutes(s.overage_reset_minutes)}")
+        else:
+            self.weekly_title.setText("WEEKLY (7d)")
+            self.weekly_pct.setText(f"{s.weekly_pct}%")
+            self.weekly_bar.setValue(s.weekly_pct)
+            self.weekly_bar.setProperty("heat", _heat(s.weekly_pct))
+            self.weekly_reset.setText(
+                f"resets in {_format_minutes(s.weekly_reset_minutes)}")
         self.weekly_bar.style().unpolish(self.weekly_bar)
         self.weekly_bar.style().polish(self.weekly_bar)
-        self.weekly_reset.setText(f"resets in {_format_minutes(s.weekly_reset_minutes)}")
 
         self._sync_compact(s)
 

@@ -52,6 +52,11 @@ class UsageSample:
     ok: bool
     error: str | None = None
     timestamp: float = 0.0
+    # Usage past the weekly cap (paid "overage" tier). 0 for the vast majority
+    # of accounts/time; the UI only surfaces it when overage_pct > 0. Its own
+    # reset clock (longer than weekly), so it's tracked separately.
+    overage_pct: int = 0
+    overage_reset_minutes: int = 0
 
 
 def credentials_path() -> Path:
@@ -91,24 +96,19 @@ def read_token() -> str | None:
     return _extract_access_token(raw)
 
 
-def _poll_once(token: str) -> UsageSample:
-    """Make one rate-limit probe. Returns a sample with ok=False on failure."""
-    headers = dict(API_HEADERS_TEMPLATE)
-    headers["Authorization"] = f"Bearer {token}"
-    now = time.time()
-    try:
-        with httpx.Client(timeout=20.0) as http:
-            resp = http.post(API_URL, headers=headers, json=API_BODY)
-    except httpx.HTTPError as exc:
-        return UsageSample(0, 0, 0, 0, "error", False, str(exc), now)
+def sample_from_headers(headers, now: float) -> UsageSample:
+    """Build a UsageSample from the API's rate-limit response headers.
 
+    Pure (no network) so it's unit-testable. ``headers`` is any mapping with a
+    ``.get(name, default)`` method (httpx ``Headers`` or a plain dict).
+    """
     def hdr(name: str, default: str = "0") -> str:
-        return resp.headers.get(name, default)
+        return headers.get(name, default)
 
     def reset_minutes(reset_ts: str) -> int:
         try:
             r = float(reset_ts)
-        except ValueError:
+        except (TypeError, ValueError):
             return 0
         mins = (r - now) / 60.0
         return int(round(mins)) if mins > 0 else 0
@@ -116,7 +116,7 @@ def _poll_once(token: str) -> UsageSample:
     def pct(util: str) -> int:
         try:
             return int(round(float(util) * 100))
-        except ValueError:
+        except (TypeError, ValueError):
             return 0
 
     return UsageSample(
@@ -128,7 +128,24 @@ def _poll_once(token: str) -> UsageSample:
         ok=True,
         error=None,
         timestamp=now,
+        overage_pct=pct(hdr("anthropic-ratelimit-unified-overage-utilization")),
+        overage_reset_minutes=reset_minutes(
+            hdr("anthropic-ratelimit-unified-overage-reset")
+        ),
     )
+
+
+def _poll_once(token: str) -> UsageSample:
+    """Make one rate-limit probe. Returns a sample with ok=False on failure."""
+    headers = dict(API_HEADERS_TEMPLATE)
+    headers["Authorization"] = f"Bearer {token}"
+    now = time.time()
+    try:
+        with httpx.Client(timeout=20.0) as http:
+            resp = http.post(API_URL, headers=headers, json=API_BODY)
+    except httpx.HTTPError as exc:
+        return UsageSample(0, 0, 0, 0, "error", False, str(exc), now)
+    return sample_from_headers(resp.headers, now)
 
 
 class UsagePoller(QThread):
