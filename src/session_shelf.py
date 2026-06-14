@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont
 
 from mood import GROUP_ANIMS
 from sprite_player import SpritePlayer
@@ -62,9 +62,7 @@ QLabel#shelfHeader {{
     font-size: 13px; font-weight: 600; color: {_MUTED}; letter-spacing: 2px;
 }}
 QWidget#sessionTile {{ background: transparent; }}
-QLabel#tileProject {{
-    font-size: 13px; font-weight: 700; color: {_TEXT}; letter-spacing: 0.5px;
-}}
+QLabel#tileProject {{ color: {_TEXT}; }}
 QLabel#tileActivity {{
     font-size: 11px; font-weight: 600; letter-spacing: 1px;
 }}
@@ -99,6 +97,12 @@ def _ago_text(last_event_ts: float | None) -> str:
     hours, m = divmod(mins, 60)
     return f"last active {hours}h {m:02d}m ago"
 
+
+# Cap for the project/title label. Session titles (from ai-title/custom-title)
+# are far longer than a cwd leaf, so the label is elided to at most this width
+# (or the mascot's width if larger) and the full title moves to a tooltip — a
+# long title can't stretch a tile far wider than its mascot.
+_LABEL_MIN_W = 150
 
 # Child-mascot (subagent) sizing.
 AGENT_SPRITE = 38
@@ -182,6 +186,19 @@ class SessionTile(QWidget):
 
         self.project_label = QLabel("…", objectName="tileProject")
         self.project_label.setAlignment(Qt.AlignHCenter)
+        # Set the font in code (not just QSS): elidedText() measures via the
+        # widget's fontMetrics(), which does NOT reflect a QSS-applied font, so
+        # eliding against the QSS font would under-measure and never truncate.
+        _pf = QFont()
+        _pf.setPixelSize(13)
+        _pf.setBold(True)
+        _pf.setLetterSpacing(QFont.AbsoluteSpacing, 0.5)
+        self.project_label.setFont(_pf)
+        # Full (un-elided) label text, kept so we can re-elide when the tile
+        # resizes and expose the whole title as a tooltip.
+        self._project_text = ""
+        self._label_max_w = max(sprite_size, _LABEL_MIN_W)
+        self.project_label.setMaximumWidth(self._label_max_w)
         col.addWidget(self.project_label)
 
         # Activity + a leading status dot share one row so the dot reads as a
@@ -241,11 +258,27 @@ class SessionTile(QWidget):
         # early-returns when the size is unchanged, so calling it every poll is
         # cheap and won't churn the layout.
         self.sprite.set_size(px)
+        # Keep the label cap in step with the mascot width and re-elide.
+        new_w = max(px, _LABEL_MIN_W)
+        if new_w != self._label_max_w:
+            self._label_max_w = new_w
+            self._apply_project_label()
+
+    def _apply_project_label(self) -> None:
+        """Show the title elided to the tile width, with the full text as a
+        tooltip when it doesn't fit."""
+        w = self._label_max_w
+        self.project_label.setMaximumWidth(w)
+        text = self._project_text or "unknown"
+        elided = self.project_label.fontMetrics().elidedText(text, Qt.ElideRight, w)
+        self.project_label.setText(elided)
+        self.project_label.setToolTip(text if elided != text else "")
 
     def update_state(self, state: TranscriptState) -> None:
         """Reflect one session's state: name, activity color/label, glow, dot,
         and the mascot animation (idle sessions get the calm sleep loop)."""
-        self.project_label.setText(state.project_name or "unknown")
+        self._project_text = state.project_name or "unknown"
+        self._apply_project_label()
 
         idle = state.is_stale or state.activity == Activity.IDLE
         color = ACTIVITY_COLORS.get(state.activity, _IDLE_COLOR)

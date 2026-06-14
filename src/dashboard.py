@@ -1735,11 +1735,13 @@ class Dashboard(QMainWindow):
         self._mock_shelf_timer.start(2000)
         self._emit_mock_sessions()
 
-    # Pool of fake sessions (session_id, project_name) the mock roster draws on.
+    # Pool of fake sessions (session_id, label) the mock roster draws on. Labels
+    # mirror the real precedence (custom/ai title, else cwd leaf): a mix of long
+    # session titles (elided + tooltip) and short cwd fallbacks.
     _MOCK_POOL = [
-        ("mock-clawdmeter", "clawdmeter-windows"),
+        ("mock-clawdmeter", "Review clawdmeter UI design and implementation"),
         ("mock-api-gateway", "api-gateway"),
-        ("mock-notes-cli", "notes-cli"),
+        ("mock-notes-cli", "Fix login redirect bug"),
         ("mock-data-pipeline", "data-pipeline"),
     ]
 

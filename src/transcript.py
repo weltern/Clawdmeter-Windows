@@ -221,6 +221,27 @@ def project_name_from_cwd(cwd: str | None, transcript_path: Path | None) -> str:
     return "unknown"
 
 
+def session_label(
+    custom_title: str | None,
+    ai_title: str | None,
+    cwd: str | None,
+    transcript_path: Path | None,
+) -> str:
+    """Friendly tile label, in priority order:
+
+    1. the user's **custom** session title (Claude Code `custom-title` event),
+    2. Claude Code's **auto-generated** title (`ai-title` event), else
+    3. the working-directory leaf (`project_name_from_cwd`).
+
+    Titles live in the session's own transcript as standalone event lines and
+    are absent on subagent transcripts, which simply fall back to the cwd leaf.
+    """
+    for title in (custom_title, ai_title):
+        if title and title.strip():
+            return title.strip()
+    return project_name_from_cwd(cwd, transcript_path)
+
+
 def select_active(
     entries: list[tuple[Path, float]],
     now: float,
@@ -364,6 +385,8 @@ class _SessionTail:
         self.last_tool: str | None = None
         self.last_event_ts: float | None = None
         self.cwd: str | None = None
+        self.ai_title: str | None = None
+        self.custom_title: str | None = None
 
     def poll(self, now: float) -> TranscriptState:
         """Read any newly-appended bytes and return this session's current state."""
@@ -421,6 +444,21 @@ class _SessionTail:
             self._consume_event(ev)
 
     def _consume_event(self, ev: dict) -> None:
+        # Title events are their own line types (no message/cwd) and are
+        # re-emitted as the title changes, so the latest one seen wins. A
+        # user-set custom title can also be cleared, so an empty value resets
+        # it (falling back to the auto title / cwd).
+        etype = ev.get("type")
+        if etype == "custom-title":
+            ct = ev.get("customTitle")
+            self.custom_title = ct.strip() if isinstance(ct, str) and ct.strip() else None
+            return
+        if etype == "ai-title":
+            at = ev.get("aiTitle")
+            if isinstance(at, str) and at.strip():
+                self.ai_title = at.strip()
+            return
+
         # cwd rides BOTH user and assistant events, so capture it from any event
         # — the tile can be named before the model's first reply.
         cwd = ev.get("cwd")
@@ -452,7 +490,9 @@ class _SessionTail:
             last_event_ts=self.last_event_ts,
             session_id=self.path.stem,
             cwd=self.cwd,
-            project_name=project_name_from_cwd(self.cwd, self.path),
+            project_name=session_label(
+                self.custom_title, self.ai_title, self.cwd, self.path
+            ),
             is_stale=is_stale,
         )
 

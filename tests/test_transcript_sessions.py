@@ -24,6 +24,7 @@ from transcript import (  # noqa: E402
     Activity,
     AgentState,
     _classify,
+    _SessionTail,
     any_agent_active,
     group_sessions,
     is_agent_transcript,
@@ -31,6 +32,7 @@ from transcript import (  # noqa: E402
     parent_transcript_for_subagent,
     project_name_from_cwd,
     select_active,
+    session_label,
 )
 
 
@@ -49,6 +51,51 @@ def test_project_name_from_cwd_falls_back_to_transcript_parent():
 def test_project_name_from_cwd_total_fallback():
     assert project_name_from_cwd(None, None) == "unknown"
     assert project_name_from_cwd("", None) == "unknown"
+
+
+def test_session_label_prefers_custom_then_ai_then_cwd():
+    cwd = r"C:\Claude\ClonedRepos\Clawdmeter-Windows"
+    # custom title wins over everything
+    assert session_label("My Tab", "Auto Title", cwd, None) == "My Tab"
+    # no custom -> auto (ai) title
+    assert session_label(None, "Auto Title", cwd, None) == "Auto Title"
+    # neither title -> cwd leaf
+    assert session_label(None, None, cwd, None) == "Clawdmeter-Windows"
+    # blank/whitespace titles are ignored and fall through
+    assert session_label("   ", "", cwd, None) == "Clawdmeter-Windows"
+    # surrounding whitespace is trimmed
+    assert session_label("  Spaced  ", None, None, None) == "Spaced"
+    # total fallback
+    assert session_label(None, None, None, None) == "unknown"
+
+
+def test_session_tail_captures_titles_and_uses_them_as_label():
+    tail = _SessionTail(Path("/p/proj/sess.jsonl"))
+    # auto title arrives first; with no custom title it becomes the label.
+    tail._consume_event({"type": "ai-title", "aiTitle": "Auto X", "sessionId": "s"})
+    assert tail.ai_title == "Auto X"
+    assert tail.custom_title is None
+    assert tail._state(Activity.IDLE, None, is_stale=True).project_name == "Auto X"
+
+    # a custom title overrides the auto one.
+    tail._consume_event({"type": "custom-title", "customTitle": "Mine", "sessionId": "s"})
+    assert tail.custom_title == "Mine"
+    assert tail._state(Activity.IDLE, None, is_stale=True).project_name == "Mine"
+
+    # clearing the custom title falls back to the auto title.
+    tail._consume_event({"type": "custom-title", "customTitle": "", "sessionId": "s"})
+    assert tail.custom_title is None
+    assert tail._state(Activity.IDLE, None, is_stale=True).project_name == "Auto X"
+
+
+def test_session_tail_falls_back_to_cwd_leaf_without_titles():
+    tail = _SessionTail(Path("/p/proj/sess.jsonl"))
+    tail._consume_event({
+        "type": "user",
+        "cwd": r"C:\Work\my-repo",
+        "message": {"role": "user", "content": "hi"},
+    })
+    assert tail._state(Activity.IDLE, None, is_stale=True).project_name == "my-repo"
 
 
 def test_is_subagent_path():
