@@ -14,7 +14,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from transcript import Activity, AgentState, TranscriptState  # noqa: E402
-from dashboard import _SINGLE_TILE_ID, _view_states  # noqa: E402
+from dashboard import (  # noqa: E402
+    _SINGLE_TILE_ID,
+    _should_release_autofit,
+    _view_states,
+)
 
 
 def _st(sid: str, agents=()) -> TranscriptState:
@@ -61,6 +65,24 @@ def test_single_mode_keeps_focused_under_stable_id():
 
 def test_single_mode_empty_stays_empty():
     assert _view_states([], show_multiple=False, show_subagents=True) == []
+
+
+def test_autofit_released_only_on_user_height_drag():
+    # A genuine user height drag (armed, not our animation, not max/titlebar).
+    assert _should_release_autofit(True, False, True, False, False) is True
+
+
+def test_autofit_kept_for_non_user_resizes():
+    # height unchanged (width-only drag)
+    assert _should_release_autofit(False, False, True, False, False) is False
+    # our own fit animation in progress
+    assert _should_release_autofit(True, True, True, False, False) is False
+    # before the first show settles (not armed)
+    assert _should_release_autofit(True, False, False, False, False) is False
+    # a maximize/restore transition
+    assert _should_release_autofit(True, False, True, True, False) is False
+    # the auto-hide title-bar animation
+    assert _should_release_autofit(True, False, True, False, True) is False
 
 
 if __name__ == "__main__":

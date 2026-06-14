@@ -102,6 +102,21 @@ def _view_states(raw, show_multiple, show_subagents, single_id=_SINGLE_TILE_ID):
     return states
 
 
+def _should_release_autofit(height_changed, fitting, armed, max_involved, titlebar_animating):
+    """Decide whether a resize is a genuine user height-drag (so we should stop
+    auto-fitting the window height). True only when the height actually changed
+    and it wasn't one of OUR programmatic resizes — the fit animation (`fitting`),
+    a maximize/restore (`max_involved`), or the auto-hide title-bar animation —
+    and only after the first show has settled (`armed`)."""
+    return (
+        height_changed
+        and armed
+        and not fitting
+        and not max_involved
+        and not titlebar_animating
+    )
+
+
 STYLESHEET = """
 QWidget#root {
     background-color: #0e1116;
@@ -1430,6 +1445,13 @@ class Dashboard(QMainWindow):
         self._fit_anim = QPropertyAnimation(self, b"size", self)
         self._fit_anim.setDuration(240)  # matches the shelf enter/resize animation
         self._fit_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._fit_anim.finished.connect(self._on_fit_anim_finished)
+        # Auto-fit height state: we stop auto-fitting once the user drags the
+        # window height themselves, so a manual size sticks (width is always free).
+        self._auto_fit_height = True
+        self._fitting = False        # True during our own height resize/animation
+        self._fit_armed = False      # don't treat the first show as a user resize
+        self._was_maximized = False
 
         self._rate = RateGroupTracker()
         self._reset_notifier = ResetNotifier()
@@ -1939,7 +1961,10 @@ class Dashboard(QMainWindow):
 
     def _fit_window_height(self) -> None:
         """Resize the window's height to hug its content so there's no dead space
-        below the bars; the height follows the shelf as it grows/shrinks."""
+        below the bars; the height follows the shelf as it grows/shrinks. Does
+        nothing once the user has set their own height (auto-fit released)."""
+        if not self._auto_fit_height:
+            return
         if self.isMaximized() or self.isFullScreen():
             return
         if self._titlebar_anim_group.state() == QAbstractAnimation.Running:
@@ -1948,12 +1973,41 @@ class Dashboard(QMainWindow):
         if abs(target - self.height()) <= 1:
             return
         if not self.isVisible():
+            self._fitting = True
             self.resize(self.width(), target)  # snap before the first show
+            self._fitting = False
             return
         self._fit_anim.stop()
+        self._fitting = True  # set AFTER stop() so a restart stays guarded
         self._fit_anim.setStartValue(self.size())
         self._fit_anim.setEndValue(QSize(self.width(), target))
         self._fit_anim.start()
+
+    def _on_fit_anim_finished(self) -> None:
+        self._fitting = False
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # Arm user-resize detection only after the show settles, so the initial
+        # show geometry isn't mistaken for a manual height drag.
+        QTimer.singleShot(0, lambda: setattr(self, "_fit_armed", True))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        old = event.oldSize()
+        max_involved = self.isMaximized() or self._was_maximized
+        self._was_maximized = self.isMaximized()
+        if not self._auto_fit_height:
+            return
+        height_changed = old.height() > 0 and event.size().height() != old.height()
+        if _should_release_autofit(
+            height_changed,
+            self._fitting,
+            self._fit_armed,
+            max_involved,
+            self._titlebar_anim_group.state() == QAbstractAnimation.Running,
+        ):
+            self._auto_fit_height = False  # respect the user's height from now on
 
     def _apply_status_badge(self, status: str) -> None:
         """Show/hide the bottom-left rate-limit badge and reflow the window.
