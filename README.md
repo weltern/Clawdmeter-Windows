@@ -46,10 +46,14 @@ Run more than one Claude Code session at once and each gets its own mascot on th
 independently. The session/weekly usage bars stay account-wide (a single number
 from the API), shown once beneath the shelf.
 
+![Clawdmeter-Windows session shelf — one mascot per active Claude Code session, each with its project name and activity](assets/Screenshot-shelf.png)
+
 When a session spins up subagents (the Agent/Task tool), a row of small **child
 mascots** appears under that session — one per live agent, each glowing with its
 own activity — so a supervising session still looks busy even while its own
 transcript is paused waiting on those agents.
+
+![A session with three subagents shown as small child mascots beneath its parent mascot](assets/Screenshot-subagents.png)
 
 The window **sizes itself to fit** the mascots, growing and shrinking as sessions
 come and go so there's no empty space. Prefer a fixed size? **Drag the bottom
