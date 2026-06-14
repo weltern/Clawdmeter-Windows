@@ -20,7 +20,9 @@ from PySide6.QtCore import (
     QEasingCurve,
     QParallelAnimationGroup,
     QPoint,
+    QPointF,
     QPropertyAnimation,
+    QRectF,
     QSize,
     Qt,
     Signal,
@@ -37,7 +39,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QIcon, QPainter
+from PySide6.QtGui import (
+    QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap,
+    QPolygonF,
+)
 
 import winutil
 from mood import GROUP_ANIMS
@@ -300,6 +305,37 @@ _BAR_TRACK = "#1f2937"
 _BAR_BORDER = "#374151"
 _BAR_OVERAGE = "#C1121F"   # deep fire-truck red — the overage overflow
 _BAR_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
+
+
+def square_caret_icon(up: bool, color: str = "#CE7D6B", px: int = 16) -> QIcon:
+    """Hand-drawn 'square-caret' icon — a caret inside a rounded square, pointing
+    up or down (the Full<->Compact view toggle; FA's SVG can't render in the
+    size-pruned frozen build, so we paint it). Rendered at 2x for crispness."""
+    ratio = 2
+    pm = QPixmap(px * ratio, px * ratio)
+    pm.setDevicePixelRatio(ratio)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    c = QColor(color)
+    pen = QPen(c)
+    pen.setWidthF(1.4)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    m = 1.6
+    p.drawRoundedRect(QRectF(m, m, px - 2 * m, px - 2 * m), 2.5, 2.5)
+    p.setPen(Qt.NoPen)
+    p.setBrush(c)
+    cx, half = px / 2.0, 3.0
+    if up:
+        tri = [QPointF(cx - half, px * 0.60), QPointF(cx + half, px * 0.60),
+               QPointF(cx, px * 0.40)]
+    else:
+        tri = [QPointF(cx - half, px * 0.40), QPointF(cx + half, px * 0.40),
+               QPointF(cx, px * 0.60)]
+    p.drawPolygon(QPolygonF(tri))
+    p.end()
+    return QIcon(pm)
 
 
 class UsageBar(QWidget):
@@ -907,10 +943,6 @@ QLabel#compactTitle {{ font-size: 12px; font-weight: 700; color: {_TEXT};
 QToolButton#compactBtn {{ background: transparent; color: #CE7D6B; border: none;
                           font-size: 13px; padding: 2px 7px; }}
 QToolButton#compactBtn:hover {{ background: #1f2937; }}
-QToolButton#compactSeg {{ background: transparent; color: {_MUTED}; border: none;
-                          font-size: 12px; padding: 2px 6px; }}
-QToolButton#compactSeg:hover {{ background: #1f2937; color: {_TEXT}; }}
-QToolButton#compactSeg:checked {{ background: #243044; color: #CE7D6B; }}
 QWidget#compactRow:hover {{ background: #161b22; }}
 QLabel#compactBarLabel {{ font-size: 10px; font-weight: 600; color: {_MUTED};
                           letter-spacing: 1px; }}
@@ -1075,18 +1107,16 @@ class CompactView(QWidget):
         trow.addWidget(icon_lbl)
         trow.addWidget(QLabel("CLAWDMETER", objectName="compactTitle"))
         trow.addStretch(1)
-        # View switcher segments (active highlighted), matching the full window.
-        self._segs: dict[str, QToolButton] = {}
-        for mode, glyph, tip in (("full", "▢", "Full view"),
-                                 ("compact", "☰", "Compact view"),
-                                 ("mini", "▪", "Mini view")):
-            b = self._tbtn(glyph, tip)
-            b.setObjectName("compactSeg")
-            b.setCheckable(True)
-            b.clicked.connect(lambda _=False, m=mode: self.set_mode_requested.emit(m))
-            self._segs[mode] = b
-            trow.addWidget(b)
-        self.set_active_mode("compact")
+        # Caret toggle (points UP in compact -> click expands to full) + the
+        # mini button, matching the full window's switcher.
+        self.caret_btn = self._tbtn("", "Full view")
+        self.caret_btn.setIcon(square_caret_icon(up=True))
+        self.caret_btn.setIconSize(QSize(16, 16))
+        self.caret_btn.clicked.connect(lambda: self.set_mode_requested.emit("full"))
+        trow.addWidget(self.caret_btn)
+        self.mini_btn = self._tbtn(chr(0xE73F), "Mini view")  # BackToWindow
+        self.mini_btn.clicked.connect(lambda: self.set_mode_requested.emit("mini"))
+        trow.addWidget(self.mini_btn)
         self.close_btn = self._tbtn("✕", "Hide to tray")  # ✕
         self.close_btn.clicked.connect(self.hide_requested.emit)
         trow.addSpacing(4)
@@ -1139,9 +1169,9 @@ class CompactView(QWidget):
         return b
 
     def set_active_mode(self, mode: str) -> None:
-        """Highlight the active view segment."""
-        for m, b in self._segs.items():
-            b.setChecked(m == mode)
+        """Compact's caret always points up (click -> full); kept for parity
+        with the full title bar's switcher API."""
+        self.caret_btn.setIcon(square_caret_icon(up=True))
 
     def _slim_bar(self, parent_col: QVBoxLayout):
         head = QHBoxLayout()

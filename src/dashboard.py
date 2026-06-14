@@ -66,7 +66,9 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 from reset_notify import ResetDecision, ResetNotifier
-from session_shelf import _BAR_OVERAGE, CompactView, SessionShelf, UsageBar
+from session_shelf import (
+    _BAR_OVERAGE, CompactView, SessionShelf, UsageBar, square_caret_icon,
+)
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
     ACTIVITY_ANIMS,
@@ -150,12 +152,6 @@ QToolButton#titleBtn, QToolButton#closeBtn { font-size: 11px; }
 QToolButton#settingsBtn { font-size: 16px; }
 QToolButton#titleBtn:hover, QToolButton#settingsBtn:hover { background-color: #1f2937; color: #CE7D6B; }
 QToolButton#closeBtn:hover { background-color: #c13434; color: #ffffff; }
-QToolButton#viewSeg {
-    background: transparent; color: #9ca3af; border: 0;
-    min-width: 26px; min-height: 28px; font-size: 12px;
-}
-QToolButton#viewSeg:hover { background-color: #1f2937; color: #e6edf3; }
-QToolButton#viewSeg:checked { background-color: #243044; color: #CE7D6B; }
 
 QLabel#title { font-size: 22px; font-weight: 700; letter-spacing: 1px; color: #e6edf3; }
 QLabel#group { font-size: 13px; font-weight: 600; color: #9ca3af; letter-spacing: 2px; }
@@ -597,7 +593,7 @@ class TitleBar(QWidget):
     HEIGHT = 48
     ICON_SIZE = 36
 
-    def __init__(self, window: QMainWindow, on_settings, on_set_mode) -> None:
+    def __init__(self, window: QMainWindow, on_settings, on_toggle, on_mini) -> None:
         super().__init__(window)
         self.setObjectName("titleBar")
         # Allow vertical animation: min=0, max=HEIGHT. Auto-hide animates
@@ -635,24 +631,25 @@ class TitleBar(QWidget):
         self.settings_btn.clicked.connect(on_settings)
         row.addWidget(self.settings_btn)
 
-        # View switcher: three segments (full / compact / mini); the active one
-        # is highlighted and clicking a segment switches straight to it.
-        self._segs: dict[str, QToolButton] = {}
-        for mode, glyph, tip in (("full", "▢", "Full view"),
-                                 ("compact", "☰", "Compact view"),
-                                 ("mini", "▪", "Mini view")):
-            b = QToolButton()
-            b.setObjectName("viewSeg")
-            b.setText(glyph)
-            b.setToolTip(tip)
-            b.setCheckable(True)
-            b.setCursor(Qt.PointingHandCursor)
-            b.setFocusPolicy(Qt.NoFocus)
-            b.clicked.connect(lambda _=False, m=mode: on_set_mode(m))
-            self._segs[mode] = b
-            row.addWidget(b)
+        # Full<->Compact toggle: a square-caret that points DOWN in full (click
+        # to collapse to compact) and UP in compact (click to expand to full).
+        self.caret_btn = QToolButton()
+        self.caret_btn.setObjectName("titleBtn")
+        self.caret_btn.setToolTip("Compact view")
+        self.caret_btn.setIconSize(QSize(16, 16))
+        self.caret_btn.setCursor(Qt.PointingHandCursor)
+        self.caret_btn.setFocusPolicy(Qt.NoFocus)
+        self.caret_btn.clicked.connect(on_toggle)
+        row.addWidget(self.caret_btn)
+
+        # Mini button (always available): Windows' restore-to-center glyph.
+        self.mini_btn = self._tool_btn("", "Mini view")  # BackToWindow
+        self.mini_btn.setText("")   # BackToWindow / arrows-to-center
+        self.mini_btn.setText(chr(0xE73F))   # BackToWindow / arrows-to-center
+        self.mini_btn.clicked.connect(on_mini)
+        row.addWidget(self.mini_btn)
+
         self.set_active_mode("full")
-        row.addSpacing(6)
 
         self.min_btn = self._tool_btn("", "Minimize")        # ChromeMinimize
         self.min_btn.clicked.connect(self._win.showMinimized)
@@ -677,9 +674,11 @@ class TitleBar(QWidget):
         return b
 
     def set_active_mode(self, mode: str) -> None:
-        """Highlight the active view segment."""
-        for m, b in self._segs.items():
-            b.setChecked(m == mode)
+        """Point the caret toward what the toggle does next: DOWN in full (click
+        -> compact), UP in compact (click -> full)."""
+        up = mode == "compact"
+        self.caret_btn.setIcon(square_caret_icon(up=up))
+        self.caret_btn.setToolTip("Full view" if up else "Compact view")
 
     def _toggle_max(self) -> None:
         if self._win.isMaximized():
@@ -1375,7 +1374,8 @@ class Dashboard(QMainWindow):
         self._outer.setSpacing(0)
 
         self.title_bar = TitleBar(self, on_settings=self._toggle_settings,
-                                  on_set_mode=self._set_view_mode)
+                                  on_toggle=self._toggle_full_compact,
+                                  on_mini=lambda: self._set_view_mode("mini"))
         self._outer.addWidget(self.title_bar)
 
         content = QWidget()
@@ -2350,6 +2350,10 @@ class Dashboard(QMainWindow):
             self.sprite.stop()
             self.hide()
             self._show_compact() if mode == "compact" else self._show_mini()
+
+    def _toggle_full_compact(self) -> None:
+        """The square-caret toggle: full <-> compact."""
+        self._set_view_mode("full" if self._view_mode == "compact" else "compact")
 
     def _grow_view(self) -> None:
         self._set_view_mode(grow_view_mode(getattr(self, "_view_mode", "full")))
