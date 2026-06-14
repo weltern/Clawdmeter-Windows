@@ -333,18 +333,23 @@ class UsageBar(QWidget):
 
         inner = rect.adjusted(1, 1, 0, 0)
         w, h, x, y = inner.width(), inner.height(), inner.x(), inner.y()
-        scale = 100 + self._overage if self._overage > 0 else 100
         p.setPen(Qt.NoPen)
-        base = min(self._value, 100)
-        base_w = int(round(w * base / scale))
-        if base_w > 0:
-            p.setBrush(QColor(_BAR_HEAT[self._heat]))
-            p.drawRect(x, y, base_w, h)
         if self._overage > 0:
-            start = int(round(w * 100 / scale))
-            over_w = w - start
-            p.setBrush(QColor(_BAR_OVERAGE))
-            p.drawRect(x + start, y, over_w, h)
+            # Bar represents 0..(100+overage). The overage builds from the LEFT
+            # in red, then the normal (coral) weekly fill continues to its right
+            # — so the red grows left-to-right as overage climbs.
+            scale = 100 + self._overage
+            over_w = int(round(w * self._overage / scale))
+            if over_w > 0:
+                p.setBrush(QColor(_BAR_OVERAGE))
+                p.drawRect(x, y, over_w, h)
+            p.setBrush(QColor(_BAR_HEAT[self._heat]))
+            p.drawRect(x + over_w, y, w - over_w, h)
+        else:
+            base_w = int(round(w * min(self._value, 100) / 100))
+            if base_w > 0:
+                p.setBrush(QColor(_BAR_HEAT[self._heat]))
+                p.drawRect(x, y, base_w, h)
         p.end()
 
 
