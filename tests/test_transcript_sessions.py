@@ -36,6 +36,8 @@ from transcript import (  # noqa: E402
     project_name_from_cwd,
     select_active,
     session_label,
+    sum_token_windows,
+    TokenUsage,
 )
 
 
@@ -54,6 +56,60 @@ def test_project_name_from_cwd_falls_back_to_transcript_parent():
 def test_project_name_from_cwd_total_fallback():
     assert project_name_from_cwd(None, None) == "unknown"
     assert project_name_from_cwd("", None) == "unknown"
+
+
+def test_token_usage_work_excludes_cache():
+    tu = TokenUsage()
+    tu.add_usage({"input_tokens": 100, "output_tokens": 50,
+                  "cache_read_input_tokens": 9000,
+                  "cache_creation_input_tokens": 200})
+    tu.add_usage({"input_tokens": 10, "output_tokens": 5})  # a 2nd turn
+    assert (tu.input, tu.output, tu.cache_read, tu.cache_write) == (110, 55, 9000, 200)
+    assert tu.work == 165               # input + output only
+    assert tu.total == 165 + 9200       # everything
+
+
+def test_session_tail_accumulates_tokens_across_turns():
+    tail = _SessionTail(Path("/p/proj/sess.jsonl"))
+    # a text/thinking turn carries usage too and must count (not just tool turns)
+    tail._consume_event({
+        "type": "assistant", "timestamp": "2026-06-14T03:00:00Z",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": 3, "output_tokens": 7}},
+    })
+    tail._consume_event({
+        "type": "assistant", "timestamp": "2026-06-14T03:01:00Z",
+        "message": {"role": "assistant",
+                    "content": [{"type": "tool_use", "name": "Read"}],
+                    "usage": {"input_tokens": 2, "output_tokens": 1,
+                              "cache_read_input_tokens": 500}},
+    })
+    assert tail.tokens.work == 13        # (3+7) + (2+1)
+    assert tail.tokens.cache_read == 500
+    snap = tail._state(Activity.READING, "Read")
+    assert snap.tokens.work == 13
+    # the emitted snapshot is independent of further accumulation
+    tail._consume_event({
+        "type": "assistant", "timestamp": "2026-06-14T03:02:00Z",
+        "message": {"role": "assistant", "content": [{"type": "text"}],
+                    "usage": {"input_tokens": 100, "output_tokens": 0}},
+    })
+    assert snap.tokens.work == 13
+    assert tail.tokens.work == 113
+
+
+def test_sum_token_windows_respects_5h_and_7d():
+    now = 1_000_000.0
+    events = [
+        (now - 60, 10),             # in 5h and 7d
+        (now - 4 * 3600, 20),       # in 5h and 7d
+        (now - 6 * 3600, 30),       # in 7d only (older than 5h)
+        (now - 8 * 24 * 3600, 40),  # older than 7d -> excluded
+        (None, 99),                 # no timestamp -> excluded
+    ]
+    w5, w7 = sum_token_windows(events, now)
+    assert w5 == 30                 # 10 + 20
+    assert w7 == 60                 # 10 + 20 + 30
 
 
 def test_parse_iso_ts_handles_z_and_fractions():

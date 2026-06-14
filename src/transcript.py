@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -161,6 +161,39 @@ ACTIVITY_COLORS: dict[Activity, str] = {
 
 
 @dataclass
+class TokenUsage:
+    """Running token tally for a session (summed from each assistant turn's
+    `message.usage`). `work` (input+output) is the headline figure; the cache
+    buckets are shown in the per-session hover breakdown."""
+    input: int = 0
+    output: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
+
+    @property
+    def work(self) -> int:
+        """Fresh input + output — the meaningful 'work' number (excludes the
+        cache reads that dominate and distort raw totals)."""
+        return self.input + self.output
+
+    @property
+    def total(self) -> int:
+        return self.input + self.output + self.cache_read + self.cache_write
+
+    def add_usage(self, usage: dict) -> None:
+        """Accumulate one assistant turn's `message.usage` block."""
+        def n(key: str) -> int:
+            try:
+                return int(usage.get(key) or 0)
+            except (TypeError, ValueError):
+                return 0
+        self.input += n("input_tokens")
+        self.output += n("output_tokens")
+        self.cache_read += n("cache_read_input_tokens")
+        self.cache_write += n("cache_creation_input_tokens")
+
+
+@dataclass
 class AgentState:
     """One live subagent of a session — drives a small child mascot on the tile."""
     agent_id: str               # subagent file stem (agent-<hash>) — stable key
@@ -180,6 +213,7 @@ class TranscriptState:
     project_name: str | None = None    # friendly name shown on the tile
     is_stale: bool = False             # in the shelf window but quiet > STALE_SECONDS
     agents: list[AgentState] = field(default_factory=list)  # live subagents, newest-first
+    tokens: TokenUsage = field(default_factory=TokenUsage)  # whole-session token tally
 
 
 def is_subagent_path(p: Path) -> bool:
@@ -272,6 +306,74 @@ def session_label(
         if title and title.strip():
             return title.strip()
     return project_name_from_cwd(cwd, transcript_path)
+
+
+def sum_token_windows(events, now: float) -> tuple[int, int]:
+    """Sum 'work' tokens (input+output) over the 5h and 7d windows ending at
+    `now`. `events` is any iterable of ``(timestamp_epoch, work_tokens)``.
+    Pure, so it's unit-testable independent of disk I/O."""
+    cut5 = now - 5 * 3600
+    cut7 = now - 7 * 24 * 3600
+    w5 = w7 = 0
+    for ts, work in events:
+        if ts is None or ts < cut7:
+            continue
+        w7 += work
+        if ts >= cut5:
+            w5 += work
+    return w5, w7
+
+
+def account_window_tokens(now: float, root: Path | None = None) -> tuple[int, int]:
+    """Account-wide input+output token totals for the 5h and 7d windows, summed
+    across every transcript.
+
+    Only files modified within 7d are read (an older file can't hold an in-window
+    event), so the scan stays cheap once the backlog is past. Does disk I/O —
+    call it off the UI thread.
+    """
+    if root is None:
+        root = Path.home() / ".claude" / "projects"
+    cut7 = now - 7 * 24 * 3600
+
+    def _events():
+        for fp in root.rglob("*.jsonl"):
+            try:
+                if fp.stat().st_mtime < cut7:
+                    continue
+            except OSError:
+                continue
+            try:
+                with fp.open(encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            ev = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        msg = ev.get("message")
+                        if (not isinstance(msg, dict)
+                                or msg.get("role") != "assistant"):
+                            continue
+                        usage = msg.get("usage")
+                        if not isinstance(usage, dict):
+                            continue
+                        ts = parse_iso_ts(ev.get("timestamp"))
+                        if ts is None:
+                            continue
+                        work = 0
+                        for k in ("input_tokens", "output_tokens"):
+                            try:
+                                work += int(usage.get(k) or 0)
+                            except (TypeError, ValueError):
+                                pass
+                        yield ts, work
+            except OSError:
+                continue
+
+    return sum_token_windows(_events(), now)
 
 
 def select_active(
@@ -419,6 +521,7 @@ class _SessionTail:
         self.cwd: str | None = None
         self.ai_title: str | None = None
         self.custom_title: str | None = None
+        self.tokens = TokenUsage()
 
     def poll(self, now: float) -> TranscriptState:
         """Read any newly-appended bytes and return this session's current state."""
@@ -502,6 +605,11 @@ class _SessionTail:
             return
         if msg.get("role") != "assistant":
             return
+        # Token usage rides EVERY assistant turn (text/thinking turns too, not
+        # just tool calls), so accumulate it before the activity early-return.
+        usage = msg.get("usage")
+        if isinstance(usage, dict):
+            self.tokens.add_usage(usage)
         content = msg.get("content")
         if not isinstance(content, list):
             return
@@ -531,6 +639,9 @@ class _SessionTail:
                 self.custom_title, self.ai_title, self.cwd, self.path
             ),
             is_stale=is_stale,
+            # Snapshot so the emitted state doesn't share the tail's mutable
+            # tally (which keeps growing on later polls).
+            tokens=replace(self.tokens),
         )
 
 
