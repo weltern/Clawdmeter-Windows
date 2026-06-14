@@ -1768,12 +1768,21 @@ class Dashboard(QMainWindow):
         TranscriptActivity.INTEGRATING,
     ]
 
-    # The focused session spins up a varying number of child agents over time so
-    # the nested mini-mascots are shown appearing, working and finishing.
-    _MOCK_AGENT_COUNTS = [0, 2, 3, 1, 0, 2, 3]
+    # The FOCUSED session (the one single mode shows) steps through every
+    # expression so all moods are on display for screenshots:
+    # (activity, tool label, subagent count, stale).
+    _FOCUS_CYCLE = [
+        (TranscriptActivity.CODING, "Edit", 0, False),
+        (TranscriptActivity.READING, "Read", 0, False),
+        (TranscriptActivity.SEARCHING, "WebSearch", 0, False),
+        (TranscriptActivity.THINKING, None, 0, False),
+        (TranscriptActivity.INTEGRATING, "github/list_issues", 0, False),
+        (TranscriptActivity.PLANNING, "TodoWrite", 0, False),
+        (TranscriptActivity.PLANNING, None, 3, False),  # supervising subagents
+        (TranscriptActivity.IDLE, None, 0, True),       # idle / "last active …"
+    ]
 
-    def _mock_agents(self, phase: int) -> list:
-        n = self._MOCK_AGENT_COUNTS[phase % len(self._MOCK_AGENT_COUNTS)]
+    def _mock_agent_list(self, phase: int, n: int) -> list:
         cyc = self._MOCK_ACTIVITY_CYCLE
         return [
             TranscriptAgentState(
@@ -1785,6 +1794,27 @@ class Dashboard(QMainWindow):
             for k in range(n)
         ]
 
+    def _focus_state(self, phase: int, sid: str, project: str, now: float) -> TranscriptState:
+        """Build the focused session for this phase, cycling all expressions."""
+        act, tool, n_agents, stale = self._FOCUS_CYCLE[phase % len(self._FOCUS_CYCLE)]
+        if n_agents:
+            return TranscriptState(
+                activity=TranscriptActivity.PLANNING, tool_name=None,
+                transcript_path=None, last_event_ts=now, session_id=sid, cwd=None,
+                project_name=project, is_stale=False,
+                agents=self._mock_agent_list(phase, n_agents),
+            )
+        if stale:
+            return TranscriptState(
+                activity=TranscriptActivity.IDLE, tool_name=None,
+                transcript_path=None, last_event_ts=now - 4 * 60, session_id=sid,
+                cwd=None, project_name=project, is_stale=True,
+            )
+        return TranscriptState(
+            activity=act, tool_name=tool, transcript_path=None, last_event_ts=now,
+            session_id=sid, cwd=None, project_name=project, is_stale=False,
+        )
+
     def _emit_mock_sessions(self) -> None:
         phase = self._mock_phase
         self._mock_phase += 1
@@ -1793,36 +1823,17 @@ class Dashboard(QMainWindow):
         states = []
         for slot, pool_idx in enumerate(active):
             sid, project = self._MOCK_POOL[pool_idx]
-            # The clawdmeter session spins up child agents to show nesting.
-            agents = self._mock_agents(phase) if pool_idx == 0 else []
-            is_last = len(active) > 1 and slot == len(active) - 1
-            if agents:
-                # Supervising: a parent driving live child agents — mirror what
-                # the watcher emits (PLANNING over the children), even when this
-                # slot would otherwise be the idle one, so that path is on show.
+            if slot == 0:
+                # Focused session — single mode shows only this, so cycle it
+                # through the full expression set.
+                states.append(self._focus_state(phase, sid, project, now))
+                continue
+            # Other tiles (multi mode only): cycle activities; oldest reads idle.
+            if slot == len(active) - 1:
                 states.append(TranscriptState(
-                    activity=TranscriptActivity.PLANNING,
-                    tool_name=None,
-                    transcript_path=None,
-                    last_event_ts=now,
-                    session_id=sid,
-                    cwd=None,
-                    project_name=project,
-                    is_stale=False,
-                    agents=agents,
-                ))
-            elif is_last:
-                # Keep the last (oldest) tile idle/stale so the dim
-                # "IDLE — last active 4m ago" state is always on show too.
-                states.append(TranscriptState(
-                    activity=TranscriptActivity.IDLE,
-                    tool_name=None,
-                    transcript_path=None,
-                    last_event_ts=now - 4 * 60,
-                    session_id=sid,
-                    cwd=None,
-                    project_name=project,
-                    is_stale=True,
+                    activity=TranscriptActivity.IDLE, tool_name=None,
+                    transcript_path=None, last_event_ts=now - 4 * 60, session_id=sid,
+                    cwd=None, project_name=project, is_stale=True,
                 ))
             else:
                 act = self._MOCK_ACTIVITY_CYCLE[
@@ -1831,12 +1842,8 @@ class Dashboard(QMainWindow):
                 states.append(TranscriptState(
                     activity=act,
                     tool_name="Edit" if act == TranscriptActivity.CODING else None,
-                    transcript_path=None,
-                    last_event_ts=now,
-                    session_id=sid,
-                    cwd=None,
-                    project_name=project,
-                    is_stale=False,
+                    transcript_path=None, last_event_ts=now, session_id=sid, cwd=None,
+                    project_name=project, is_stale=False,
                 ))
         self._on_sessions(states)
 
