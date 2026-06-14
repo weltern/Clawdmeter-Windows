@@ -10,11 +10,16 @@ Standalone Windows desktop dashboard for Claude Code usage.
 ## What it shows
 
 - **Session (5h) %** with reset countdown
-- **Weekly (7d) %** with reset countdown
+- **Weekly (7d) %** with reset countdown — and a red **overage** overflow when
+  you spill past 100% onto usage credits
+- **Token usage** for each window (input+output), inline beside the bars and
+  broken down per session
 - A **session shelf** — one Clawd mascot per active Claude Code session, each
   labeled with its session title and live activity (plus small child mascots for
   any subagents it spins up), falling back to a usage-rate mood when nothing's
   running
+- Three **view modes** — the full dashboard, a slim compact list, and a tiny
+  always-on-top mini readout
 - A system-tray icon whose fill arc tracks session % — **hover it for a quick
   session & weekly readout**
 
@@ -34,10 +39,15 @@ in near-real-time — read from the local transcript:
 | ![Integrating](assets/mood-integrating.png) | ![Planning](assets/mood-planning.png) |
 | **INTEGRATING** — MCP server tool | **PLANNING** — todos, sub-agents & task management |
 
-The small line under the label is the actual tool in flight (`Edit`, `Read`,
-`WebSearch`, …). For an **INTEGRATING** mood it names the MCP server and tool it's
-talking to (e.g. `github/list_issues`), so you can tell which integration Claude
-Code reached for.
+The small line under the label is **what Claude Code is acting on right now** —
+the file it's editing or reading (`transcript.py`), the pattern it's grepping,
+the command it's running, or the host it's fetching — so you can tell *what* it's
+working on, not just *that* it's working. When there's no natural target it falls
+back to the bare tool name (`Edit`, `Read`, …); for an **INTEGRATING** mood it
+names the MCP server and tool it's talking to (e.g. `github/list_issues`), so you
+can tell which integration Claude Code reached for. An idle session's line
+instead reads **last active …**, timed from the session's own last transcript
+event rather than the wall clock.
 
 When Claude Code goes quiet, the mascot falls back to a mood driven by your
 usage rate — sleepy when you're idle, dancing when you're burning through
@@ -49,13 +59,11 @@ Run more than one Claude Code session at once and each gets its own mascot on th
 **session shelf** — labeled with its **session title** (the one Claude Code shows
 for the conversation, or a custom title you've set, falling back to the project
 folder name) and its live activity, animating independently. Long titles are
-shortened to fit, with the full title on hover. The session/weekly usage bars
-stay account-wide (a single number from the API), shown once beneath the shelf.
+shortened to fit and **scroll into view when you hover** the label, with the full
+title on the tooltip. The session/weekly usage bars stay account-wide (a single
+number from the API), shown once beneath the shelf.
 
-> The screenshots below predate title-based labels and still show project-folder
-> names; the behavior is otherwise current.
-
-![Clawdmeter-Windows session shelf — one mascot per active Claude Code session, each with its project name and activity](assets/Screenshot-shelf.png)
+![Clawdmeter-Windows session shelf — one mascot per active Claude Code session, each with its session title, current activity and target, and per-window token totals on the bars](assets/Screenshot-shelf.png)
 
 When a session spins up subagents (the Agent/Task tool), a row of small **child
 mascots** appears under that session — one per live agent, each glowing with its
@@ -73,16 +81,54 @@ horizontally when more mascots are open than fit.)
 Don't want the shelf? In **Settings → Sessions**, turn **Show multiple sessions**
 off for a single mascot, and **Show subagents** off to hide the child mascots.
 
-## Compact view
+## Token usage
 
-Want something tiny that stays out of the way? Click the **compact-mode button**
-in the title bar to shrink the dashboard down to a small always-on-top readout —
-the mini mascot beside your session and weekly percentages, each with its reset
-time. It's frameless, keeps no taskbar entry, and is draggable (it remembers
-where you left it). **Double-click** it — or right-click → **Expand** — to pop
-back to the full dashboard.
+Alongside the percentages, Clawdmeter shows **how many tokens you've actually
+used** — read straight from your local Claude Code transcripts, no extra API
+calls. The headline figure is **input + output** (the cache reads that dominate
+raw totals are kept out of it, so the number reflects real work):
 
-![Clawdmeter-Windows compact view — a tiny always-on-top readout with the mascot and session and weekly percentages](assets/Screenshot-compact-view.png)
+- **Beside the bars** — the 5h total rides the Session reset line and the 7d
+  total rides the Weekly line (e.g. `resets in 2h 20m · 914K`).
+- **Per session** — each mascot's tile carries that session's running total;
+  hover the mascot for a full breakdown (input, output, and the cache buckets).
+- **In the tray tooltip** — a `Tokens 914K (5h) · 19.4M (7d)` line under the
+  usage readout.
+
+It's all behind one switch — **Settings → Token usage → Show token usage** (on
+by default). Turn it off and every token figure disappears.
+
+## Overage
+
+If you spill past your weekly limit onto **usage credits**, the Weekly bar says
+so without losing the plot: the coral bar stays full at 100%, a brighter-red
+segment grows in from the left, and the percentage keeps climbing past 100 — so
+**20% of overage reads as `120%`** — with a red **OVERAGE** tag next to
+*WEEKLY (7d)*. Hover the bar for when the overage window resets. It surfaces only
+when you're actually in overage and hides itself the rest of the time. (Overage
+is a weekly/account concept — there's no session overage.)
+
+![Clawdmeter-Windows weekly bar in overage — a full coral bar with a red overflow segment reading 120% and a red OVERAGE tag](assets/Screenshot-overage.png)
+
+## View modes
+
+Clawdmeter comes in three sizes and **remembers which one you left it in** across
+launches. Two controls in the title bar switch between them: a **square-caret
+toggle** flips between the full dashboard and the compact list, and a **mini
+button** drops to the tiny readout (from there, double-click — or right-click →
+**Expand** — to pop back to whichever view you came from).
+
+**Compact** is a slim, always-on-top list — the two usage bars on top, then one
+row per session: mascot, title, token total, and live activity + target — so you
+can keep tabs on several sessions in a fraction of the height.
+
+![Clawdmeter-Windows compact view — usage bars above a one-row-per-session list with mascot, title, tokens and activity](assets/Screenshot-compact-list.png)
+
+**Mini** shrinks all the way to a frameless, always-on-top chip — the mini mascot
+beside your session and weekly percentages, each with its reset time. It keeps no
+taskbar entry and is draggable (it remembers where you left it).
+
+![Clawdmeter-Windows mini view — a tiny always-on-top readout with the mascot and session and weekly percentages](assets/Screenshot-mini.png)
 
 ## Download
 
@@ -156,6 +202,9 @@ Open the settings panel from the gear icon in the title bar.
 - **Sessions** — **Show multiple sessions** (the session shelf; off shows a single
   mascot for the most recent session) and **Show subagents** (the child mascots).
   Both on by default.
+- **Token usage** — **Show token usage** toggles every token figure (the totals
+  beside the bars, the per-session tiles and hover breakdown, and the tray line).
+  On by default; read from your local transcripts, never the API.
 - **Usage polling** — how often the app checks your usage. Each check is a tiny
   billed API request, so the interval is adjustable from **10 to 600 seconds**
   (60 by default): lower is fresher but makes more requests; higher is gentler
