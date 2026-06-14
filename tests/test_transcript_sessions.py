@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import os
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -30,6 +32,7 @@ from transcript import (  # noqa: E402
     is_agent_transcript,
     is_subagent_path,
     parent_transcript_for_subagent,
+    parse_iso_ts,
     project_name_from_cwd,
     select_active,
     session_label,
@@ -51,6 +54,47 @@ def test_project_name_from_cwd_falls_back_to_transcript_parent():
 def test_project_name_from_cwd_total_fallback():
     assert project_name_from_cwd(None, None) == "unknown"
     assert project_name_from_cwd("", None) == "unknown"
+
+
+def test_parse_iso_ts_handles_z_and_fractions():
+    expected = datetime(2026, 6, 14, 3, 26, 31, 977000, tzinfo=timezone.utc).timestamp()
+    assert parse_iso_ts("2026-06-14T03:26:31.977Z") == expected
+    # no fractional seconds
+    assert parse_iso_ts("2026-06-14T03:26:31Z") == datetime(
+        2026, 6, 14, 3, 26, 31, tzinfo=timezone.utc
+    ).timestamp()
+    # explicit offset (not Z)
+    assert parse_iso_ts("2026-06-14T03:26:31+00:00") == expected - 0.977
+    # absent / garbage -> None so callers fall back to wall-clock
+    assert parse_iso_ts(None) is None
+    assert parse_iso_ts("") is None
+    assert parse_iso_ts("not-a-timestamp") is None
+
+
+def test_last_active_uses_event_timestamp_not_wall_clock():
+    tail = _SessionTail(Path("/p/proj/sess.jsonl"))
+    ts = "2026-06-14T03:26:31.977Z"
+    tail._consume_event({
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {"role": "assistant",
+                    "content": [{"type": "tool_use", "name": "Read"}]},
+    })
+    # The displayed "last active" anchors to the event's own time, so reading
+    # an old backlog at startup doesn't read as "just now".
+    assert tail.last_event_ts == parse_iso_ts(ts)
+
+
+def test_last_active_falls_back_to_wall_clock_without_timestamp():
+    tail = _SessionTail(Path("/p/proj/sess.jsonl"))
+    before = time.time()
+    tail._consume_event({
+        "type": "assistant",
+        "message": {"role": "assistant",
+                    "content": [{"type": "tool_use", "name": "Bash"}]},
+    })
+    assert tail.last_event_ts is not None
+    assert tail.last_event_ts >= before
 
 
 def test_session_label_prefers_custom_then_ai_then_cwd():

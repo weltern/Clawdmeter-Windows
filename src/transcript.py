@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -219,6 +220,37 @@ def project_name_from_cwd(cwd: str | None, transcript_path: Path | None) -> str:
         if parent:
             return parent
     return "unknown"
+
+
+def parse_iso_ts(value: str | None) -> float | None:
+    """Parse a Claude Code event ``timestamp`` (ISO-8601 UTC, e.g.
+    ``"2026-06-14T03:26:31.977Z"``) into an epoch float.
+
+    Returns None when the value is absent or unparseable so callers can fall
+    back to wall-clock time. UTC throughout, so ``time.time() - parse_iso_ts(...)``
+    is the true elapsed seconds regardless of local timezone.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    txt = value.strip()
+    if txt.endswith("Z"):
+        txt = txt[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(txt).timestamp()
+    except ValueError:
+        pass
+    # Some fromisoformat variants reject odd fractional-second digit counts;
+    # strip the ".<digits>" fraction and retry (tz suffix, if any, is kept).
+    dot = txt.find(".")
+    if dot != -1:
+        end = dot + 1
+        while end < len(txt) and txt[end].isdigit():
+            end += 1
+        try:
+            return datetime.fromisoformat(txt[:dot] + txt[end:]).timestamp()
+        except ValueError:
+            return None
+    return None
 
 
 def session_label(
@@ -478,7 +510,12 @@ class _SessionTail:
             return
         self.last_activity = activity
         self.last_tool = tool
-        self.last_event_ts = time.time()
+        # Use the event's OWN timestamp (truthful "last active") rather than
+        # wall-clock-at-read — otherwise restarting the app reads the whole
+        # backlog and stamps every old action as "just now". Fall back to
+        # wall-clock only if the timestamp is missing/unparseable. Staleness
+        # still keys off the file's mtime in poll(); this only drives display.
+        self.last_event_ts = parse_iso_ts(ev.get("timestamp")) or time.time()
 
     def _state(
         self, activity: Activity, tool: str | None, is_stale: bool = False

@@ -13,6 +13,7 @@ owns the multiplied mascot/activity layer.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -96,6 +97,16 @@ def _ago_text(last_event_ts: float | None) -> str:
         return f"last active {mins}m ago"
     hours, m = divmod(mins, 60)
     return f"last active {hours}h {m:02d}m ago"
+
+
+def _abs_time_text(last_event_ts: float | None) -> str:
+    """Absolute local time of the last activity, for the idle tile's tooltip
+    (the relative 'Nm ago' is shown inline; hover gives the exact wall time)."""
+    if not last_event_ts:
+        return ""
+    return "Last active " + datetime.fromtimestamp(last_event_ts).strftime(
+        "%a %b %d, %I:%M %p"
+    )
 
 
 # Cap for the project/title label. Session titles (from ai-title/custom-title)
@@ -293,6 +304,7 @@ class SessionTile(QWidget):
             self.activity_label.setStyleSheet(f"color: {_IDLE_COLOR};")
             self.status_dot.setStyleSheet(f"color: {_IDLE_COLOR};")
             self.sub_label.setText(_ago_text(state.last_event_ts))
+            self.sub_label.setToolTip(_abs_time_text(state.last_event_ts))
             self.sprite.set_anims(f"{self._session_id}:idle", _IDLE_ANIMS)
         else:
             self._glow.setColor(QColor(color))
@@ -302,6 +314,7 @@ class SessionTile(QWidget):
             # Live dot tracks the activity color so the tile reads as a unit.
             self.status_dot.setStyleSheet(f"color: {color};")
             self.sub_label.setText(state.tool_name or "")
+            self.sub_label.setToolTip("")
             anims = ACTIVITY_ANIMS.get(state.activity) or _IDLE_ANIMS
             self.sprite.set_anims(f"{self._session_id}:{state.activity.value}", anims)
 
