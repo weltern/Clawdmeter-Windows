@@ -1,4 +1,4 @@
-"""Watch Claude Code's local JSONL transcripts to drive the sprite.
+"""Watch Claude Code's local JSONL transcripts to drive the mascots.
 
 Claude Code writes an append-only transcript per session at
     ~/.claude/projects/<project-slug>/<session-uuid>.jsonl
@@ -9,19 +9,21 @@ Each line is a JSON object representing one event. Assistant events have
   * `thinking`  - model is reasoning
   * `text`      - assistant prose
 
-By tailing the newest transcript and looking at the latest block, we know
-in near-real-time what Claude Code is doing. Schema is undocumented so we
-parse defensively (unknown blocks => fall through to "thinking").
+By tailing each recently-touched transcript and looking at the latest block,
+we know in near-real-time what every concurrent Claude Code session is doing.
+Schema is undocumented so we parse defensively (unknown blocks => fall through
+to "thinking").
 
-When the newest transcript hasn't been appended to for STALE_SECONDS, we
-report IDLE so the dashboard can fall back to its rate-based logic.
+Sessions whose transcript hasn't been appended to within ACTIVE_WINDOW_SECONDS
+drop off the shelf entirely; those still on the shelf but quiet for more than
+STALE_SECONDS are reported IDLE/stale so the dashboard can dim them.
 """
 
 from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -30,6 +32,19 @@ from PySide6.QtCore import QObject, QTimer, Signal
 TRANSCRIPTS_DIR = Path.home() / ".claude" / "projects"
 POLL_MS = 500
 STALE_SECONDS = 90
+# A transcript stays on the shelf only while its file was touched this recently.
+# Beyond this window the session is considered finished and its tile vanishes.
+ACTIVE_WINDOW_SECONDS = 600
+# A subagent shows as a child mascot only while its file was touched this
+# recently; once it goes quiet (the agent finished) its mascot drops off.
+AGENT_ACTIVE_SECONDS = 45
+# A child mascot dims (idle) once its agent has been quiet this long — shorter
+# than AGENT_ACTIVE_SECONDS so a finishing agent winds down before it vanishes.
+AGENT_STALE_SECONDS = 20
+# Bounds the number of live tails (timers + window width); overflow scrolls.
+MAX_SESSIONS = 6
+# Bounds the child mascots shown under one session's tile.
+MAX_AGENTS_PER_SESSION = 6
 RESCAN_DIR_EVERY_N_POLLS = 10
 
 
@@ -130,6 +145,28 @@ ACTIVITY_LABELS: dict[Activity, str] = {
     Activity.IDLE:        "IDLE",
 }
 
+# Activity -> glow color shown behind the mascot tile (and used for its activity
+# label). Anchored to the app palette (#CE7D6B / #0e1116); IDLE is a dim grey so
+# stale tiles read as "no real glow".
+ACTIVITY_COLORS: dict[Activity, str] = {
+    Activity.CODING:      "#CE7D6B",  # brand warm — matches mockup's active glow
+    Activity.READING:     "#5FB3A1",  # teal
+    Activity.SEARCHING:   "#8B7DD8",  # violet
+    Activity.PLANNING:    "#E0A458",  # amber
+    Activity.INTEGRATING: "#C77DBB",  # magenta
+    Activity.THINKING:    "#5B8DEF",  # cool blue — matches mockup's middle mascot
+    Activity.IDLE:        "#3a3f4b",  # dim grey — no real glow
+}
+
+
+@dataclass
+class AgentState:
+    """One live subagent of a session — drives a small child mascot on the tile."""
+    agent_id: str               # subagent file stem (agent-<hash>) — stable key
+    activity: Activity
+    tool_name: str | None
+    is_stale: bool = False
+
 
 @dataclass
 class TranscriptState:
@@ -137,22 +174,151 @@ class TranscriptState:
     tool_name: str | None       # raw tool name when CODING/READING/etc
     transcript_path: Path | None
     last_event_ts: float | None
+    session_id: str | None = None      # transcript file stem (the uuid) — stable tile key
+    cwd: str | None = None
+    project_name: str | None = None    # friendly name shown on the tile
+    is_stale: bool = False             # in the shelf window but quiet > STALE_SECONDS
+    agents: list[AgentState] = field(default_factory=list)  # live subagents, newest-first
 
 
-def _newest_transcript() -> Path | None:
-    if not TRANSCRIPTS_DIR.exists():
-        return None
-    newest: Path | None = None
-    newest_mtime = -1.0
-    for p in TRANSCRIPTS_DIR.rglob("*.jsonl"):
-        try:
-            m = p.stat().st_mtime
-        except OSError:
+def is_subagent_path(p: Path) -> bool:
+    """True for anything under a session's `subagents/` tree.
+
+    Used to EXCLUDE these from top-level sessions — they fold into their parent.
+    Note this is deliberately broad: it also covers the `subagents/workflows/`
+    bookkeeping tree (journal.jsonl, nested workflow agents), none of which are
+    user-facing sessions.
+    """
+    return "subagents" in p.parts
+
+
+def is_agent_transcript(p: Path) -> bool:
+    """True only for a real child-agent transcript: an `agent-*.jsonl` sitting
+    DIRECTLY in a session's `subagents/` dir.
+
+    This excludes the `subagents/workflows/wf_*/` tree (nested workflow agents
+    and `journal.jsonl` bookkeeping, which has no assistant events) — those would
+    otherwise crowd out and outrank the genuinely-live subagents on the tile.
+    """
+    return p.parent.name == "subagents" and p.stem.startswith("agent-")
+
+
+def project_name_from_cwd(cwd: str | None, transcript_path: Path | None) -> str:
+    """Best-effort friendly name for a tile.
+
+    Prefer the working directory's leaf (`Path(cwd).name`) since `cwd` rides the
+    event stream verbatim and sidesteps the ambiguous folder slug. Fall back to
+    the transcript's parent directory name, then to "unknown".
+    """
+    if cwd:
+        name = Path(cwd).name
+        if name:
+            return name
+    if transcript_path is not None:
+        parent = transcript_path.parent.name
+        if parent:
+            return parent
+    return "unknown"
+
+
+def select_active(
+    entries: list[tuple[Path, float]],
+    now: float,
+    window: float = ACTIVE_WINDOW_SECONDS,
+    limit: int = MAX_SESSIONS,
+) -> list[Path]:
+    """Pick the paths that belong on the shelf, newest-first.
+
+    `entries` is a list of (path, mtime) already gathered by the caller (pure:
+    no stat/rglob in here). Drops subagent paths, keeps only files touched within
+    `window`, sorts newest-mtime first, and caps to `limit`.
+    """
+    kept: list[tuple[float, Path]] = []
+    for path, mtime in entries:
+        if is_subagent_path(path):
             continue
-        if m > newest_mtime:
-            newest_mtime = m
-            newest = p
-    return newest
+        if now - mtime <= window:
+            kept.append((mtime, path))
+    kept.sort(key=lambda t: t[0], reverse=True)
+    return [path for _, path in kept[:limit]]
+
+
+def parent_transcript_for_subagent(p: Path) -> Path:
+    """Map a subagent path to its parent session transcript.
+
+    …/<proj>/<uuid>/subagents/agent-X.jsonl  ->  …/<proj>/<uuid>.jsonl
+    """
+    parts = p.parts
+    try:
+        i = parts.index("subagents")
+    except ValueError:
+        return p
+    return Path(*parts[:i]).with_suffix(".jsonl")
+
+
+def group_sessions(
+    entries: list[tuple[Path, float]],
+    now: float,
+    window: float = ACTIVE_WINDOW_SECONDS,
+    agent_window: float = AGENT_ACTIVE_SECONDS,
+    limit: int = MAX_SESSIONS,
+    max_agents: int = MAX_AGENTS_PER_SESSION,
+) -> list[tuple[Path, list[Path]]]:
+    """Group transcripts into sessions for the shelf (pure: no disk I/O).
+
+    Returns [(parent_path, [agent_paths])] for parent sessions active within
+    `window`, newest-first, capped at `limit`. A session's recency counts its
+    subagents too — the parent transcript freezes while a Task runs — so a
+    supervising session stays listed while its agents work. Per session, agents
+    whose file was touched within `agent_window` are returned newest-first and
+    capped at `max_agents`.
+    """
+    own_mtime: dict[Path, float] = {}
+    agents_by_parent: dict[Path, list[tuple[Path, float]]] = {}
+    for path, mtime in entries:
+        if is_agent_transcript(path):
+            agents_by_parent.setdefault(
+                parent_transcript_for_subagent(path), []
+            ).append((path, mtime))
+        elif not is_subagent_path(path):
+            own_mtime[path] = mtime
+        # else: subagents/ bookkeeping (journal, workflows tree) — ignored entirely
+
+    # A live agent surfaces its session even if the parent .jsonl wasn't scanned
+    # (rotated/removed, or a scan race): synthesize the parent from agent recency.
+    for parent, agent_list in agents_by_parent.items():
+        own_mtime.setdefault(parent, max(am for _, am in agent_list))
+
+    # Effective recency folds in subagents so a supervising parent stays on top.
+    effective: list[tuple[Path, float]] = []
+    for parent, mtime in own_mtime.items():
+        eff = mtime
+        for _, am in agents_by_parent.get(parent, ()):
+            if am > eff:
+                eff = am
+        effective.append((parent, eff))
+
+    groups: list[tuple[Path, list[Path]]] = []
+    for parent in select_active(effective, now, window, limit):
+        fresh = [
+            (ap, am)
+            for ap, am in agents_by_parent.get(parent, ())
+            if now - am <= agent_window
+        ]
+        fresh.sort(key=lambda t: t[1], reverse=True)
+        groups.append((parent, [ap for ap, _ in fresh[:max_agents]]))
+    return groups
+
+
+def any_agent_active(agents: list[AgentState]) -> bool:
+    """True if at least one child agent is doing something (not idle/stale).
+
+    Used to decide whether a session is genuinely *supervising* — only then is a
+    frozen/idle parent worth promoting to PLANNING.
+    """
+    return any(
+        not (a.is_stale or a.activity == Activity.IDLE) for a in agents
+    )
 
 
 def _classify(content: list) -> tuple[Activity, str | None]:
@@ -180,67 +346,55 @@ def _classify(content: list) -> tuple[Activity, str | None]:
     return Activity.IDLE, None
 
 
-class TranscriptWatcher(QObject):
-    """Tails Claude Code's newest JSONL and emits the latest activity."""
+class _SessionTail:
+    """Owns the byte-tailing state + last-known activity for ONE transcript file.
 
-    state_changed = Signal(object)  # TranscriptState
+    Keying this per path lets several files tail independently without sharing
+    offsets. The tailing logic (offset tracking, partial-last-line hold-back,
+    defensive json parsing) is the original single-watcher behaviour, unchanged.
+    """
 
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._timer = QTimer(self)
-        self._timer.setInterval(POLL_MS)
-        self._timer.timeout.connect(self._poll)
-        self._path: Path | None = None
-        self._offset: int = 0
-        self._last_activity: Activity | None = None
-        self._last_tool: str | None = None
-        self._last_event_ts: float | None = None
-        self._poll_count = 0
+    def __init__(self, path: Path, stale_seconds: float = STALE_SECONDS) -> None:
+        self.path = path
+        # How long without an append before this tail reports IDLE/stale. Child
+        # agents use a shorter threshold so they dim as they wind down.
+        self._stale_seconds = stale_seconds
+        self.offset = 0
+        self.last_activity: Activity | None = None
+        self.last_tool: str | None = None
+        self.last_event_ts: float | None = None
+        self.cwd: str | None = None
 
-    def start(self) -> None:
-        self._rescan()
-        self._poll()
-        self._timer.start()
-
-    def stop(self) -> None:
-        self._timer.stop()
-
-    def _rescan(self) -> None:
-        newest = _newest_transcript()
-        if newest != self._path:
-            self._path = newest
-            self._offset = 0
-            self._last_event_ts = None
-
-    def _poll(self) -> None:
-        self._poll_count += 1
-        if self._poll_count % RESCAN_DIR_EVERY_N_POLLS == 0:
-            self._rescan()
-
-        path = self._path
-        if path is None or not path.exists():
-            self._emit(Activity.IDLE, None)
-            return
-
+    def poll(self, now: float) -> TranscriptState:
+        """Read any newly-appended bytes and return this session's current state."""
+        path = self.path
         try:
-            size = path.stat().st_size
-            mtime = path.stat().st_mtime
+            # One stat() so size and mtime describe the same file state — two
+            # calls can straddle an append/rotation and disagree.
+            st = path.stat()
+            size = st.st_size
+            mtime = st.st_mtime
         except OSError:
-            return
+            # File momentarily unavailable — report what we last knew.
+            return self._state(Activity.IDLE, None, is_stale=True)
 
-        if size > self._offset:
-            self._read_new(path, size)
+        if size < self.offset:
+            # Truncated/rotated under us; restart from the top.
+            self.offset = 0
+        if size > self.offset:
+            self._read_new(size)
 
-        if self._last_event_ts is None or (time.time() - mtime) > STALE_SECONDS:
-            self._emit(Activity.IDLE, None)
-        else:
-            self._emit(self._last_activity or Activity.THINKING, self._last_tool)
+        fresh = self.last_event_ts is not None and (now - mtime) <= self._stale_seconds
+        if fresh:
+            return self._state(self.last_activity or Activity.THINKING, self.last_tool)
+        # On the shelf (caller filtered by ACTIVE_WINDOW_SECONDS) but quiet: dim it.
+        return self._state(Activity.IDLE, None, is_stale=True)
 
-    def _read_new(self, path: Path, size: int) -> None:
+    def _read_new(self, size: int) -> None:
         try:
-            with path.open("rb") as f:
-                f.seek(self._offset)
-                chunk = f.read(size - self._offset)
+            with self.path.open("rb") as f:
+                f.seek(self.offset)
+                chunk = f.read(size - self.offset)
         except OSError:
             return
 
@@ -250,10 +404,10 @@ class TranscriptWatcher(QObject):
             last_nl = chunk.rfind(b"\n")
             if last_nl < 0:
                 return  # incomplete; don't advance offset
-            self._offset += last_nl + 1
+            self.offset += last_nl + 1
             chunk = chunk[: last_nl + 1]
         else:
-            self._offset = size
+            self.offset = size
 
         text = chunk.decode("utf-8", errors="replace")
         for line in text.splitlines():
@@ -267,6 +421,12 @@ class TranscriptWatcher(QObject):
             self._consume_event(ev)
 
     def _consume_event(self, ev: dict) -> None:
+        # cwd rides BOTH user and assistant events, so capture it from any event
+        # — the tile can be named before the model's first reply.
+        cwd = ev.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            self.cwd = cwd
+
         msg = ev.get("message")
         if not isinstance(msg, dict):
             return
@@ -278,15 +438,136 @@ class TranscriptWatcher(QObject):
         activity, tool = _classify(content)
         if activity == Activity.IDLE:
             return
-        self._last_activity = activity
-        self._last_tool = tool
-        self._last_event_ts = time.time()
+        self.last_activity = activity
+        self.last_tool = tool
+        self.last_event_ts = time.time()
 
-    def _emit(self, activity: Activity, tool: str | None) -> None:
-        state = TranscriptState(
+    def _state(
+        self, activity: Activity, tool: str | None, is_stale: bool = False
+    ) -> TranscriptState:
+        return TranscriptState(
             activity=activity,
             tool_name=tool if activity != Activity.IDLE else None,
-            transcript_path=self._path,
-            last_event_ts=self._last_event_ts,
+            transcript_path=self.path,
+            last_event_ts=self.last_event_ts,
+            session_id=self.path.stem,
+            cwd=self.cwd,
+            project_name=project_name_from_cwd(self.cwd, self.path),
+            is_stale=is_stale,
         )
-        self.state_changed.emit(state)
+
+
+def _idle_state() -> TranscriptState:
+    """The empty-shelf state — lets the dashboard fall back to rate-based mood."""
+    return TranscriptState(
+        activity=Activity.IDLE,
+        tool_name=None,
+        transcript_path=None,
+        last_event_ts=None,
+    )
+
+
+class TranscriptWatcher(QObject):
+    """Tails every recently-active Claude Code transcript and emits their states.
+
+    Emits the full shelf via `sessions_changed`; `state_changed` keeps the old
+    single-mascot contract by carrying the focused (newest) session.
+    """
+
+    sessions_changed = Signal(object)  # list[TranscriptState], newest-first
+    state_changed = Signal(object)     # BACK-COMPAT: focused state, or IDLE when empty
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._timer = QTimer(self)
+        self._timer.setInterval(POLL_MS)
+        self._timer.timeout.connect(self._poll)
+        self._tails: dict[Path, _SessionTail] = {}
+        # Discovery groups (newest-first): (parent_path, [agent_paths]). The first
+        # group's parent is the "focused" session for the back-compat signal.
+        self._groups: list[tuple[Path, list[Path]]] = []
+        self._poll_count = 0
+
+    def start(self) -> None:
+        self._rescan()
+        self._poll()
+        self._timer.start()
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+    def _scan_entries(self) -> list[tuple[Path, float]]:
+        """Gather (path, mtime) for every transcript on disk (the I/O half)."""
+        if not TRANSCRIPTS_DIR.exists():
+            return []
+        entries: list[tuple[Path, float]] = []
+        for p in TRANSCRIPTS_DIR.rglob("*.jsonl"):
+            try:
+                m = p.stat().st_mtime
+            except OSError:
+                continue
+            entries.append((p, m))
+        return entries
+
+    def _rescan(self) -> None:
+        """Refresh the set of tailed files: add new ones, drop those that left.
+
+        Tails both parent transcripts and their live subagent transcripts.
+        """
+        self._groups = group_sessions(self._scan_entries(), time.time())
+        parents: set[Path] = set()
+        agent_paths: set[Path] = set()
+        for parent, agents in self._groups:
+            parents.add(parent)
+            agent_paths.update(agents)
+        wanted = parents | agent_paths
+        # Drop tails whose file fell out of the window so their offsets are freed.
+        for path in list(self._tails):
+            if path not in wanted:
+                del self._tails[path]
+        # Agent tails dim sooner than parent tails (AGENT_STALE_SECONDS).
+        for path in parents:
+            if path not in self._tails:
+                self._tails[path] = _SessionTail(path)
+        for path in agent_paths:
+            if path not in self._tails:
+                self._tails[path] = _SessionTail(path, AGENT_STALE_SECONDS)
+
+    def _poll(self) -> None:
+        self._poll_count += 1
+        if self._poll_count % RESCAN_DIR_EVERY_N_POLLS == 0:
+            self._rescan()
+
+        now = time.time()
+        states: list[TranscriptState] = []
+        for parent, agent_paths in self._groups:
+            tail = self._tails.get(parent)
+            if tail is None:
+                continue
+            state = tail.poll(now)
+            agents: list[AgentState] = []
+            for ap in agent_paths:
+                atail = self._tails.get(ap)
+                if atail is None:
+                    continue
+                a = atail.poll(now)
+                agents.append(AgentState(
+                    agent_id=ap.stem,
+                    activity=a.activity,
+                    tool_name=a.tool_name,
+                    is_stale=a.is_stale,
+                ))
+            if agents:
+                state.agents = agents
+                # The parent transcript freezes during a Task call, so a session
+                # that's only supervising would read as idle. Show it PLANNING —
+                # but only while a child is actually working, so a row of
+                # winding-down agents doesn't paint a falsely-active parent.
+                if (state.is_stale or state.activity == Activity.IDLE) and any_agent_active(agents):
+                    state.activity = Activity.PLANNING
+                    state.tool_name = None
+                    state.is_stale = False
+            states.append(state)
+
+        self.sessions_changed.emit(states)
+        self.state_changed.emit(states[0] if states else _idle_state())

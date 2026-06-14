@@ -12,11 +12,25 @@ import json
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QRect, Qt, QTimer
+from PySide6.QtCore import Property, QRect, Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QLabel
 
 ROTATE_INTERVAL_MS = 20_000
+
+# Cropped (unscaled) frames keyed by animation slug, shared across ALL
+# SpritePlayer instances — the crop is identical regardless of the widget's
+# render size (scaling happens per-frame in _show_frame), so many child mascots
+# running the same animation don't each re-run the per-pixel bbox scan.
+_FRAME_CACHE: dict[str, list[QPixmap]] = {}
+
+# One crop shared by EVERY animation: the square bounding box that contains the
+# mascot across all frames of all animations. Cropping every animation to this
+# same box (instead of each animation's own tight box) keeps the mascot a
+# consistent on-screen size regardless of activity — a per-animation box scales
+# each pose to fill the widget by a different amount, so e.g. an idle mascot
+# rendered ~20% smaller than a coding one. Computed once, lazily.
+_GLOBAL_CROP: QRect | None = None
 
 
 def _alpha_bbox(img: QImage) -> QRect:
@@ -90,7 +104,6 @@ class SpritePlayer(QLabel):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self._sprites_dir = sprites_dir
         self._anims: dict[str, dict] = manifest["animations"]
-        self._pixmap_cache: dict[str, list[QPixmap]] = {}
 
         self._active_key: str | None = None
         self._active_list: list[str] = []
@@ -129,6 +142,43 @@ class SpritePlayer(QLabel):
     def current_anim(self) -> str | None:
         return self._cur_anim_name
 
+    def set_size(self, px: int) -> None:
+        """Change the render size and re-scale the current frame immediately.
+
+        setFixedSize() alone is not enough: frames are scaled to self._size in
+        _show_frame(), which otherwise only re-runs on the frame timer — so a
+        widget that resizes between animation frames keeps painting the old
+        size. Update _size here and re-show the current frame so the mascot
+        tracks the new tile size at once (the shelf resizes tiles as the
+        session count changes)."""
+        if px == self._size:
+            return
+        self._size = px
+        self.setFixedSize(px, px)
+        if self._cur_frames:
+            self._show_frame()
+
+    def _get_render_size(self) -> int:
+        return self._size
+
+    def _set_render_size(self, px: int) -> None:
+        self.set_size(int(px))
+
+    # Animatable size, so the shelf can scale a mascot smoothly when the session
+    # count (and thus the tile size) changes, instead of popping to the new size.
+    renderSize = Property(int, _get_render_size, _set_render_size)
+
+    def resume(self) -> None:
+        """Restart the frame/rotation timers for the current animation after a
+        stop(). set_anims() no-ops on an unchanged key, so a stopped sprite
+        won't restart on its own when the same animation is re-selected — the
+        dashboard pauses the hidden hero and needs this to wake it again."""
+        if not self._has_sprites or not self._cur_frames:
+            return
+        self._show_frame()
+        if len(self._active_list) > 1:
+            self._rotate_timer.start()
+
     def _rotate(self) -> None:
         if not self._active_list:
             return
@@ -151,8 +201,8 @@ class SpritePlayer(QLabel):
         floating in a transparent margin.
         """
         slug = meta["slug"]
-        if slug in self._pixmap_cache:
-            return self._pixmap_cache[slug]
+        if slug in _FRAME_CACHE:
+            return _FRAME_CACHE[slug]
 
         images: list[QImage] = []
         for frame in meta["frames"]:
@@ -162,13 +212,30 @@ class SpritePlayer(QLabel):
                 images.append(img.convertToFormat(QImage.Format_ARGB32))
 
         if not images:
-            self._pixmap_cache[slug] = []
+            _FRAME_CACHE[slug] = []
             return []
 
-        crop = _square_alpha_bbox(images)
+        # Crop every animation to the SAME global box so all poses render at a
+        # consistent size. Fall back to this animation's own box if the global
+        # one couldn't be computed.
+        crop = self._global_crop() or _square_alpha_bbox(images)
         frames = [QPixmap.fromImage(img.copy(crop)) for img in images]
-        self._pixmap_cache[slug] = frames
+        _FRAME_CACHE[slug] = frames
         return frames
+
+    def _global_crop(self) -> QRect | None:
+        """The square box containing the mascot across every frame of every
+        animation, computed once and shared by all instances/animations."""
+        global _GLOBAL_CROP
+        if _GLOBAL_CROP is None:
+            images: list[QImage] = []
+            for meta in self._anims.values():
+                for frame in meta["frames"]:
+                    img = QImage(str(self._sprites_dir / frame["file"]))
+                    if not img.isNull():
+                        images.append(img.convertToFormat(QImage.Format_ARGB32))
+            _GLOBAL_CROP = _square_alpha_bbox(images) if images else QRect()
+        return _GLOBAL_CROP if not _GLOBAL_CROP.isEmpty() else None
 
     def _show_frame(self) -> None:
         if not self._cur_frames:

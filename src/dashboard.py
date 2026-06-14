@@ -11,6 +11,7 @@ import os
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -66,14 +67,54 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 from reset_notify import ResetDecision, ResetNotifier
+from session_shelf import SessionShelf
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
     ACTIVITY_ANIMS,
     ACTIVITY_LABELS,
     Activity as TranscriptActivity,
+    AgentState as TranscriptAgentState,
     TranscriptState,
     TranscriptWatcher,
 )
+
+
+# Stable tile id used in single-mascot mode (Settings: show multiple sessions
+# off) so the one tile updates in place rather than animating a swap when the
+# focused session changes.
+_SINGLE_TILE_ID = "__single__"
+
+
+def _view_states(raw, show_multiple, show_subagents, single_id=_SINGLE_TILE_ID):
+    """Apply the Settings session-view toggles to the watcher's raw states.
+
+    - show_subagents off -> strip each session's child agents.
+    - show_multiple off  -> keep only the focused (newest) session, re-keyed to a
+      stable id so its tile updates in place instead of animating a swap when the
+      focused session changes.
+    Pure (returns a new list) so it's testable without the Qt UI.
+    """
+    states = raw
+    if not show_subagents:
+        states = [replace(s, agents=[]) for s in states]
+    if not show_multiple and states:
+        states = [replace(states[0], session_id=single_id)]
+    return states
+
+
+def _should_release_autofit(height_changed, fitting, armed, max_involved, titlebar_animating):
+    """Decide whether a resize is a genuine user height-drag (so we should stop
+    auto-fitting the window height). True only when the height actually changed
+    and it wasn't one of OUR programmatic resizes — the fit animation (`fitting`),
+    a maximize/restore (`max_involved`), or the auto-hide title-bar animation —
+    and only after the first show has settled (`armed`)."""
+    return (
+        height_changed
+        and armed
+        and not fitting
+        and not max_involved
+        and not titlebar_animating
+    )
 
 
 STYLESHEET = """
@@ -666,8 +707,11 @@ class TitleBar(QWidget):
         self._press_pos = None
 
     def mouseDoubleClickEvent(self, e) -> None:
+        # Double-click snaps the window back to the snug auto-fit height (undoes
+        # a manual height resize). Maximize stays on the title-bar [ ] button.
         if e.button() == Qt.LeftButton:
-            self._toggle_max()
+            self._win.reset_to_fit()
+            e.accept()
 
 
 class SettingsPanel(QWidget):
@@ -683,7 +727,7 @@ class SettingsPanel(QWidget):
 
     def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested,
                  on_refresh_token=None, on_auto_refresh_changed=None,
-                 on_poll_interval_changed=None) -> None:
+                 on_poll_interval_changed=None, on_sessions_view_changed=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -694,6 +738,7 @@ class SettingsPanel(QWidget):
         self._on_refresh_token = on_refresh_token
         self._on_auto_refresh_changed = on_auto_refresh_changed
         self._on_poll_interval_changed = on_poll_interval_changed
+        self._on_sessions_view_changed = on_sessions_view_changed
         self.hide()
 
         outer = QVBoxLayout(self)
@@ -780,6 +825,25 @@ class SettingsPanel(QWidget):
         self.quit_on_close_check.setChecked(app_settings.get_quit_on_close())
         self.quit_on_close_check.toggled.connect(self._on_quit_on_close_toggled)
         layout.addWidget(self.quit_on_close_check)
+
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("SESSIONS", objectName="sectionLabel"))
+        sessions_hint = QLabel(
+            "Show every active Claude Code session as its own mascot, and the "
+            "child agents a session spins up. Turn off for a single mascot.",
+            objectName="sectionHint",
+        )
+        sessions_hint.setWordWrap(True)
+        layout.addWidget(sessions_hint)
+        self.multi_sessions_check = QCheckBox("Show multiple sessions")
+        self.multi_sessions_check.setChecked(app_settings.get_show_multiple_sessions())
+        self.multi_sessions_check.toggled.connect(self._on_multi_sessions_toggled)
+        layout.addWidget(self.multi_sessions_check)
+
+        self.subagents_check = QCheckBox("Show subagents")
+        self.subagents_check.setChecked(app_settings.get_show_subagents())
+        self.subagents_check.toggled.connect(self._on_subagents_toggled)
+        layout.addWidget(self.subagents_check)
 
         layout.addSpacing(10)
         layout.addWidget(QLabel("USAGE POLLING", objectName="sectionLabel"))
@@ -1072,6 +1136,16 @@ class SettingsPanel(QWidget):
     def _on_quit_on_close_toggled(self, checked: bool) -> None:
         app_settings.set_quit_on_close(checked)
 
+    def _on_multi_sessions_toggled(self, checked: bool) -> None:
+        app_settings.set_show_multiple_sessions(checked)
+        if self._on_sessions_view_changed:
+            self._on_sessions_view_changed()
+
+    def _on_subagents_toggled(self, checked: bool) -> None:
+        app_settings.set_show_subagents(checked)
+        if self._on_sessions_view_changed:
+            self._on_sessions_view_changed()
+
     def _on_notify_toggled(self, checked: bool) -> None:
         app_settings.set_reset_notify(checked)
         self._sync_notify_subtoggles()
@@ -1242,10 +1316,16 @@ class Dashboard(QMainWindow):
         super().__init__()
         self.setWindowTitle("Clawdmeter")
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
-        self._min_h_no_badge = 550
-        self._min_h_with_badge = 580
-        self.setMinimumSize(440, self._min_h_no_badge)
-        self.resize(440, self._min_h_no_badge)
+        # The window height tracks its content (see _fit_window_height): it grows
+        # and shrinks with the mascot shelf so there's no dead space below the
+        # bars. This low floor only stops a manual drag from clipping badly; the
+        # actual height is driven by the fit.
+        self._min_window_h = 430
+        # Width: ~3 shelf tiles (130px sprites + margins/spacing) fit without
+        # scrolling; overflow scrolls horizontally inside the shelf's QScrollArea,
+        # so the window never balloons sideways.
+        self.setMinimumSize(520, self._min_window_h)
+        self.resize(520, 520)
         self.setStyleSheet(STYLESHEET)
 
         icon_path = assets_root() / "icon.png"
@@ -1269,12 +1349,24 @@ class Dashboard(QMainWindow):
         layout.setContentsMargins(24, 14, 24, 11)
         layout.setSpacing(12)
 
+        # Hero mascot for the EMPTY (0-session) state — the single rate-driven
+        # mascot that's been the app's face from day one. Wrapped in its own
+        # widget so the whole block can hide as a unit when the shelf is shown.
         self.sprite = SpritePlayer(size=240)
-        sprite_row = QHBoxLayout()
+        self.hero = QWidget()
+        sprite_row = QHBoxLayout(self.hero)
+        sprite_row.setContentsMargins(0, 0, 0, 0)
         sprite_row.addStretch(1)
         sprite_row.addWidget(self.sprite)
         sprite_row.addStretch(1)
-        layout.addLayout(sprite_row)
+        layout.addWidget(self.hero)
+
+        # Shelf of per-session mascots, shown whenever >=1 session is live. It
+        # lives in the same slot as the hero and the two toggle visibility so
+        # only one occupies the space at a time. Hidden until a session appears.
+        self.shelf = SessionShelf()
+        self.shelf.hide()
+        layout.addWidget(self.shelf, 1)
 
         # Group label sits 6px above the session row (half of the main
         # layout's 12px) by nesting both into a sub-layout. The sub-layout
@@ -1320,6 +1412,7 @@ class Dashboard(QMainWindow):
             on_refresh_token=self._request_token_refresh,
             on_auto_refresh_changed=self._set_auto_refresh,
             on_poll_interval_changed=self._set_poll_interval,
+            on_sessions_view_changed=self._apply_session_view,
         )
         self.settings_panel.place_closed()
         content.installEventFilter(self)
@@ -1351,18 +1444,41 @@ class Dashboard(QMainWindow):
         self._collapsed_window_height: int | None = None
         self._apply_auto_hide(app_settings.get_auto_hide_titlebar())
 
+        # Smoothly resizes the window height to fit content as the shelf changes.
+        self._fit_anim = QPropertyAnimation(self, b"size", self)
+        self._fit_anim.setDuration(240)  # matches the shelf enter/resize animation
+        self._fit_anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._fit_anim.finished.connect(self._on_fit_anim_finished)
+        # Auto-fit height state: we stop auto-fitting once the user drags the
+        # window height themselves, so a manual size sticks (width is always free).
+        self._auto_fit_height = True
+        self._fitting = False        # True during our own height resize/animation
+        self._fit_armed = False      # don't treat the first show as a user resize
+        self._was_maximized = False
+
         self._rate = RateGroupTracker()
         self._reset_notifier = ResetNotifier()
         self._last_sample: UsageSample | None = None
         self._last_tooltip = ""
         self._transcript_state: TranscriptState | None = None
+        # Last sessions from the watcher, re-rendered through the Settings toggles.
+        self._last_raw_states: list[TranscriptState] = []
+        # True while the shelf is showing >=1 live session. Tracked explicitly
+        # (not via shelf.isVisible(), which is False until the window is shown)
+        # so the usage-poll handler knows to leave the mascots to the shelf.
+        self._shelf_active = False
 
         self._transcript = TranscriptWatcher(self)
-        self._transcript.state_changed.connect(self._on_transcript)
+        # sessions_changed drives the whole multi-mascot path (shelf + the
+        # focused-session compact mascot + empty-state mood). state_changed is
+        # the back-compat single-session signal; sessions_changed[0] carries the
+        # same focused state, so we listen to the richer one only.
+        self._transcript.sessions_changed.connect(self._on_sessions)
         # NOTE: started at the END of __init__, not here. start() does a
-        # synchronous first poll that emits state_changed, and _on_transcript
-        # touches widgets (self.compact, self.sprite) that aren't built until
-        # later in __init__ — starting here AttributeErrors on real-mode launch.
+        # synchronous first poll that emits sessions_changed, and _on_sessions
+        # touches widgets (self.compact, self.sprite, self.shelf) that aren't
+        # built until later in __init__ — starting here AttributeErrors on
+        # real-mode launch.
 
         self._tray = QSystemTrayIcon(self)
         self._tray.setIcon(QIcon(str(icon_path)) if icon_path.exists() else QIcon(_tray_pixmap(0)))
@@ -1407,8 +1523,8 @@ class Dashboard(QMainWindow):
             self._start_mock()
         else:
             self._start_poller()
-            # Now that self.compact / self.sprite exist, the watcher's initial
-            # synchronous poll can safely drive the sprite selection.
+            # Now that self.compact / self.sprite / self.shelf exist, the
+            # watcher's initial synchronous poll can safely drive the shelf.
             self._transcript.start()
 
     def eventFilter(self, obj, ev):
@@ -1590,7 +1706,6 @@ class Dashboard(QMainWindow):
             self.settings_panel.set_token_status("⚠ " + result.status)
 
     def _start_mock(self) -> None:
-        self._mock_group = 0
         self._mock_pct = 12
         self._mock_sample_timer = QTimer(self)
 
@@ -1606,17 +1721,131 @@ class Dashboard(QMainWindow):
                 error=None,
                 timestamp=time.time(),
             ))
-            self._set_sprite_anims(f"mock:{self._mock_group}", GROUP_ANIMS[self._mock_group])
-            self.group_label.setText(GROUP_NAMES[self._mock_group].upper() + "  (mock)")
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
-
-        self._mock_group_timer = QTimer(self)
-        def group_tick():
-            self._mock_group = (self._mock_group + 1) % 4
-        self._mock_group_timer.timeout.connect(group_tick)
-        self._mock_group_timer.start(8000)
         sample_tick()
+
+        # Drive the shelf through a scripted roster that grows 1->4 sessions and
+        # shrinks back, reordering and cycling activities along the way, so every
+        # transition (tile enter/leave, resize, reorder, live<->idle) is on show
+        # without launching concurrent Claude Code windows. Steps every 2s.
+        self._mock_phase = 0
+        self._mock_shelf_timer = QTimer(self)
+        self._mock_shelf_timer.timeout.connect(self._emit_mock_sessions)
+        self._mock_shelf_timer.start(2000)
+        self._emit_mock_sessions()
+
+    # Pool of fake sessions (session_id, project_name) the mock roster draws on.
+    _MOCK_POOL = [
+        ("mock-clawdmeter", "clawdmeter-windows"),
+        ("mock-api-gateway", "api-gateway"),
+        ("mock-notes-cli", "notes-cli"),
+        ("mock-data-pipeline", "data-pipeline"),
+    ]
+
+    # Each step lists the active pool indices, newest-first. The shelf is driven
+    # through add (1->4), reorder (data-pipeline jumps to front) and remove
+    # (4->1), exercising the tile enter/leave + count-based resize each step.
+    _MOCK_SCHEDULE = [
+        [0],
+        [0, 1],
+        [0, 1, 2],
+        [0, 1, 2, 3],
+        [3, 0, 1, 2],
+        [3, 0, 1],
+        [3, 0],
+        [0],
+    ]
+
+    # Activities the live tiles rotate through, so the per-activity glow colors
+    # and animations change over time.
+    _MOCK_ACTIVITY_CYCLE = [
+        TranscriptActivity.CODING,
+        TranscriptActivity.THINKING,
+        TranscriptActivity.READING,
+        TranscriptActivity.SEARCHING,
+        TranscriptActivity.PLANNING,
+        TranscriptActivity.INTEGRATING,
+    ]
+
+    # The FOCUSED session (the one single mode shows) steps through every
+    # expression so all moods are on display for screenshots:
+    # (activity, tool label, subagent count, stale).
+    _FOCUS_CYCLE = [
+        (TranscriptActivity.CODING, "Edit", 0, False),
+        (TranscriptActivity.READING, "Read", 0, False),
+        (TranscriptActivity.SEARCHING, "WebSearch", 0, False),
+        (TranscriptActivity.THINKING, None, 0, False),
+        (TranscriptActivity.INTEGRATING, "github/list_issues", 0, False),
+        (TranscriptActivity.PLANNING, "TodoWrite", 0, False),
+        (TranscriptActivity.PLANNING, None, 3, False),  # supervising subagents
+        (TranscriptActivity.IDLE, None, 0, True),       # idle / "last active …"
+    ]
+
+    def _mock_agent_list(self, phase: int, n: int) -> list:
+        cyc = self._MOCK_ACTIVITY_CYCLE
+        return [
+            TranscriptAgentState(
+                agent_id=f"mock-agent-{k}",
+                activity=cyc[(phase + k) % len(cyc)],
+                tool_name=None,
+                is_stale=False,
+            )
+            for k in range(n)
+        ]
+
+    def _focus_state(self, phase: int, sid: str, project: str, now: float) -> TranscriptState:
+        """Build the focused session for this phase, cycling all expressions."""
+        act, tool, n_agents, stale = self._FOCUS_CYCLE[phase % len(self._FOCUS_CYCLE)]
+        if n_agents:
+            return TranscriptState(
+                activity=TranscriptActivity.PLANNING, tool_name=None,
+                transcript_path=None, last_event_ts=now, session_id=sid, cwd=None,
+                project_name=project, is_stale=False,
+                agents=self._mock_agent_list(phase, n_agents),
+            )
+        if stale:
+            return TranscriptState(
+                activity=TranscriptActivity.IDLE, tool_name=None,
+                transcript_path=None, last_event_ts=now - 4 * 60, session_id=sid,
+                cwd=None, project_name=project, is_stale=True,
+            )
+        return TranscriptState(
+            activity=act, tool_name=tool, transcript_path=None, last_event_ts=now,
+            session_id=sid, cwd=None, project_name=project, is_stale=False,
+        )
+
+    def _emit_mock_sessions(self) -> None:
+        phase = self._mock_phase
+        self._mock_phase += 1
+        now = time.time()
+        active = self._MOCK_SCHEDULE[phase % len(self._MOCK_SCHEDULE)]
+        states = []
+        for slot, pool_idx in enumerate(active):
+            sid, project = self._MOCK_POOL[pool_idx]
+            if slot == 0:
+                # Focused session — single mode shows only this, so cycle it
+                # through the full expression set.
+                states.append(self._focus_state(phase, sid, project, now))
+                continue
+            # Other tiles (multi mode only): cycle activities; oldest reads idle.
+            if slot == len(active) - 1:
+                states.append(TranscriptState(
+                    activity=TranscriptActivity.IDLE, tool_name=None,
+                    transcript_path=None, last_event_ts=now - 4 * 60, session_id=sid,
+                    cwd=None, project_name=project, is_stale=True,
+                ))
+            else:
+                act = self._MOCK_ACTIVITY_CYCLE[
+                    (phase + pool_idx) % len(self._MOCK_ACTIVITY_CYCLE)
+                ]
+                states.append(TranscriptState(
+                    activity=act,
+                    tool_name="Edit" if act == TranscriptActivity.CODING else None,
+                    transcript_path=None, last_event_ts=now, session_id=sid, cwd=None,
+                    project_name=project, is_stale=False,
+                ))
+        self._on_sessions(states)
 
     def _on_sample(self, s: UsageSample) -> None:
         # Feed every sample (incl. errors) so the notifier can ignore them
@@ -1646,7 +1875,13 @@ class Dashboard(QMainWindow):
         self._sync_compact(s)
 
         self._rate.observe(s.session_pct)
-        self._update_sprite_selection()
+        # While the shelf is up it owns the mascots (per-session tiles + the
+        # compact widget via _drive_compact_from), so the rate-based mood must
+        # NOT also drive them here — two paths with different set_anims keys for
+        # the same activity would restart and flicker the compact animation on
+        # every usage poll. Only refresh the rate mood in the empty state.
+        if not self._shelf_active:
+            self._update_sprite_selection()
 
         self._apply_status_badge(s.status)
         self._set_tray_tooltip(s.session_pct, s.session_reset_minutes,
@@ -1724,6 +1959,74 @@ class Dashboard(QMainWindow):
             self._last_tooltip = text
             self._tray.setToolTip(text)
 
+    def _target_window_height(self) -> int:
+        """Snug window height for the current content: the title bar plus the
+        content area, counting the shelf at its settled (target) height rather
+        than a value still mid-animation, so the fit aims at the final size."""
+        tb_h = self.title_bar.height() or TitleBar.HEIGHT  # may be 0 before show
+        content_min = self._content.minimumSizeHint().height()
+        if self._shelf_active:
+            content_min += self.shelf.reserved_target() - self.shelf.reserved_current()
+        return tb_h + content_min
+
+    def _fit_window_height(self) -> None:
+        """Resize the window's height to hug its content so there's no dead space
+        below the bars; the height follows the shelf as it grows/shrinks. Does
+        nothing once the user has set their own height (auto-fit released)."""
+        if not self._auto_fit_height:
+            return
+        if self.isMaximized() or self.isFullScreen():
+            return
+        if self._titlebar_anim_group.state() == QAbstractAnimation.Running:
+            return  # don't fight the auto-hide title-bar resize
+        target = max(self.minimumHeight(), self._target_window_height())
+        if abs(target - self.height()) <= 1:
+            return
+        if not self.isVisible():
+            self._fitting = True
+            self.resize(self.width(), target)  # snap before the first show
+            self._fitting = False
+            return
+        self._fit_anim.stop()
+        self._fitting = True  # set AFTER stop() so a restart stays guarded
+        self._fit_anim.setStartValue(self.size())
+        self._fit_anim.setEndValue(QSize(self.width(), target))
+        self._fit_anim.start()
+
+    def _on_fit_anim_finished(self) -> None:
+        self._fitting = False
+
+    def reset_to_fit(self) -> None:
+        """Re-enable auto-fit and snap back to the snug content height — the
+        title-bar double-click 'reset' after a manual height resize."""
+        if self.isMaximized():
+            self.showNormal()
+        self._auto_fit_height = True
+        self._fit_window_height()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        # Arm user-resize detection only after the show settles, so the initial
+        # show geometry isn't mistaken for a manual height drag.
+        QTimer.singleShot(0, lambda: setattr(self, "_fit_armed", True))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        old = event.oldSize()
+        max_involved = self.isMaximized() or self._was_maximized
+        self._was_maximized = self.isMaximized()
+        if not self._auto_fit_height:
+            return
+        height_changed = old.height() > 0 and event.size().height() != old.height()
+        if _should_release_autofit(
+            height_changed,
+            self._fitting,
+            self._fit_armed,
+            max_involved,
+            self._titlebar_anim_group.state() == QAbstractAnimation.Running,
+        ):
+            self._auto_fit_height = False  # respect the user's height from now on
+
     def _apply_status_badge(self, status: str) -> None:
         """Show/hide the bottom-left rate-limit badge and reflow the window.
 
@@ -1755,19 +2058,9 @@ class Dashboard(QMainWindow):
         self.status_text.style().unpolish(self.status_text)
         self.status_text.style().polish(self.status_text)
 
-        # Window grows when the badge appears; doesn't shrink the user's
-        # manual resize if they've already enlarged it. Auto-hide mode removes
-        # TitleBar.HEIGHT from both floors since the title bar is overlayed.
-        base = self._min_h_with_badge if has_badge else self._min_h_no_badge
-        offset = TitleBar.HEIGHT if self._auto_hide_enabled else 0
-        new_min = base - offset
-        if self.minimumHeight() != new_min:
-            prev_min = self.minimumHeight()
-            self.setMinimumHeight(new_min)
-            if not has_badge and self.height() == prev_min and prev_min > new_min:
-                # Window was sitting at the previous (larger) auto-grown floor;
-                # shrink back to the new floor when the badge clears.
-                self.resize(self.width(), new_min)
+        # The badge row changes the content height; refit so the window grows to
+        # show it (and shrinks back when it clears) with no dead space.
+        self._fit_window_height()
 
     def _tick_countdown(self) -> None:
         s = self._last_sample
@@ -1781,9 +2074,69 @@ class Dashboard(QMainWindow):
         self.compact.set_resets(sr, wr)
         self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
 
-    def _on_transcript(self, state: TranscriptState) -> None:
-        self._transcript_state = state
-        self._update_sprite_selection()
+    def _on_sessions(self, states: list[TranscriptState]) -> None:
+        """Receive the watcher's per-session states, remember them, and render
+        through the current Settings view (multiple-sessions / subagents toggles)."""
+        self._last_raw_states = list(states)
+        self._apply_session_view()
+
+    def _apply_session_view(self) -> None:
+        """Render the last-seen sessions honouring the Settings toggles: collapse
+        to the focused session when 'show multiple sessions' is off, and strip
+        child agents when 'show subagents' is off. Called on each watcher update
+        and whenever a toggle changes, so a flip takes effect immediately.
+
+        With >=1 live session the shelf takes over the mascot slot and the compact
+        widget mirrors the focused (newest) session; with 0 the hero returns and
+        the rate-based mood drives hero + compact + group_label."""
+        states = _view_states(
+            self._last_raw_states,
+            app_settings.get_show_multiple_sessions(),
+            app_settings.get_show_subagents(),
+        )
+
+        if states:
+            self._shelf_active = True
+            self.hero.hide()
+            # Pause the hidden hero so its 240px mascot isn't animating offscreen
+            # the whole time the shelf is up.
+            self.sprite.stop()
+            # The shelf owns its own header, so hide the rate-mood group label
+            # rather than leave it showing stale text beside live tiles.
+            self.group_label.hide()
+            self.shelf.show()
+            # The "ACTIVE SESSIONS — N" count is only meaningful in multi mode.
+            self.shelf.set_header_visible(app_settings.get_show_multiple_sessions())
+            self.shelf.set_sessions(states)
+            # The compact widget stays single-mascot for now (full multi-session
+            # compact is Variant D), so it follows the focused session.
+            self._transcript_state = states[0]
+            self._drive_compact_from(states[0])
+        else:
+            self._shelf_active = False
+            self.shelf.hide()
+            self.shelf.set_sessions([])  # drop any leftover tiles + reset header
+            self.hero.show()
+            self.group_label.show()
+            # No session: fall back to today's rate-driven mood for hero/compact.
+            self._transcript_state = None
+            self._update_sprite_selection()
+            # set_anims no-ops on an unchanged key, so re-show the paused hero.
+            self.sprite.resume()
+
+        # Resize the window to hug the new content (no dead space below the bars).
+        self._fit_window_height()
+
+    def _drive_compact_from(self, state: TranscriptState) -> None:
+        """Mirror one session's activity on the compact mascot only — the hero
+        is hidden while the shelf is up, so it isn't driven here. Idle/stale
+        sessions fall back to the calm group-0 loop."""
+        idle = state.is_stale or state.activity == TranscriptActivity.IDLE
+        anims = None if idle else ACTIVITY_ANIMS.get(state.activity)
+        if anims:
+            self.compact.sprite.set_anims(f"compact:{state.activity.value}", anims)
+        else:
+            self.compact.sprite.set_anims("compact:idle", GROUP_ANIMS[0])
 
     def _set_sprite_anims(self, key: str, names) -> None:
         """Drive both the full-window and compact mascots in lockstep."""
@@ -1874,6 +2227,7 @@ class Dashboard(QMainWindow):
             self._poller.wait(2000)
         self._transcript.stop()
         self.sprite.stop()
+        self.shelf.stop_all()
         if self.compact.isVisible():
             app_settings.set_compact_pos(self.compact.x(), self.compact.y())
         self.compact.sprite.stop()

@@ -87,6 +87,17 @@ def test_string_value_round_trips():
         assert app_settings.get_poll_interval() == 120
 
 
+def test_session_view_toggles_default_on_and_round_trip():
+    with _isolated_settings():
+        # Both default ON (current behaviour: multi-session shelf + subagents).
+        assert app_settings.get_show_multiple_sessions() is True
+        assert app_settings.get_show_subagents() is True
+        app_settings.set_show_multiple_sessions(False)
+        app_settings.set_show_subagents(False)
+        assert app_settings.get_show_multiple_sessions() is False
+        assert app_settings.get_show_subagents() is False
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
