@@ -902,6 +902,10 @@ QLabel#compactTitle {{ font-size: 12px; font-weight: 700; color: {_TEXT};
 QToolButton#compactBtn {{ background: transparent; color: #CE7D6B; border: none;
                           font-size: 13px; padding: 2px 7px; }}
 QToolButton#compactBtn:hover {{ background: #1f2937; }}
+QToolButton#compactSeg {{ background: transparent; color: {_MUTED}; border: none;
+                          font-size: 12px; padding: 2px 6px; }}
+QToolButton#compactSeg:hover {{ background: #1f2937; color: {_TEXT}; }}
+QToolButton#compactSeg:checked {{ background: #243044; color: #CE7D6B; }}
 QWidget#compactRow:hover {{ background: #161b22; }}
 QLabel#compactBarLabel {{ font-size: 10px; font-weight: 600; color: {_MUTED};
                           letter-spacing: 1px; }}
@@ -1025,7 +1029,7 @@ class CompactView(QWidget):
     """Compact mode window: slim usage bars over a scrollable list of session
     rows. Frameless, draggable by its title bar, always-on-top, no taskbar."""
 
-    cycle_requested = Signal()   # title-bar button -> next mode
+    set_mode_requested = Signal(str)  # a view segment -> switch to that mode
     grow_requested = Signal()    # double-click title / menu -> full view
     hide_requested = Signal()    # close button -> hide to tray
     quit_requested = Signal()
@@ -1066,11 +1070,21 @@ class CompactView(QWidget):
         trow.addWidget(icon_lbl)
         trow.addWidget(QLabel("CLAWDMETER", objectName="compactTitle"))
         trow.addStretch(1)
-        self.cycle_btn = self._tbtn("⤢", "Switch view")   # ⤢
-        self.cycle_btn.clicked.connect(self.cycle_requested.emit)
+        # View switcher segments (active highlighted), matching the full window.
+        self._segs: dict[str, QToolButton] = {}
+        for mode, glyph, tip in (("full", "▢", "Full view"),
+                                 ("compact", "☰", "Compact view"),
+                                 ("mini", "▪", "Mini view")):
+            b = self._tbtn(glyph, tip)
+            b.setObjectName("compactSeg")
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, m=mode: self.set_mode_requested.emit(m))
+            self._segs[mode] = b
+            trow.addWidget(b)
+        self.set_active_mode("compact")
         self.close_btn = self._tbtn("✕", "Hide to tray")  # ✕
         self.close_btn.clicked.connect(self.hide_requested.emit)
-        trow.addWidget(self.cycle_btn)
+        trow.addSpacing(4)
         trow.addWidget(self.close_btn)
         outer.addWidget(self._title_bar)
 
@@ -1118,6 +1132,11 @@ class CompactView(QWidget):
         b.setToolTip(tip)
         b.setCursor(Qt.PointingHandCursor)
         return b
+
+    def set_active_mode(self, mode: str) -> None:
+        """Highlight the active view segment."""
+        for m, b in self._segs.items():
+            b.setChecked(m == mode)
 
     def _slim_bar(self, parent_col: QVBoxLayout):
         head = QHBoxLayout()

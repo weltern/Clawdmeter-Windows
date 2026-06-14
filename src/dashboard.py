@@ -120,15 +120,9 @@ def _should_release_autofit(height_changed, fitting, armed, max_involved, titleb
     )
 
 
-# View modes, largest -> smallest. Pure helpers so the cycle/grow order is
+# View modes, largest -> smallest. Pure helper so the grow order is
 # unit-testable without constructing a Dashboard.
 VIEW_ORDER = ("full", "compact", "mini")
-
-
-def next_view_mode(mode: str) -> str:
-    """The next mode when cycling forward (full -> compact -> mini -> full)."""
-    i = VIEW_ORDER.index(mode) if mode in VIEW_ORDER else 0
-    return VIEW_ORDER[(i + 1) % len(VIEW_ORDER)]
 
 
 def grow_view_mode(mode: str) -> str:
@@ -156,6 +150,12 @@ QToolButton#titleBtn, QToolButton#closeBtn { font-size: 11px; }
 QToolButton#settingsBtn { font-size: 16px; }
 QToolButton#titleBtn:hover, QToolButton#settingsBtn:hover { background-color: #1f2937; color: #CE7D6B; }
 QToolButton#closeBtn:hover { background-color: #c13434; color: #ffffff; }
+QToolButton#viewSeg {
+    background: transparent; color: #9ca3af; border: 0;
+    min-width: 26px; min-height: 28px; font-size: 12px;
+}
+QToolButton#viewSeg:hover { background-color: #1f2937; color: #e6edf3; }
+QToolButton#viewSeg:checked { background-color: #243044; color: #CE7D6B; }
 
 QLabel#title { font-size: 22px; font-weight: 700; letter-spacing: 1px; color: #e6edf3; }
 QLabel#group { font-size: 13px; font-weight: 600; color: #9ca3af; letter-spacing: 2px; }
@@ -597,7 +597,7 @@ class TitleBar(QWidget):
     HEIGHT = 48
     ICON_SIZE = 36
 
-    def __init__(self, window: QMainWindow, on_settings, on_cycle) -> None:
+    def __init__(self, window: QMainWindow, on_settings, on_set_mode) -> None:
         super().__init__(window)
         self.setObjectName("titleBar")
         # Allow vertical animation: min=0, max=HEIGHT. Auto-hide animates
@@ -635,9 +635,24 @@ class TitleBar(QWidget):
         self.settings_btn.clicked.connect(on_settings)
         row.addWidget(self.settings_btn)
 
-        self.cycle_btn = self._tool_btn("", "Switch view (full → compact → mini)")  # BackToWindow
-        self.cycle_btn.clicked.connect(on_cycle)
-        row.addWidget(self.cycle_btn)
+        # View switcher: three segments (full / compact / mini); the active one
+        # is highlighted and clicking a segment switches straight to it.
+        self._segs: dict[str, QToolButton] = {}
+        for mode, glyph, tip in (("full", "▢", "Full view"),
+                                 ("compact", "☰", "Compact view"),
+                                 ("mini", "▪", "Mini view")):
+            b = QToolButton()
+            b.setObjectName("viewSeg")
+            b.setText(glyph)
+            b.setToolTip(tip)
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFocusPolicy(Qt.NoFocus)
+            b.clicked.connect(lambda _=False, m=mode: on_set_mode(m))
+            self._segs[mode] = b
+            row.addWidget(b)
+        self.set_active_mode("full")
+        row.addSpacing(6)
 
         self.min_btn = self._tool_btn("", "Minimize")        # ChromeMinimize
         self.min_btn.clicked.connect(self._win.showMinimized)
@@ -660,6 +675,11 @@ class TitleBar(QWidget):
         b.setCursor(Qt.PointingHandCursor)
         b.setFocusPolicy(Qt.NoFocus)
         return b
+
+    def set_active_mode(self, mode: str) -> None:
+        """Highlight the active view segment."""
+        for m, b in self._segs.items():
+            b.setChecked(m == mode)
 
     def _toggle_max(self) -> None:
         if self._win.isMaximized():
@@ -1355,7 +1375,7 @@ class Dashboard(QMainWindow):
         self._outer.setSpacing(0)
 
         self.title_bar = TitleBar(self, on_settings=self._toggle_settings,
-                                  on_cycle=self._cycle_view)
+                                  on_set_mode=self._set_view_mode)
         self._outer.addWidget(self.title_bar)
 
         content = QWidget()
@@ -1536,8 +1556,8 @@ class Dashboard(QMainWindow):
 
         # Compact mode: a denser list view (one row per session).
         self.compact_view = CompactView()
-        self.compact_view.cycle_requested.connect(self._cycle_view)   # -> mini
-        self.compact_view.grow_requested.connect(self._grow_view)     # -> full
+        self.compact_view.set_mode_requested.connect(self._set_view_mode)  # segments
+        self.compact_view.grow_requested.connect(self._grow_view)     # dbl-click -> full
         self.compact_view.hide_requested.connect(self._stash_compact)  # to tray
         self.compact_view.quit_requested.connect(self._real_quit)
 
@@ -2307,6 +2327,9 @@ class Dashboard(QMainWindow):
         self._view_mode = mode
         if persist:
             app_settings.set_view_mode(mode)
+        # Keep both switchers' active segment in sync with the real mode.
+        self.title_bar.set_active_mode(mode)
+        self.compact_view.set_active_mode(mode)
         if self.settings_panel.is_open():
             self._close_settings()
         self._stash_mini()
@@ -2325,9 +2348,6 @@ class Dashboard(QMainWindow):
             self.sprite.stop()
             self.hide()
             self._show_compact() if mode == "compact" else self._show_mini()
-
-    def _cycle_view(self) -> None:
-        self._set_view_mode(next_view_mode(getattr(self, "_view_mode", "full")))
 
     def _grow_view(self) -> None:
         self._set_view_mode(grow_view_mode(getattr(self, "_view_mode", "full")))
