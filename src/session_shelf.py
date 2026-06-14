@@ -70,7 +70,6 @@ QLabel#tileActivity {{
 }}
 QLabel#tileDot {{ font-size: 11px; }}
 QLabel#tileSub {{ font-size: 10px; color: {_MUTED}; }}
-QLabel#tileAgentArrow {{ font-size: 13px; color: {_MUTED}; }}
 QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 0 2px; }}
 QScrollBar::handle:horizontal {{
     background: #374151; border-radius: 4px; min-width: 24px;
@@ -82,8 +81,9 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: 
 
 
 # Top padding inside a tile so the mascot's glow (drop-shadow blur ~38) isn't
-# clipped at the tile's top edge. Sized to the visible extent of the blur.
-_GLOW_PAD = 26
+# clipped at the tile's top edge. The mascot sits with internal margin now
+# (consistent-crop), so the glow only needs a little extra room above.
+_GLOW_PAD = 14
 
 
 def _ago_text(last_event_ts: float | None) -> str:
@@ -200,17 +200,13 @@ class SessionTile(QWidget):
         self.sub_label.setAlignment(Qt.AlignHCenter)
         col.addWidget(self.sub_label)
 
-        # Row of child mascots for live subagents — hidden until the session has
-        # any. A leading "↳" marks them as belonging to this session's mascot.
+        # Row of child mascots for live subagents — hidden until the session has any.
         self._agents: dict[str, AgentMascot] = {}
         self._agents_box = QWidget()
         self._agents_row = QHBoxLayout(self._agents_box)
         self._agents_row.setContentsMargins(0, 4, 0, 0)
         self._agents_row.setSpacing(6)
         self._agents_row.setAlignment(Qt.AlignHCenter)
-        self._agents_row.addWidget(
-            QLabel("↳", objectName="tileAgentArrow"), 0, Qt.AlignVCenter
-        )
         self._agents_box.hide()
         col.addWidget(self._agents_box)
 
@@ -365,7 +361,7 @@ class SessionShelf(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(8)
+        outer.setSpacing(3)  # tight gap between the header and the mascots
 
         self.header = QLabel("ACTIVE SESSIONS — 0", objectName="shelfHeader")
         self.header.setAlignment(Qt.AlignHCenter)

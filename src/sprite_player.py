@@ -19,10 +19,18 @@ from PySide6.QtWidgets import QLabel
 ROTATE_INTERVAL_MS = 20_000
 
 # Cropped (unscaled) frames keyed by animation slug, shared across ALL
-# SpritePlayer instances — the alpha-bbox crop is identical regardless of the
-# widget's render size (scaling happens per-frame in _show_frame), so many child
-# mascots running the same animation don't each re-run the per-pixel bbox scan.
+# SpritePlayer instances — the crop is identical regardless of the widget's
+# render size (scaling happens per-frame in _show_frame), so many child mascots
+# running the same animation don't each re-run the per-pixel bbox scan.
 _FRAME_CACHE: dict[str, list[QPixmap]] = {}
+
+# One crop shared by EVERY animation: the square bounding box that contains the
+# mascot across all frames of all animations. Cropping every animation to this
+# same box (instead of each animation's own tight box) keeps the mascot a
+# consistent on-screen size regardless of activity — a per-animation box scales
+# each pose to fill the widget by a different amount, so e.g. an idle mascot
+# rendered ~20% smaller than a coding one. Computed once, lazily.
+_GLOBAL_CROP: QRect | None = None
 
 
 def _alpha_bbox(img: QImage) -> QRect:
@@ -207,10 +215,27 @@ class SpritePlayer(QLabel):
             _FRAME_CACHE[slug] = []
             return []
 
-        crop = _square_alpha_bbox(images)
+        # Crop every animation to the SAME global box so all poses render at a
+        # consistent size. Fall back to this animation's own box if the global
+        # one couldn't be computed.
+        crop = self._global_crop() or _square_alpha_bbox(images)
         frames = [QPixmap.fromImage(img.copy(crop)) for img in images]
         _FRAME_CACHE[slug] = frames
         return frames
+
+    def _global_crop(self) -> QRect | None:
+        """The square box containing the mascot across every frame of every
+        animation, computed once and shared by all instances/animations."""
+        global _GLOBAL_CROP
+        if _GLOBAL_CROP is None:
+            images: list[QImage] = []
+            for meta in self._anims.values():
+                for frame in meta["frames"]:
+                    img = QImage(str(self._sprites_dir / frame["file"]))
+                    if not img.isNull():
+                        images.append(img.convertToFormat(QImage.Format_ARGB32))
+            _GLOBAL_CROP = _square_alpha_bbox(images) if images else QRect()
+        return _GLOBAL_CROP if not _GLOBAL_CROP.isEmpty() else None
 
     def _show_frame(self) -> None:
         if not self._cur_frames:
