@@ -11,8 +11,9 @@ Standalone Windows desktop dashboard for Claude Code usage.
 
 - **Session (5h) %** with reset countdown
 - **Weekly (7d) %** with reset countdown
-- A live label + Clawd animation showing what Claude Code is doing, falling back
-  to a usage-rate mood when idle
+- A **session shelf** — one Clawd mascot per active Claude Code session, each with
+  its project name and live activity (plus small child mascots for any subagents
+  it spins up), falling back to a usage-rate mood when nothing's running
 - A system-tray icon whose fill arc tracks session % — **hover it for a quick
   session & weekly readout**
 
@@ -37,6 +38,27 @@ MCP server tool — the label shows which server it's talking to (e.g.
 When Claude Code goes quiet, the mascot falls back to a mood driven by your
 usage rate — sleepy when you're idle, dancing when you're burning through
 tokens (the same 4-group logic as the original firmware).
+
+## Multiple sessions
+
+Run more than one Claude Code session at once and each gets its own mascot on the
+**session shelf** — labeled with its project and live activity, animating
+independently. The session/weekly usage bars stay account-wide (a single number
+from the API), shown once beneath the shelf.
+
+When a session spins up subagents (the Agent/Task tool), a row of small **child
+mascots** appears under that session — one per live agent, each glowing with its
+own activity — so a supervising session still looks busy even while its own
+transcript is paused waiting on those agents.
+
+The window **sizes itself to fit** the mascots, growing and shrinking as sessions
+come and go so there's no empty space. Prefer a fixed size? **Drag the bottom
+edge** to set your own height and it sticks; **double-click the title bar** to
+snap back to the automatic fit. (Width is always yours — the shelf scrolls
+horizontally when more mascots are open than fit.)
+
+Don't want the shelf? In **Settings → Sessions**, turn **Show multiple sessions**
+off for a single mascot, and **Show subagents** off to hide the child mascots.
 
 ## Compact view
 
@@ -118,6 +140,9 @@ Open the settings panel from the gear icon in the title bar.
   the token is actually expired.
 - **Window** — toggle **Always on top**, **Auto-hide title bar**, and **Quit on
   close** (closes the app instead of minimizing to the tray).
+- **Sessions** — **Show multiple sessions** (the session shelf; off shows a single
+  mascot for the most recent session) and **Show subagents** (the child mascots).
+  Both on by default.
 - **Usage polling** — how often the app checks your usage. Each check is a tiny
   billed API request, so the interval is adjustable from **10 to 600 seconds**
   (60 by default): lower is fresher but makes more requests; higher is gentler
