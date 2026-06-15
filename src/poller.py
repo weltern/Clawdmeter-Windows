@@ -45,6 +45,10 @@ POLL_INTERVAL_SECONDS = 60
 class UsageSample:
     """One snapshot of Claude rate-limit state. Mirrors the BLE payload."""
 
+    # session_pct / weekly_pct are the 5h / 7d window utilisation as a percent.
+    # They are NOT clamped at 100: once a window is maxed and you keep working on
+    # paid extra usage, the percent climbs past 100 (e.g. 120 = 20% into overage)
+    # — that overflow is the overage signal, surfaced per-window in the UI.
     session_pct: int
     session_reset_minutes: int
     weekly_pct: int
@@ -53,11 +57,6 @@ class UsageSample:
     ok: bool
     error: str | None = None
     timestamp: float = 0.0
-    # Usage past the weekly cap (paid "overage" tier). 0 for the vast majority
-    # of accounts/time; the UI only surfaces it when overage_pct > 0. Its own
-    # reset clock (longer than weekly), so it's tracked separately.
-    overage_pct: int = 0
-    overage_reset_minutes: int = 0
     # Account-wide input+output token totals over the 5h / 7d windows, summed
     # from the local transcripts (0 when the token-usage display is off).
     tokens_5h: int = 0
@@ -119,11 +118,17 @@ def sample_from_headers(headers, now: float) -> UsageSample:
         return int(round(mins)) if mins > 0 else 0
 
     def pct(util: str) -> int:
+        # Fraction (0.0..) -> percent. Deliberately NOT clamped: a window in
+        # overage reports utilisation > 1.0, which we want to surface as >100%.
         try:
             return int(round(float(util) * 100))
         except (TypeError, ValueError):
             return 0
 
+    # Overage is derived per-window from the 5h / 7d utilisation crossing 100%
+    # (not the separate unified-overage-* bucket, which tracks the extra-usage
+    # *credit cap* — null/0 for accounts with uncapped extra usage, so it never
+    # reflects an actual session/weekly overage).
     return UsageSample(
         session_pct=pct(hdr("anthropic-ratelimit-unified-5h-utilization")),
         session_reset_minutes=reset_minutes(hdr("anthropic-ratelimit-unified-5h-reset")),
@@ -133,10 +138,6 @@ def sample_from_headers(headers, now: float) -> UsageSample:
         ok=True,
         error=None,
         timestamp=now,
-        overage_pct=pct(hdr("anthropic-ratelimit-unified-overage-utilization")),
-        overage_reset_minutes=reset_minutes(
-            hdr("anthropic-ratelimit-unified-overage-reset")
-        ),
     )
 
 

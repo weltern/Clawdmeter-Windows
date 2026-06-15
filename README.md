@@ -10,8 +10,8 @@ Standalone Windows desktop dashboard for Claude Code usage.
 ## What it shows
 
 - **Session (5h) %** with reset countdown
-- **Weekly (7d) %** with reset countdown — and a red **overage** overflow when
-  you spill past 100% onto usage credits
+- **Weekly (7d) %** with reset countdown — and a red **overage** state on either
+  bar when it climbs past 100% onto usage credits
 - **Token usage** for each window (input+output), inline beside the bars and
   broken down per session
 - A **session shelf** — one Clawd mascot per active Claude Code session, each
@@ -100,15 +100,14 @@ by default). Turn it off and every token figure disappears.
 
 ## Overage
 
-If you spill past your weekly limit onto **usage credits**, the Weekly bar says
-so without losing the plot: the coral bar stays full at 100%, a brighter-red
-segment grows in from the left, and the percentage keeps climbing past 100 — so
-**20% of overage reads as `120%`** — with a red **OVERAGE** tag next to
-*WEEKLY (7d)*. Hover the bar for when the overage window resets. It surfaces only
-when you're actually in overage and hides itself the rest of the time. (Overage
-is a weekly/account concept — there's no session overage.)
+Go past a limit and keep working on paid **usage credits**, and that window's bar
+switches to overage: it **empties its normal fill and restarts in red**, growing
+from the left by how far past 100% you are, while the percentage keeps climbing —
+so **20% over reads `120%`** — and a red **OVERAGE** tag joins the title. It works
+on **both** the Session (5h) and Weekly (7d) bars — whichever window you actually
+blew through — and clears itself the moment you drop back under 100%.
 
-![Clawdmeter-Windows weekly bar in overage — a full coral bar with a red overflow segment reading 120% and a red OVERAGE tag](assets/Screenshot-overage.png)
+![Clawdmeter-Windows in overage — the Session and Weekly bars restarted in red, climbing past 100% with a red OVERAGE tag beside each title](assets/Screenshot-overage.png)
 
 ## View modes
 
@@ -125,8 +124,9 @@ can keep tabs on several sessions in a fraction of the height.
 ![Clawdmeter-Windows compact view — usage bars above a one-row-per-session list with mascot, title, tokens and activity](assets/Screenshot-compact-list.png)
 
 **Mini** shrinks all the way to a frameless, always-on-top chip — the mini mascot
-beside your session and weekly percentages, each with its reset time. It keeps no
-taskbar entry and is draggable (it remembers where you left it).
+beside your session and weekly percentages, each with a thin usage bar and its
+reset time (and the same red overage restart past 100%). It keeps no taskbar
+entry and is draggable (it remembers where you left it).
 
 ![Clawdmeter-Windows mini view — a tiny always-on-top readout with the mascot and session and weekly percentages](assets/Screenshot-mini.png)
 
