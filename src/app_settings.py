@@ -30,6 +30,7 @@ KEY_RESET_NOTIFY_PUSH_TOPIC = "notify/reset_push_topic"
 KEY_RESET_NOTIFY_PUSH_TG_TOKEN = "notify/reset_push_tg_token"
 KEY_RESET_NOTIFY_PUSH_TG_CHAT = "notify/reset_push_tg_chat"
 KEY_RESET_NOTIFY_PUSH_DISCORD = "notify/reset_push_discord"
+KEY_RESET_NOTIFY_PUSH_CHANNELS = "notify/reset_push_channels"
 
 PUSH_PROVIDERS = ("ntfy", "telegram", "discord")
 
@@ -300,3 +301,39 @@ def get_reset_notify_push_discord() -> str:
 
 def set_reset_notify_push_discord(url: str) -> None:
     _settings().setValue(KEY_RESET_NOTIFY_PUSH_DISCORD, (url or "").strip())
+
+
+def push_channel_configured(provider: str) -> bool:
+    """True if a push channel has the value(s) it needs to send."""
+    if provider == "ntfy":
+        return bool(get_reset_notify_push_topic())
+    if provider == "telegram":
+        return bool(get_reset_notify_push_tg_token()
+                    and get_reset_notify_push_tg_chat())
+    if provider == "discord":
+        return bool(get_reset_notify_push_discord())
+    return False
+
+
+def get_reset_notify_push_channels() -> list[str]:
+    """The push channels the user has ADDED (any subset of PUSH_PROVIDERS), in
+    order. Migration: when unset, seed from any channel that already has a saved
+    value so an upgrading user keeps their configured push targets."""
+    raw = _settings().value(KEY_RESET_NOTIFY_PUSH_CHANNELS, None)
+    if raw is None:
+        return [p for p in PUSH_PROVIDERS if push_channel_configured(p)]
+    items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+    out: list[str] = []
+    for s in (str(x).strip().lower() for x in items):
+        if s in PUSH_PROVIDERS and s not in out:
+            out.append(s)
+    return out
+
+
+def set_reset_notify_push_channels(channels) -> None:
+    valid: list[str] = []
+    for c in channels:
+        c = str(c).strip().lower()
+        if c in PUSH_PROVIDERS and c not in valid:
+            valid.append(c)
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_CHANNELS, ",".join(valid))

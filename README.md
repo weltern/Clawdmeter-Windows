@@ -219,14 +219,17 @@ Open the settings panel from the gear icon in the title bar.
   You choose **where** it reaches you — pick either channel, or both. **Show a
   Windows notification** is the desktop toast plus a brief tray-icon flash, with
   **Play a sound** and **Pop the window to front** as sub-options under it; **Send
-  a push notification** delivers off this machine. The push reaches you via
-  **ntfy**, **Telegram**, or a **Discord webhook**: with [ntfy](https://ntfy.sh) (no account or API key) you subscribe
-  to a topic of your choosing in the ntfy app — pick a long, hard-to-guess topic
-  since anyone who knows it can read your alerts; with **Telegram** you create a
-  bot via @BotFather and enter its token and your chat ID; with **Discord** you
-  create an incoming webhook (Channel Settings → Integrations → Webhooks) and
-  paste its URL to have alerts land in that channel. Keep all of these secret —
-  anyone with the topic/token/URL can post to or read your alerts.
+  a push notification** delivers off this machine. Under push you can **add one or
+  more channels** with **Add a channel** (remove with ✕), and **every channel you
+  add fires** on a reset — so you can get an ntfy push *and* a Discord message at
+  once. The channels are **ntfy**, **Telegram**, and a **Discord webhook**: with
+  [ntfy](https://ntfy.sh) (no account or API key) you subscribe to a topic of your
+  choosing in the ntfy app — pick a long, hard-to-guess topic since anyone who
+  knows it can read your alerts; with **Telegram** you create a bot via @BotFather
+  and enter its token and your chat ID; with **Discord** you create an incoming
+  webhook (Channel Settings → Integrations → Webhooks) and paste its URL. Keep all
+  of these secret — anyone with the topic/token/URL can post to or read your
+  alerts. **Send test notification** fires every configured channel at once.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
   to pin).
 
