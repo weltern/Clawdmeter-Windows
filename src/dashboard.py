@@ -40,7 +40,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
@@ -808,7 +807,6 @@ class _PushChannelRow(QWidget):
     collapsible editor (the channel's field(s) + hint) revealed by Edit."""
 
     removed = Signal()
-    changed = Signal()
 
     def __init__(self, provider: str, name: str, parent=None) -> None:
         super().__init__(parent)
@@ -860,7 +858,6 @@ class _PushChannelRow(QWidget):
     def _on_field(self, field: QLineEdit, save) -> None:
         save(field.text())
         self._refresh()
-        self.changed.emit()
 
     def _toggle_edit(self) -> None:
         self.set_editing(not self._editor.isVisible())
@@ -881,7 +878,7 @@ class SettingsPanel(QWidget):
     area). Call open()/close() to animate. Position is set externally on
     parent resize."""
 
-    WIDTH = 280
+    WIDTH = 340
     ANIM_MS = 220
 
     # Emitted from the push-test worker thread; delivered on the UI thread.
@@ -1383,9 +1380,11 @@ class SettingsPanel(QWidget):
         threading.Thread(target=worker, name="push-test", daemon=True).start()
 
     def _on_test_push_result(self, ok: bool, msg: str) -> None:
-        self._sync_notify_subtoggles()  # re-enables the button (clears status)
+        self.notify_push_test_btn.setEnabled(True)  # re-enable after the send
+        # msg = "sent to ntfy, Discord" on success; capitalise + add a nudge.
+        nice = (msg[:1].upper() + msg[1:]) if msg else "Sent"
         self.notify_push_test_status.setText(
-            "Sent — check your notifications." if ok else f"Failed: {msg}"
+            f"{nice} — check your notifications." if ok else f"Failed: {msg}"
         )
 
     def _sync_notify_subtoggles(self) -> None:
