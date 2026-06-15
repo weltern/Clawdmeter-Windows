@@ -14,7 +14,16 @@ import types
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import remote_notify  # noqa: E402
-from remote_notify import resolve_url, send_ntfy, send_telegram  # noqa: E402
+from remote_notify import (  # noqa: E402
+    resolve_url,
+    send_discord,
+    send_gotify,
+    send_ntfy,
+    send_pushover,
+    send_slack,
+    send_telegram,
+    send_webhook,
+)
 
 
 def test_bare_topic_uses_default_server():
@@ -68,8 +77,9 @@ class _FakeClient:
     def __exit__(self, *a):
         return False
 
-    def post(self, url, content=None, headers=None, json=None):
-        _FakeClient.last.update(url=url, content=content, headers=headers, json=json)
+    def post(self, url, content=None, headers=None, json=None, data=None):
+        _FakeClient.last.update(url=url, content=content, headers=headers,
+                                json=json, data=data)
         return _FakeResp(_FakeClient.last.get("raise_exc"))
 
 
@@ -131,6 +141,90 @@ def test_telegram_reports_error():
     _install_fake_httpx(raise_exc=ValueError("boom"))
     ok, msg = send_telegram("BOTTOKEN", "98765", "t", "b")
     assert not ok and "Telegram push failed" in msg
+
+
+def test_discord_requires_url():
+    for bad in ("", "   ", None):
+        ok, msg = send_discord(bad, "t", "b")  # type: ignore[arg-type]
+        assert not ok and "empty" in msg
+
+
+def test_discord_rejects_non_url():
+    ok, msg = send_discord("not-a-url", "t", "b")
+    assert not ok and "https" in msg
+
+
+def test_discord_posts_expected_request():
+    _install_fake_httpx()
+    ok, msg = send_discord(
+        "https://discord.com/api/webhooks/1/abc", "Claude limit reset", "Resume now."
+    )
+    assert ok and msg == "sent"
+    sent = _FakeClient.last
+    assert sent["url"] == "https://discord.com/api/webhooks/1/abc"
+    assert sent["json"] == {"content": "**Claude limit reset**\nResume now."}
+
+
+def test_discord_reports_error():
+    _install_fake_httpx(raise_exc=ValueError("boom"))
+    ok, msg = send_discord("https://discord.com/api/webhooks/1/abc", "t", "b")
+    assert not ok and "Discord push failed" in msg
+
+
+def test_slack_posts_expected_request():
+    _install_fake_httpx()
+    ok, msg = send_slack("https://hooks.slack.com/services/x", "Claude limit reset",
+                         "Resume now.")
+    assert ok and msg == "sent"
+    assert _FakeClient.last["url"] == "https://hooks.slack.com/services/x"
+    assert _FakeClient.last["json"] == {"text": "*Claude limit reset*\nResume now."}
+
+
+def test_slack_rejects_empty_and_non_url():
+    ok, msg = send_slack("", "t", "b")
+    assert not ok and "empty" in msg
+    ok, msg = send_slack("not-a-url", "t", "b")
+    assert not ok and "https" in msg
+
+
+def test_webhook_posts_expected_json():
+    _install_fake_httpx()
+    ok, msg = send_webhook("https://example.com/hook", "T", "B")
+    assert ok and _FakeClient.last["json"] == {"title": "T", "body": "B", "app": "Clawdmeter"}
+
+
+def test_webhook_rejects_empty():
+    ok, msg = send_webhook("", "t", "b")
+    assert not ok and "empty" in msg
+
+
+def test_pushover_posts_expected_request():
+    _install_fake_httpx()
+    ok, msg = send_pushover("APPTOKEN", "USERKEY", "T", "B")
+    assert ok and _FakeClient.last["url"] == "https://api.pushover.net/1/messages.json"
+    assert _FakeClient.last["data"] == {
+        "token": "APPTOKEN", "user": "USERKEY", "title": "T", "message": "B"}
+
+
+def test_pushover_requires_token_and_user():
+    for tok, usr in (("", "u"), ("t", ""), ("", "")):
+        ok, msg = send_pushover(tok, usr, "t", "b")
+        assert not ok and "required" in msg
+
+
+def test_gotify_posts_expected_request():
+    _install_fake_httpx()
+    ok, msg = send_gotify("https://gotify.example.com/", "APPTOKEN", "T", "B")
+    assert ok and _FakeClient.last["url"] == "https://gotify.example.com/message"
+    assert _FakeClient.last["headers"]["X-Gotify-Key"] == "APPTOKEN"
+    assert _FakeClient.last["json"] == {"title": "T", "message": "B", "priority": 5}
+
+
+def test_gotify_requires_server_and_token():
+    ok, msg = send_gotify("", "tok", "t", "b")
+    assert not ok and "required" in msg
+    ok, msg = send_gotify("not-a-url", "tok", "t", "b")
+    assert not ok and "https" in msg
 
 
 if __name__ == "__main__":

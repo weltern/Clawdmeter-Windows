@@ -216,14 +216,21 @@ Open the settings panel from the gear icon in the title bar.
 
   ![Clawdmeter-Windows limit-reset notification — "Claude limit reset: Session limit has reset, you can resume"](assets/Screenshot-Session-Limit-Reset.png)
 
-  It shows a tray
-  notification and briefly flashes the tray icon; **Play a sound**, **Pop the
-  window to front**, and **Send a push to my phone** are optional extras you can
-  switch off. The phone push reaches you via either **ntfy** or **Telegram**:
-  with [ntfy](https://ntfy.sh) (no account or API key) you subscribe to a topic
-  of your choosing in the ntfy app — pick a long, hard-to-guess topic since
-  anyone who knows it can read your alerts; with **Telegram** you create a bot
-  via @BotFather and enter its token and your chat ID. Keep both secret.
+  You choose **where** it reaches you — pick either channel, or both. **Show a
+  Windows notification** is the desktop toast plus a brief tray-icon flash, with
+  **Play a sound** and **Pop the window to front** as sub-options under it; **Send
+  a push notification** delivers off this machine. Under push you can **add one or
+  more channels** with **Add a channel** (remove with ✕), and **every channel you
+  add fires** on a reset — so you can get, say, a Pushover *and* a Discord alert at
+  once. The channels are **[ntfy](https://ntfy.sh)** (subscribe to a hard-to-guess
+  topic in the ntfy app — no account needed), **Telegram** (a bot token from
+  @BotFather + your chat ID), **Discord** / **Slack** (an incoming-webhook URL),
+  **Pushover** (an app API token + your user key), **Gotify** (a self-hosted server
+  URL + app token), and a **generic webhook** (a JSON `{title, body, app}` POST to
+  any URL — wire it to Zapier / Make / IFTTT / n8n / Home Assistant). Each channel's
+  in-app hint says where to get its credential; keep topics/tokens/URLs secret,
+  since anyone with them can post to or read your alerts. **Send test notification**
+  fires every configured channel at once.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
   to pin).
 

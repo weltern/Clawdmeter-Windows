@@ -40,7 +40,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
@@ -204,6 +203,29 @@ QCheckBox::indicator:checked {
 }
 QWidget#scrim { background-color: rgba(0, 0, 0, 60); }
 
+/* Push-notification channel cards (Settings -> Notifications). */
+QWidget#pushCard {
+    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 6px;
+}
+QLabel#pushSummary { font-size: 12px; }
+QToolButton#pushEditBtn {
+    background: transparent; color: #9ca3af; border: 0;
+    padding: 2px 6px; border-radius: 4px; font-size: 11px;
+}
+QToolButton#pushEditBtn:hover { color: #CE7D6B; background-color: #1f2937; }
+QToolButton#pushRemoveBtn {
+    background: transparent; color: #6b7280; border: 0;
+    padding: 2px 7px; border-radius: 4px; font-size: 12px;
+}
+QToolButton#pushRemoveBtn:hover { color: #ffffff; background-color: #c13434; }
+QToolButton#addChannelBtn {
+    background: transparent; color: #CE7D6B; border: 1px dashed #374151;
+    padding: 5px 12px; border-radius: 6px; font-size: 11px;
+}
+QToolButton#addChannelBtn:hover { background-color: #1f2937; border-color: #CE7D6B; }
+QToolButton#addChannelBtn:disabled { color: #4b5563; border-color: #21262d; }
+QToolButton#addChannelBtn::menu-indicator { image: none; width: 0; }
+
 QWidget#miniRoot {
     background-color: #0e1116;
     border: 1px solid #CE7D6B;
@@ -256,29 +278,70 @@ def _tray_alert_pixmap() -> QPixmap:
     return pm
 
 
+PUSH_CHANNEL_NAMES = {
+    "ntfy": "ntfy", "telegram": "Telegram", "discord": "Discord",
+    "slack": "Slack", "pushover": "Pushover", "gotify": "Gotify",
+    "webhook": "Webhook",
+}
+
+
+def _active_push_channels() -> list[str]:
+    """Added channels that actually have the value(s) needed to send."""
+    return [c for c in app_settings.get_reset_notify_push_channels()
+            if app_settings.push_channel_configured(c)]
+
+
 def _push_configured() -> bool:
-    """True if the selected push provider has the credentials it needs."""
-    if app_settings.get_reset_notify_push_provider() == "telegram":
-        return bool(
-            app_settings.get_reset_notify_push_tg_token()
-            and app_settings.get_reset_notify_push_tg_chat()
-        )
-    return bool(app_settings.get_reset_notify_push_topic())
+    """True if at least one added push channel is ready to send."""
+    return bool(_active_push_channels())
+
+
+def _send_one_channel(provider: str, title: str, body: str) -> tuple[bool, str]:
+    if provider == "ntfy":
+        return remote_notify.send_ntfy(
+            app_settings.get_reset_notify_push_topic(), title, body)
+    if provider == "telegram":
+        return remote_notify.send_telegram(
+            app_settings.get_reset_notify_push_tg_token(),
+            app_settings.get_reset_notify_push_tg_chat(), title, body)
+    if provider == "discord":
+        return remote_notify.send_discord(
+            app_settings.get_reset_notify_push_discord(), title, body)
+    if provider == "slack":
+        return remote_notify.send_slack(
+            app_settings.get_reset_notify_push_slack(), title, body)
+    if provider == "webhook":
+        return remote_notify.send_webhook(
+            app_settings.get_reset_notify_push_webhook(), title, body)
+    if provider == "pushover":
+        return remote_notify.send_pushover(
+            app_settings.get_reset_notify_push_po_token(),
+            app_settings.get_reset_notify_push_po_user(), title, body)
+    if provider == "gotify":
+        return remote_notify.send_gotify(
+            app_settings.get_reset_notify_push_gotify_url(),
+            app_settings.get_reset_notify_push_gotify_token(), title, body)
+    return False, f"unknown channel {provider}"
 
 
 def _dispatch_push(title: str, body: str) -> tuple[bool, str]:
-    """Send a push via the configured provider. Shared by the reset
-    notification and the Settings test button so both exercise one code path."""
-    if app_settings.get_reset_notify_push_provider() == "telegram":
-        return remote_notify.send_telegram(
-            app_settings.get_reset_notify_push_tg_token(),
-            app_settings.get_reset_notify_push_tg_chat(),
-            title,
-            body,
-        )
-    return remote_notify.send_ntfy(
-        app_settings.get_reset_notify_push_topic(), title, body
-    )
+    """Send the push to EVERY added+configured channel. Shared by the reset
+    notification and the Settings test button so both exercise one code path.
+    Returns (all_ok, summary) — partial failures are reported, never raised."""
+    channels = _active_push_channels()
+    if not channels:
+        return False, "no push channels configured"
+    sent, failed = [], []
+    for c in channels:
+        ok, msg = _send_one_channel(c, title, body)
+        (sent if ok else failed).append((c, msg))
+    names = lambda items: ", ".join(PUSH_CHANNEL_NAMES.get(c, c) for c, _ in items)
+    if not failed:
+        return True, f"sent to {names(sent)}"
+    detail = "; ".join(f"{PUSH_CHANNEL_NAMES.get(c, c)}: {m}" for c, m in failed)
+    if sent:
+        return False, f"sent to {names(sent)}; failed — {detail}"
+    return False, f"failed — {detail}"
 
 
 class MiniWidget(QWidget):
@@ -735,12 +798,181 @@ class TitleBar(QWidget):
             e.accept()
 
 
+# Per-channel editor fields: (getter, setter, placeholder, is_secret). Telegram
+# needs two; ntfy/Discord one each.
+_PUSH_FIELD_SPECS = {
+    "ntfy": [(app_settings.get_reset_notify_push_topic,
+              app_settings.set_reset_notify_push_topic,
+              "ntfy topic (e.g. clawd-nick-7f3a) or full URL", False)],
+    "telegram": [
+        (app_settings.get_reset_notify_push_tg_token,
+         app_settings.set_reset_notify_push_tg_token,
+         "Telegram bot token (from @BotFather)", True),
+        (app_settings.get_reset_notify_push_tg_chat,
+         app_settings.set_reset_notify_push_tg_chat,
+         "Telegram chat ID (e.g. 123456789)", False)],
+    "discord": [(app_settings.get_reset_notify_push_discord,
+                 app_settings.set_reset_notify_push_discord,
+                 "Discord webhook URL", True)],
+    "slack": [(app_settings.get_reset_notify_push_slack,
+               app_settings.set_reset_notify_push_slack,
+               "Slack incoming webhook URL", True)],
+    "webhook": [(app_settings.get_reset_notify_push_webhook,
+                 app_settings.set_reset_notify_push_webhook,
+                 "Webhook URL (receives a JSON POST)", True)],
+    "pushover": [
+        (app_settings.get_reset_notify_push_po_token,
+         app_settings.set_reset_notify_push_po_token,
+         "Pushover application API token", True),
+        (app_settings.get_reset_notify_push_po_user,
+         app_settings.set_reset_notify_push_po_user,
+         "Pushover user key", True)],
+    "gotify": [
+        (app_settings.get_reset_notify_push_gotify_url,
+         app_settings.set_reset_notify_push_gotify_url,
+         "Gotify server URL (e.g. https://gotify.example.com)", False),
+        (app_settings.get_reset_notify_push_gotify_token,
+         app_settings.set_reset_notify_push_gotify_token,
+         "Gotify app token", True)],
+}
+_PUSH_HINTS = {
+    "ntfy": "Subscribe to the same topic in the ntfy app (Android/iOS). Pick a "
+            "long, hard-to-guess topic — anyone who knows it can read your alerts.",
+    "telegram": "Message @BotFather to create a bot and copy its token, then DM "
+                "the bot and read your chat ID from "
+                "api.telegram.org/bot<token>/getUpdates. Keep the token private.",
+    "discord": "In Discord: Channel Settings → Integrations → Webhooks → New "
+               "Webhook → Copy URL. Anyone with the URL can post there, so keep "
+               "it private.",
+    "slack": "In Slack: create an Incoming Webhook for a channel "
+             "(api.slack.com/messaging/webhooks) and paste its URL. Keep it private.",
+    "webhook": "POSTs JSON {title, body, app} to any URL — wire it to Zapier, "
+               "Make, IFTTT, n8n, Home Assistant, or your own endpoint.",
+    "pushover": "Create an application at pushover.net for the API token; your "
+                "user key is on your Pushover dashboard. Get the app on iOS/Android.",
+    "gotify": "Self-hosted Gotify: your server URL plus an application token "
+              "from the Gotify apps page.",
+}
+
+
+def _push_channel_summary(provider: str) -> str:
+    """Short glanceable state for a channel row (the non-secret topic for ntfy,
+    a 'set'/'not set' for the secret channels)."""
+    def both(a: str, b: str, ok: str) -> str:
+        if a and b:
+            return ok
+        return "incomplete" if (a or b) else "not set"
+
+    if provider == "ntfy":
+        return app_settings.get_reset_notify_push_topic() or "not set"
+    if provider == "telegram":
+        return both(app_settings.get_reset_notify_push_tg_token(),
+                    app_settings.get_reset_notify_push_tg_chat(), "bot + chat set")
+    if provider == "discord":
+        return "webhook set" if app_settings.get_reset_notify_push_discord() else "not set"
+    if provider == "slack":
+        return "webhook set" if app_settings.get_reset_notify_push_slack() else "not set"
+    if provider == "webhook":
+        return "URL set" if app_settings.get_reset_notify_push_webhook() else "not set"
+    if provider == "pushover":
+        return both(app_settings.get_reset_notify_push_po_token(),
+                    app_settings.get_reset_notify_push_po_user(), "token + user key set")
+    if provider == "gotify":
+        return both(app_settings.get_reset_notify_push_gotify_url(),
+                    app_settings.get_reset_notify_push_gotify_token(), "server + token set")
+    return ""
+
+
+class _PushChannelRow(QWidget):
+    """One added push channel as a small card: a glanceable status line (a
+    coral/dim dot + name + muted summary) with flat Edit/✕ actions, and a
+    collapsible editor (the channel's field(s) + hint) revealed by Edit."""
+
+    removed = Signal()
+
+    def __init__(self, provider: str, name: str, parent=None) -> None:
+        super().__init__(parent)
+        self._provider = provider
+        self._name = name
+        self.setObjectName("pushCard")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(10, 7, 7, 7)
+        col.setSpacing(5)
+
+        head = QHBoxLayout()
+        head.setSpacing(4)
+        self._summary = QLabel(objectName="pushSummary")
+        self._summary.setTextFormat(Qt.RichText)
+        head.addWidget(self._summary)
+        head.addStretch(1)
+        self._edit_btn = QToolButton(objectName="pushEditBtn")
+        self._edit_btn.setText("Edit")
+        self._edit_btn.setCursor(Qt.PointingHandCursor)
+        self._edit_btn.clicked.connect(self._toggle_edit)
+        head.addWidget(self._edit_btn)
+        rm = QToolButton(objectName="pushRemoveBtn")
+        rm.setText("✕")
+        rm.setToolTip(f"Remove {name}")
+        rm.setCursor(Qt.PointingHandCursor)
+        rm.clicked.connect(self.removed.emit)
+        head.addWidget(rm)
+        col.addLayout(head)
+
+        self._editor = QWidget()
+        ed = QVBoxLayout(self._editor)
+        ed.setContentsMargins(2, 2, 0, 0)
+        ed.setSpacing(4)
+        for getter, setter, placeholder, secret in _PUSH_FIELD_SPECS[provider]:
+            f = QLineEdit()
+            f.setPlaceholderText(placeholder)
+            if secret:
+                f.setEchoMode(QLineEdit.Password)
+            f.setText(getter())
+            f.editingFinished.connect(
+                lambda field=f, save=setter: self._on_field(field, save))
+            ed.addWidget(f)
+        hint = _PUSH_HINTS.get(provider)
+        if hint:
+            h = QLabel(hint, objectName="sectionHint")
+            h.setWordWrap(True)
+            ed.addWidget(h)
+        self._first_field = self._editor.findChild(QLineEdit)
+        col.addWidget(self._editor)
+        self._editor.setVisible(False)
+        self._refresh()
+
+    def _on_field(self, field: QLineEdit, save) -> None:
+        save(field.text())
+        self._refresh()
+
+    def _toggle_edit(self) -> None:
+        self.set_editing(not self._editor.isVisible())
+
+    def set_editing(self, on: bool) -> None:
+        self._editor.setVisible(on)
+        self._edit_btn.setText("Done" if on else "Edit")
+        if on and self._first_field is not None:
+            self._first_field.setFocus()
+
+    def _refresh(self) -> None:
+        configured = app_settings.push_channel_configured(self._provider)
+        dot = "#CE7D6B" if configured else "#4b5563"
+        summary = _push_channel_summary(self._provider)
+        summary = (summary.replace("&", "&amp;").replace("<", "&lt;")
+                   .replace(">", "&gt;"))  # the ntfy topic is user-supplied
+        self._summary.setText(
+            f"<span style='color:{dot}'>●</span>&nbsp;&nbsp;"
+            f"<span style='color:#e6edf3'>{self._name}</span>&nbsp;&nbsp;"
+            f"<span style='color:#6b7280'>· {summary}</span>")
+
+
 class SettingsPanel(QWidget):
     """Right-side slide-in panel. Lives as a child of `parent` (the content
     area). Call open()/close() to animate. Position is set externally on
     parent resize."""
 
-    WIDTH = 280
+    WIDTH = 340
     ANIM_MS = 220
 
     # Emitted from the push-test worker thread; delivered on the UI thread.
@@ -951,82 +1183,65 @@ class SettingsPanel(QWidget):
         self.notify_check.toggled.connect(self._on_notify_toggled)
         layout.addWidget(self.notify_check)
 
-        self.notify_sound_check = QCheckBox("    Play a sound")
+        # Windows channel: the desktop toast + tray flash (indented under the
+        # master), with Play-a-sound / Pop-to-front nested in an indented box so
+        # they hide together when the channel — or the master — is off.
+        self.notify_toast_check = QCheckBox("Show a Windows notification")
+        self.notify_toast_check.setStyleSheet("margin-left: 22px;")
+        self.notify_toast_check.setChecked(app_settings.get_reset_notify_toast())
+        self.notify_toast_check.toggled.connect(self._on_notify_toast_toggled)
+        layout.addWidget(self.notify_toast_check)
+
+        self.notify_toast_box = QWidget()
+        toast_box = QVBoxLayout(self.notify_toast_box)
+        toast_box.setContentsMargins(44, 0, 0, 0)
+        toast_box.setSpacing(6)
+        self.notify_sound_check = QCheckBox("Play a sound")
         self.notify_sound_check.setChecked(app_settings.get_reset_notify_sound())
         self.notify_sound_check.toggled.connect(self._on_notify_sound_toggled)
-        layout.addWidget(self.notify_sound_check)
-
-        self.notify_popup_check = QCheckBox("    Pop the window to front")
+        toast_box.addWidget(self.notify_sound_check)
+        self.notify_popup_check = QCheckBox("Pop the window to front")
         self.notify_popup_check.setChecked(app_settings.get_reset_notify_popup())
         self.notify_popup_check.toggled.connect(self._on_notify_popup_toggled)
-        layout.addWidget(self.notify_popup_check)
+        toast_box.addWidget(self.notify_popup_check)
+        layout.addWidget(self.notify_toast_box)
 
-        self.notify_push_check = QCheckBox("    Send a push to my phone")
+        self.notify_push_check = QCheckBox("Send a push notification")
+        self.notify_push_check.setStyleSheet("margin-left: 22px;")
         self.notify_push_check.setChecked(app_settings.get_reset_notify_push())
         self.notify_push_check.toggled.connect(self._on_notify_push_toggled)
         layout.addWidget(self.notify_push_check)
 
-        push_provider_row = QHBoxLayout()
-        push_provider_row.addWidget(QLabel("    via"))
-        self.notify_push_provider = QComboBox()
-        self.notify_push_provider.addItem("ntfy", "ntfy")
-        self.notify_push_provider.addItem("Telegram", "telegram")
-        idx = self.notify_push_provider.findData(app_settings.get_reset_notify_push_provider())
-        self.notify_push_provider.setCurrentIndex(max(0, idx))
-        self.notify_push_provider.currentIndexChanged.connect(
-            self._on_notify_push_provider_changed
-        )
-        push_provider_row.addWidget(self.notify_push_provider, 1)
-        layout.addLayout(push_provider_row)
+        # Push sub-box: a list of the channels you've ADDED (each a summary row
+        # with edit/remove), an "Add a channel" menu, and one test button that
+        # fires every configured channel. Hides as a unit when push is off.
+        self.notify_push_box = QWidget()
+        push_box = QVBoxLayout(self.notify_push_box)
+        push_box.setContentsMargins(44, 0, 0, 0)
+        push_box.setSpacing(6)
 
-        # ntfy fields
-        self.notify_push_topic = QLineEdit()
-        self.notify_push_topic.setPlaceholderText(
-            "ntfy topic (e.g. clawd-nick-7f3a) or full URL"
-        )
-        self.notify_push_topic.setText(app_settings.get_reset_notify_push_topic())
-        self.notify_push_topic.editingFinished.connect(self._on_notify_push_topic_changed)
-        layout.addWidget(self.notify_push_topic)
-        self.notify_push_ntfy_hint = QLabel(
-            "Subscribe to the same topic in the ntfy app (Android/iOS). Pick a "
-            "long, hard-to-guess topic — anyone who knows it can read your alerts.",
-            objectName="sectionHint",
-        )
-        self.notify_push_ntfy_hint.setWordWrap(True)
-        layout.addWidget(self.notify_push_ntfy_hint)
+        self.notify_push_list = QVBoxLayout()
+        self.notify_push_list.setSpacing(6)
+        push_box.addLayout(self.notify_push_list)
 
-        # Telegram fields
-        self.notify_push_tg_token = QLineEdit()
-        self.notify_push_tg_token.setPlaceholderText("Telegram bot token (from @BotFather)")
-        self.notify_push_tg_token.setEchoMode(QLineEdit.Password)
-        self.notify_push_tg_token.setText(app_settings.get_reset_notify_push_tg_token())
-        self.notify_push_tg_token.editingFinished.connect(
-            self._on_notify_push_tg_token_changed
-        )
-        layout.addWidget(self.notify_push_tg_token)
-        self.notify_push_tg_chat = QLineEdit()
-        self.notify_push_tg_chat.setPlaceholderText("Telegram chat ID (e.g. 123456789)")
-        self.notify_push_tg_chat.setText(app_settings.get_reset_notify_push_tg_chat())
-        self.notify_push_tg_chat.editingFinished.connect(
-            self._on_notify_push_tg_chat_changed
-        )
-        layout.addWidget(self.notify_push_tg_chat)
-        self.notify_push_tg_hint = QLabel(
-            "Message @BotFather to create a bot and copy its token, then DM your "
-            "bot and read your chat ID from "
-            "api.telegram.org/bot<token>/getUpdates. Keep the token private.",
-            objectName="sectionHint",
-        )
-        self.notify_push_tg_hint.setWordWrap(True)
-        layout.addWidget(self.notify_push_tg_hint)
+        self.notify_push_add_btn = QToolButton(objectName="addChannelBtn")
+        self.notify_push_add_btn.setText("+ Add a channel  ▾")
+        self.notify_push_add_btn.setCursor(Qt.PointingHandCursor)
+        self.notify_push_add_btn.setPopupMode(QToolButton.InstantPopup)
+        self.notify_push_add_menu = QMenu(self.notify_push_add_btn)
+        self.notify_push_add_btn.setMenu(self.notify_push_add_menu)
+        push_box.addWidget(self.notify_push_add_btn, alignment=Qt.AlignLeft)
 
         self.notify_push_test_btn = QPushButton("Send test notification")
         self.notify_push_test_btn.clicked.connect(self._on_test_push_clicked)
-        layout.addWidget(self.notify_push_test_btn)
+        push_box.addWidget(self.notify_push_test_btn)
         self.notify_push_test_status = QLabel("", objectName="sectionHint")
         self.notify_push_test_status.setWordWrap(True)
-        layout.addWidget(self.notify_push_test_status)
+        push_box.addWidget(self.notify_push_test_status)
+        layout.addWidget(self.notify_push_box)
         self._push_test_result.connect(self._on_test_push_result)
+        self._push_rows: dict[str, _PushChannelRow] = {}
+        self._rebuild_push_channels()
 
         self._sync_notify_subtoggles()
 
@@ -1193,6 +1408,10 @@ class SettingsPanel(QWidget):
         app_settings.set_reset_notify(checked)
         self._sync_notify_subtoggles()
 
+    def _on_notify_toast_toggled(self, checked: bool) -> None:
+        app_settings.set_reset_notify_toast(checked)
+        self._sync_notify_subtoggles()
+
     def _on_notify_sound_toggled(self, checked: bool) -> None:
         app_settings.set_reset_notify_sound(checked)
 
@@ -1203,18 +1422,42 @@ class SettingsPanel(QWidget):
         app_settings.set_reset_notify_push(checked)
         self._sync_notify_subtoggles()
 
-    def _on_notify_push_provider_changed(self) -> None:
-        app_settings.set_reset_notify_push_provider(self.notify_push_provider.currentData())
-        self._sync_notify_subtoggles()
+    def _rebuild_push_channels(self) -> None:
+        """Re-render the added-channel rows from settings and refresh the
+        Add-a-channel menu (which only offers channels not yet added)."""
+        for row in self._push_rows.values():
+            self.notify_push_list.removeWidget(row)
+            row.deleteLater()
+        self._push_rows = {}
+        for provider in app_settings.get_reset_notify_push_channels():
+            row = _PushChannelRow(provider, PUSH_CHANNEL_NAMES.get(provider, provider))
+            row.removed.connect(lambda p=provider: self._remove_push_channel(p))
+            self.notify_push_list.addWidget(row)
+            self._push_rows[provider] = row
+        self._refresh_push_add_menu()
 
-    def _on_notify_push_topic_changed(self) -> None:
-        app_settings.set_reset_notify_push_topic(self.notify_push_topic.text())
+    def _refresh_push_add_menu(self) -> None:
+        self.notify_push_add_menu.clear()
+        remaining = [p for p in app_settings.PUSH_PROVIDERS if p not in self._push_rows]
+        for p in remaining:
+            act = self.notify_push_add_menu.addAction(PUSH_CHANNEL_NAMES.get(p, p))
+            act.triggered.connect(lambda _checked=False, prov=p: self._add_push_channel(prov))
+        self.notify_push_add_btn.setEnabled(bool(remaining))
 
-    def _on_notify_push_tg_token_changed(self) -> None:
-        app_settings.set_reset_notify_push_tg_token(self.notify_push_tg_token.text())
+    def _add_push_channel(self, provider: str) -> None:
+        chans = app_settings.get_reset_notify_push_channels()
+        if provider not in chans:
+            chans.append(provider)
+            app_settings.set_reset_notify_push_channels(chans)
+        self._rebuild_push_channels()
+        row = self._push_rows.get(provider)
+        if row is not None:
+            row.set_editing(True)  # open the new row so the field is ready to fill
 
-    def _on_notify_push_tg_chat_changed(self) -> None:
-        app_settings.set_reset_notify_push_tg_chat(self.notify_push_tg_chat.text())
+    def _remove_push_channel(self, provider: str) -> None:
+        chans = [c for c in app_settings.get_reset_notify_push_channels() if c != provider]
+        app_settings.set_reset_notify_push_channels(chans)
+        self._rebuild_push_channels()
 
     def _on_test_push_clicked(self) -> None:
         """Send a one-off push with the current settings so the user can verify
@@ -1232,33 +1475,29 @@ class SettingsPanel(QWidget):
         threading.Thread(target=worker, name="push-test", daemon=True).start()
 
     def _on_test_push_result(self, ok: bool, msg: str) -> None:
-        self._sync_notify_subtoggles()  # re-enables the button (clears status)
+        self.notify_push_test_btn.setEnabled(True)  # re-enable after the send
+        # msg = "sent to ntfy, Discord" on success; capitalise + add a nudge.
+        nice = (msg[:1].upper() + msg[1:]) if msg else "Sent"
         self.notify_push_test_status.setText(
-            "Sent — check your phone." if ok else f"Failed: {msg}"
+            f"{nice} — check your notifications." if ok else f"Failed: {msg}"
         )
 
     def _sync_notify_subtoggles(self) -> None:
-        """Grey out the per-method sub-toggles when the master switch is off, and
-        show only the selected push provider's credential fields."""
+        """Show/hide the notification sub-options to match the hierarchy: the
+        master off hides both channels; each channel's sub-box (Windows
+        sound/pop, or the push channel list) hides when that channel is off."""
         on = self.notify_check.isChecked()
-        self.notify_sound_check.setEnabled(on)
-        self.notify_popup_check.setEnabled(on)
-        self.notify_push_check.setEnabled(on)
+        # Both channel toggles hide entirely when the master is off.
+        self.notify_toast_check.setVisible(on)
+        self.notify_push_check.setVisible(on)
 
+        # Windows channel sub-box (sound + pop): only when master + Windows on.
+        toast_on = on and self.notify_toast_check.isChecked()
+        self.notify_toast_box.setVisible(toast_on)
+
+        # Push channel sub-box (the added-channel list): only when master + push on.
         push_on = on and self.notify_push_check.isChecked()
-        self.notify_push_provider.setEnabled(push_on)
-        is_ntfy = self.notify_push_provider.currentData() == "ntfy"
-
-        # Only the chosen provider's fields are shown; both enable with push.
-        self.notify_push_topic.setVisible(is_ntfy)
-        self.notify_push_ntfy_hint.setVisible(is_ntfy)
-        self.notify_push_tg_token.setVisible(not is_ntfy)
-        self.notify_push_tg_chat.setVisible(not is_ntfy)
-        self.notify_push_tg_hint.setVisible(not is_ntfy)
-        self.notify_push_topic.setEnabled(push_on)
-        self.notify_push_tg_token.setEnabled(push_on)
-        self.notify_push_tg_chat.setEnabled(push_on)
-        self.notify_push_test_btn.setEnabled(push_on)
+        self.notify_push_box.setVisible(push_on)
         if not push_on:
             self.notify_push_test_status.clear()
 
@@ -1982,14 +2221,16 @@ class Dashboard(QMainWindow):
         title = "Claude limit reset"
         body = f"{which} limit has reset — you can resume."
 
-        # Themed toast + tray flash always accompany the master toggle.
-        self._toast.show_message(title, body)
-        self._start_tray_flash()
-
-        if app_settings.get_reset_notify_sound():
-            QApplication.beep()
-        if app_settings.get_reset_notify_popup():
-            self._show_window()
+        # Windows channel: the themed toast + tray flash, with sound and
+        # window-pop as its sub-options. Off -> the push channel can still fire,
+        # so the user can choose to be notified only on their phone/Discord.
+        if app_settings.get_reset_notify_toast():
+            self._toast.show_message(title, body)
+            self._start_tray_flash()
+            if app_settings.get_reset_notify_sound():
+                QApplication.beep()
+            if app_settings.get_reset_notify_popup():
+                self._show_window()
         if app_settings.get_reset_notify_push():
             self._send_push(title, body)
 
