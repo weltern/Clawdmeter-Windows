@@ -67,7 +67,7 @@ from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIA
 import remote_notify
 from reset_notify import ResetDecision, ResetNotifier
 from session_shelf import (
-    _BAR_OVERAGE, CompactView, SessionShelf, UsageBar, square_caret_icon,
+    CompactView, SessionShelf, UsageBar, apply_overage_bar, square_caret_icon,
 )
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
@@ -323,9 +323,9 @@ class MiniWidget(QWidget):
         # right-aligned percentage with a small absolute reset time so the
         # rolling 5h / 7d windows are visible at a glance.
         stack = QVBoxLayout()
-        stack.setSpacing(2)
-        self.session_pct, self.session_reset = self._row(stack, "miniPct")
-        self.weekly_pct, self.weekly_reset = self._row(stack, "miniPctSub")
+        stack.setSpacing(3)
+        self.session_pct, self.session_reset, self.session_bar = self._row(stack, "miniPct")
+        self.weekly_pct, self.weekly_reset, self.weekly_bar = self._row(stack, "miniPctSub")
         row.addLayout(stack, 1)
 
         menu = QMenu(self)
@@ -355,13 +355,30 @@ class MiniWidget(QWidget):
         line.addWidget(reset)
         line.addStretch(1)
         parent_layout.addLayout(line)
-        return pct, reset
+        # A thin usage bar under each line so the mini mirrors the full view's
+        # bars, including the red overage restart past 100%.
+        bar = UsageBar(height=6)
+        bar.setMinimumWidth(130)
+        parent_layout.addWidget(bar)
+        return pct, reset, bar
 
     def update_usage(self, session_pct: int, weekly_pct: int,
                      session_reset_minutes: int, weekly_reset_minutes: int) -> None:
-        self.session_pct.setText(f"{session_pct}%")
-        self.weekly_pct.setText(f"{weekly_pct}%")
+        self._set_bar(self.session_pct, self.session_bar, session_pct)
+        self._set_bar(self.weekly_pct, self.weekly_bar, weekly_pct)
         self.set_resets(session_reset_minutes, weekly_reset_minutes)
+
+    @staticmethod
+    def _set_bar(pct_label, bar, pct: int) -> None:
+        """Mirror the full-view bar: heat fill under 100%, red restart past it
+        (the bar empties and fills red by the amount over 100)."""
+        pct = max(0, int(pct))
+        over = max(0, pct - 100)
+        if over > 0:
+            bar.set_values(0, over, "cool")
+        else:
+            bar.set_values(pct, 0, _heat(pct))
+        pct_label.setText(f"{pct}%")
 
     def set_resets(self, session_reset_minutes: int, weekly_reset_minutes: int) -> None:
         """Reset labels in the same relative form as the main window."""
@@ -1403,7 +1420,7 @@ class Dashboard(QMainWindow):
         group_session.setContentsMargins(0, 0, 0, 0)
         group_session.setSpacing(6)
         group_session.addWidget(self.group_label)
-        self.session_row, _, self.session_pct, self.session_bar, self.session_reset = self._build_row("SESSION (5h)")
+        self.session_row, self.session_title, self.session_pct, self.session_bar, self.session_reset = self._build_row("SESSION (5h)")
         group_session.addLayout(self.session_row)
         layout.addLayout(group_session)
         self.weekly_row, self.weekly_title, self.weekly_pct, self.weekly_bar, self.weekly_reset = self._build_row("WEEKLY (7d)")
@@ -1757,21 +1774,19 @@ class Dashboard(QMainWindow):
         self._mock_sample_timer = QTimer(self)
 
         def sample_tick():
-            self._mock_pct = (self._mock_pct + 1) % 100
-            # Occasionally drive overage > 0 so the self-hiding red overage
-            # state on the weekly bar is visible in mock mode.
-            overage = max(0, self._mock_pct - 75)
+            # Cycle 0..129 so both windows cross 100% — the per-window red
+            # overage state on the SESSION and WEEKLY bars is visible in mock
+            # (weekly is offset so the two cross at different times).
+            self._mock_pct = (self._mock_pct + 1) % 130
             self._on_sample(UsageSample(
                 session_pct=self._mock_pct,
                 session_reset_minutes=140,
-                weekly_pct=18,
+                weekly_pct=(self._mock_pct + 65) % 130,
                 weekly_reset_minutes=4 * 24 * 60 + 6 * 60,
                 status="ok (mock)",
                 ok=True,
                 error=None,
                 timestamp=time.time(),
-                overage_pct=overage,
-                overage_reset_minutes=12 * 24 * 60,
                 tokens_5h=914_000,
                 tokens_7d=19_400_000,
             ))
@@ -1929,33 +1944,19 @@ class Dashboard(QMainWindow):
             self._last_tooltip = ""  # force a fresh stats tooltip on recovery
             return
 
-        self.session_pct.setText(f"{s.session_pct}%")
-        self.session_bar.set_values(s.session_pct, 0, _heat(s.session_pct))
-
-        if s.overage_pct > 0:
-            # Past the weekly cap into paid overage: the weekly bar stays full in
-            # its normal colour, a red OVERAGE tag joins the label, and a red
-            # segment continues past 100% (so 20% overage reads 120%).
-            self.weekly_title.setText(
-                f'WEEKLY (7d) <span style="color:{_BAR_OVERAGE}; font-weight:700">'
-                'OVERAGE</span>')
-            self.weekly_pct.setText(f"{100 + s.overage_pct}%")
-            # Base stays the normal (coral) fill so the red overage clearly
-            # continues after it, left-to-right — not a wall of red.
-            self.weekly_bar.set_values(100, s.overage_pct, "cool")
-        else:
-            self.weekly_title.setText("WEEKLY (7d)")
-            self.weekly_pct.setText(f"{s.weekly_pct}%")
-            self.weekly_bar.set_values(s.weekly_pct, 0, _heat(s.weekly_pct))
+        # Each window handles its own overage: once 5h / 7d crosses 100% the bar
+        # restarts red and a red OVERAGE tag joins its title.
+        apply_overage_bar(self.session_title, self.session_pct, self.session_bar,
+                          "SESSION (5h)", s.session_pct)
+        apply_overage_bar(self.weekly_title, self.weekly_pct, self.weekly_bar,
+                          "WEEKLY (7d)", s.weekly_pct)
 
         self._refresh_reset_lines(
-            s, s.session_reset_minutes, s.weekly_reset_minutes,
-            s.overage_reset_minutes)
+            s, s.session_reset_minutes, s.weekly_reset_minutes)
 
         self._sync_mini(s)
         self._update_compact_usage(
-            s, s.session_reset_minutes, s.weekly_reset_minutes,
-            s.overage_reset_minutes)
+            s, s.session_reset_minutes, s.weekly_reset_minutes)
 
         self._rate.observe(s.session_pct)
         # While the shelf is up it owns the mascots (per-session tiles + the
@@ -2157,18 +2158,14 @@ class Dashboard(QMainWindow):
             line += f" · {fmt_tokens(tokens)}"
         return line
 
-    def _refresh_reset_lines(self, s: UsageSample, sr: int, wr: int, ovr: int) -> None:
-        """Render the session/weekly reset lines (overage-aware) with the
-        per-window token total appended when the token display is on. Shared by
-        the poll handler and the 1s countdown so they never disagree (and so the
-        countdown can't clobber the overage line)."""
+    def _refresh_reset_lines(self, s: UsageSample, sr: int, wr: int) -> None:
+        """Render the session/weekly reset lines with the per-window token total
+        appended when the token display is on. Shared by the poll handler and the
+        1s countdown so they never disagree. Overage is part of the same window
+        now (the bar/title go red past 100%), so the reset is just the 5h / 7d
+        reset — no separate overage clock."""
         self.session_reset.setText(self._reset_line(sr, s.tokens_5h))
-        # The weekly bar stays the weekly bar even in overage (overage is the red
-        # overflow on top), so its reset line is always the weekly reset + tokens;
-        # the overage's own (longer) reset rides a tooltip on the bar.
         self.weekly_reset.setText(self._reset_line(wr, s.tokens_7d))
-        self.weekly_bar.setToolTip(
-            f"Overage resets in {_format_minutes(ovr)}" if s.overage_pct > 0 else "")
 
     def _tick_countdown(self) -> None:
         s = self._last_sample
@@ -2177,10 +2174,9 @@ class Dashboard(QMainWindow):
         elapsed_min = int((time.time() - s.timestamp) // 60)
         sr = max(0, s.session_reset_minutes - elapsed_min)
         wr = max(0, s.weekly_reset_minutes - elapsed_min)
-        ovr = max(0, s.overage_reset_minutes - elapsed_min)
-        self._refresh_reset_lines(s, sr, wr, ovr)
+        self._refresh_reset_lines(s, sr, wr)
         self.mini.set_resets(sr, wr)
-        self._update_compact_usage(s, sr, wr, ovr)
+        self._update_compact_usage(s, sr, wr)
         self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
 
     def _on_sessions(self, states: list[TranscriptState]) -> None:
@@ -2261,9 +2257,8 @@ class Dashboard(QMainWindow):
             elapsed_min = int((time.time() - s.timestamp) // 60)
             sr = max(0, s.session_reset_minutes - elapsed_min)
             wr = max(0, s.weekly_reset_minutes - elapsed_min)
-            ovr = max(0, s.overage_reset_minutes - elapsed_min)
-            self._refresh_reset_lines(s, sr, wr, ovr)
-            self._update_compact_usage(s, sr, wr, ovr)
+            self._refresh_reset_lines(s, sr, wr)
+            self._update_compact_usage(s, sr, wr)
             self._set_tray_tooltip(s.session_pct, sr, s.weekly_pct, wr)
         # Re-render the shelf so mascot-hover tooltips appear/disappear at once.
         self._apply_session_view()
@@ -2433,13 +2428,12 @@ class Dashboard(QMainWindow):
             cv.update_usage(s,
                             max(0, s.session_reset_minutes - e),
                             max(0, s.weekly_reset_minutes - e),
-                            max(0, s.overage_reset_minutes - e),
                             app_settings.get_show_token_usage())
 
-    def _update_compact_usage(self, s, sr: int, wr: int, ovr: int) -> None:
+    def _update_compact_usage(self, s, sr: int, wr: int) -> None:
         cv = getattr(self, "compact_view", None)
         if cv is not None and cv.isVisible():
-            cv.update_usage(s, sr, wr, ovr, app_settings.get_show_token_usage())
+            cv.update_usage(s, sr, wr, app_settings.get_show_token_usage())
 
     def _show_window(self) -> None:
         """Bring the app to the front for a notification / toast click / second

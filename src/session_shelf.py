@@ -339,15 +339,16 @@ def square_caret_icon(up: bool, color: str = "#CE7D6B", px: int = 16) -> QIcon:
 
 
 class UsageBar(QWidget):
-    """A usage bar that can render PAST 100%. The base fills 0–100% in its heat
-    colour; any overage continues in red, with the scale extended so the 100%
-    mark sits proportionally (20% overage -> the bar is full, its last 1/6 red).
-    Shared by the full window and the compact view."""
+    """A usage bar that handles overage per-window. Below 100% it fills 0–100%
+    in its heat colour. Once the window is in overage the heat fill is dropped
+    and the bar RESTARTS in red, filling from the left by the amount past 100%
+    (so 120% shows a red bar ~1/5 full). Shared by the full window and the
+    compact view."""
 
     def __init__(self, parent=None, *, height: int = 14) -> None:
         super().__init__(parent)
-        self._value = 0      # base utilisation 0..100
-        self._overage = 0    # overage beyond 100 (0 = none)
+        self._value = 0      # base utilisation 0..100 (drawn when not in overage)
+        self._overage = 0    # amount past 100 (0 = none); when >0 the bar is red
         self._heat = "cool"
         self.setFixedHeight(height)
 
@@ -371,22 +372,40 @@ class UsageBar(QWidget):
         w, h, x, y = inner.width(), inner.height(), inner.x(), inner.y()
         p.setPen(Qt.NoPen)
         if self._overage > 0:
-            # Bar represents 0..(100+overage). The overage builds from the LEFT
-            # in red, then the normal (coral) weekly fill continues to its right
-            # — so the red grows left-to-right as overage climbs.
-            scale = 100 + self._overage
-            over_w = int(round(w * self._overage / scale))
+            # Overage: the window is maxed, so the heat fill is gone and the bar
+            # restarts in red, filling from the left by the amount past 100%
+            # (capped at a second full bar at 200%).
+            over_w = int(round(w * min(self._overage, 100) / 100))
             if over_w > 0:
                 p.setBrush(QColor(_BAR_OVERAGE))
                 p.drawRect(x, y, over_w, h)
-            p.setBrush(QColor(_BAR_HEAT[self._heat]))
-            p.drawRect(x + over_w, y, w - over_w, h)
         else:
             base_w = int(round(w * min(self._value, 100) / 100))
             if base_w > 0:
                 p.setBrush(QColor(_BAR_HEAT[self._heat]))
                 p.drawRect(x, y, base_w, h)
         p.end()
+
+
+def apply_overage_bar(title_label, pct_label, bar, title: str, pct: int) -> None:
+    """Render one usage bar's title, percentage and fill with per-window overage.
+
+    Under 100% the bar fills in its heat colour and the title is plain. At/over
+    100% the window is in overage: the bar restarts red (the amount past 100),
+    the title gains a red OVERAGE tag, and the percent shows the full figure
+    (e.g. 120%). Shared by the full window's SESSION/WEEKLY bars and the compact
+    view's rows so both behave identically."""
+    pct = max(0, int(pct))
+    over = max(0, pct - 100)
+    if over > 0:
+        title_label.setText(
+            f'{title} <span style="color:{_BAR_OVERAGE}; '
+            f'font-weight:700">OVERAGE</span>')
+        bar.set_values(0, over, "cool")
+    else:
+        title_label.setText(title)
+        bar.set_values(pct, 0, heat(pct))
+    pct_label.setText(f"{pct}%")
 
 
 class AgentMascot(QWidget):
@@ -1196,35 +1215,20 @@ class CompactView(QWidget):
         return label, pct, bar, reset
 
     @staticmethod
-    def _apply_bar(label, pct, bar, reset, title, value, overage,
+    def _apply_bar(label, pct, bar, reset, title, value,
                    reset_min, tokens, show_tokens) -> None:
-        if overage > 0:
-            # Bar stays full in its normal colour with a red overflow past 100%;
-            # the label gets a red OVERAGE tag and the % reads e.g. 120%.
-            label.setText(
-                f'{title} <span style="color:{_BAR_OVERAGE}; font-weight:700">'
-                f'OVERAGE</span>')
-            pct.setText(f"{100 + overage}%")
-            # Base keeps the normal (coral) colour so the red overage reads as a
-            # distinct overflow after it, left-to-right.
-            bar.set_values(100, overage, "cool")
-        else:
-            label.setText(title)
-            pct.setText(f"{value}%")
-            bar.set_values(value, 0, heat(value))
+        # Title + % + fill (overage handled per-window when value > 100).
+        apply_overage_bar(label, pct, bar, title, value)
         line = f"resets in {format_minutes(reset_min)}"
         if show_tokens:
             line += f" · {fmt_tokens(tokens)}"
         reset.setText(line)
 
-    def update_usage(self, s, sr: int, wr: int, ovr: int, show_tokens: bool) -> None:
+    def update_usage(self, s, sr: int, wr: int, show_tokens: bool) -> None:
         self._apply_bar(self.s_label, self.s_pct, self.s_bar, self.s_reset,
-                        "SESSION 5h", s.session_pct, 0, sr, s.tokens_5h, show_tokens)
-        ov = getattr(s, "overage_pct", 0)
+                        "SESSION 5h", s.session_pct, sr, s.tokens_5h, show_tokens)
         self._apply_bar(self.w_label, self.w_pct, self.w_bar, self.w_reset,
-                        "WEEKLY 7d", s.weekly_pct, ov, wr, s.tokens_7d, show_tokens)
-        self.w_bar.setToolTip(
-            f"Overage resets in {format_minutes(ovr)}" if ov > 0 else "")
+                        "WEEKLY 7d", s.weekly_pct, wr, s.tokens_7d, show_tokens)
 
     def set_show_tokens(self, on: bool) -> None:
         self._show_tokens = bool(on)
