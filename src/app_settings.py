@@ -21,6 +21,7 @@ KEY_SHOW_TOKEN_USAGE = "tokens/show_usage"
 KEY_AUTO_REFRESH = "token/auto_refresh"
 KEY_POLL_INTERVAL = "poll/interval_seconds"
 KEY_RESET_NOTIFY = "notify/reset_enabled"
+KEY_RESET_NOTIFY_TOAST = "notify/reset_toast"
 KEY_RESET_NOTIFY_SOUND = "notify/reset_sound"
 KEY_RESET_NOTIFY_POPUP = "notify/reset_popup"
 KEY_RESET_NOTIFY_PUSH = "notify/reset_push"
@@ -206,6 +207,17 @@ def get_reset_notify() -> bool:
 
 def set_reset_notify(on: bool) -> None:
     _settings().setValue(KEY_RESET_NOTIFY, bool(on))
+
+
+def get_reset_notify_toast() -> bool:
+    v = _settings().value(KEY_RESET_NOTIFY_TOAST, True)  # on by default
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_reset_notify_toast(on: bool) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_TOAST, bool(on))
 
 
 def get_reset_notify_sound() -> bool:

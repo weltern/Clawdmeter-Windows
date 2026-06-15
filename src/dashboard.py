@@ -959,12 +959,19 @@ class SettingsPanel(QWidget):
         self.notify_check.toggled.connect(self._on_notify_toggled)
         layout.addWidget(self.notify_check)
 
-        self.notify_sound_check = QCheckBox("    Play a sound")
+        # Windows-side channel: the desktop toast + tray flash, with sound and
+        # window-pop nested as its sub-options.
+        self.notify_toast_check = QCheckBox("    Show a Windows notification")
+        self.notify_toast_check.setChecked(app_settings.get_reset_notify_toast())
+        self.notify_toast_check.toggled.connect(self._on_notify_toast_toggled)
+        layout.addWidget(self.notify_toast_check)
+
+        self.notify_sound_check = QCheckBox("        Play a sound")
         self.notify_sound_check.setChecked(app_settings.get_reset_notify_sound())
         self.notify_sound_check.toggled.connect(self._on_notify_sound_toggled)
         layout.addWidget(self.notify_sound_check)
 
-        self.notify_popup_check = QCheckBox("    Pop the window to front")
+        self.notify_popup_check = QCheckBox("        Pop the window to front")
         self.notify_popup_check.setChecked(app_settings.get_reset_notify_popup())
         self.notify_popup_check.toggled.connect(self._on_notify_popup_toggled)
         layout.addWidget(self.notify_popup_check)
@@ -1220,6 +1227,10 @@ class SettingsPanel(QWidget):
         app_settings.set_reset_notify(checked)
         self._sync_notify_subtoggles()
 
+    def _on_notify_toast_toggled(self, checked: bool) -> None:
+        app_settings.set_reset_notify_toast(checked)
+        self._sync_notify_subtoggles()
+
     def _on_notify_sound_toggled(self, checked: bool) -> None:
         app_settings.set_reset_notify_sound(checked)
 
@@ -1269,10 +1280,14 @@ class SettingsPanel(QWidget):
 
     def _sync_notify_subtoggles(self) -> None:
         """Grey out the per-method sub-toggles when the master switch is off, and
-        show only the selected push provider's credential fields."""
+        show only the selected push provider's credential fields. Sound and
+        window-pop are sub-options of the Windows notification, so they enable
+        only when both the master and the Windows channel are on."""
         on = self.notify_check.isChecked()
-        self.notify_sound_check.setEnabled(on)
-        self.notify_popup_check.setEnabled(on)
+        self.notify_toast_check.setEnabled(on)
+        toast_on = on and self.notify_toast_check.isChecked()
+        self.notify_sound_check.setEnabled(toast_on)
+        self.notify_popup_check.setEnabled(toast_on)
         self.notify_push_check.setEnabled(on)
 
         push_on = on and self.notify_push_check.isChecked()
@@ -2018,14 +2033,16 @@ class Dashboard(QMainWindow):
         title = "Claude limit reset"
         body = f"{which} limit has reset — you can resume."
 
-        # Themed toast + tray flash always accompany the master toggle.
-        self._toast.show_message(title, body)
-        self._start_tray_flash()
-
-        if app_settings.get_reset_notify_sound():
-            QApplication.beep()
-        if app_settings.get_reset_notify_popup():
-            self._show_window()
+        # Windows channel: the themed toast + tray flash, with sound and
+        # window-pop as its sub-options. Off -> the push channel can still fire,
+        # so the user can choose to be notified only on their phone/Discord.
+        if app_settings.get_reset_notify_toast():
+            self._toast.show_message(title, body)
+            self._start_tray_flash()
+            if app_settings.get_reset_notify_sound():
+                QApplication.beep()
+            if app_settings.get_reset_notify_popup():
+                self._show_window()
         if app_settings.get_reset_notify_push():
             self._send_push(title, body)
 

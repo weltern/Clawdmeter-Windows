@@ -216,11 +216,11 @@ Open the settings panel from the gear icon in the title bar.
 
   ![Clawdmeter-Windows limit-reset notification — "Claude limit reset: Session limit has reset, you can resume"](assets/Screenshot-Session-Limit-Reset.png)
 
-  It shows a tray
-  notification and briefly flashes the tray icon; **Play a sound**, **Pop the
-  window to front**, and **Send a push notification** are optional extras you can
-  switch off. The push reaches you via **ntfy**, **Telegram**, or a **Discord
-  webhook**: with [ntfy](https://ntfy.sh) (no account or API key) you subscribe
+  You choose **where** it reaches you — pick either channel, or both. **Show a
+  Windows notification** is the desktop toast plus a brief tray-icon flash, with
+  **Play a sound** and **Pop the window to front** as sub-options under it; **Send
+  a push notification** delivers off this machine. The push reaches you via
+  **ntfy**, **Telegram**, or a **Discord webhook**: with [ntfy](https://ntfy.sh) (no account or API key) you subscribe
   to a topic of your choosing in the ntfy app — pick a long, hard-to-guess topic
   since anyone who knows it can read your alerts; with **Telegram** you create a
   bot via @BotFather and enter its token and your chat ID; with **Discord** you
