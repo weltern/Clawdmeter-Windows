@@ -14,7 +14,12 @@ import types
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import remote_notify  # noqa: E402
-from remote_notify import resolve_url, send_ntfy, send_telegram  # noqa: E402
+from remote_notify import (  # noqa: E402
+    resolve_url,
+    send_discord,
+    send_ntfy,
+    send_telegram,
+)
 
 
 def test_bare_topic_uses_default_server():
@@ -131,6 +136,34 @@ def test_telegram_reports_error():
     _install_fake_httpx(raise_exc=ValueError("boom"))
     ok, msg = send_telegram("BOTTOKEN", "98765", "t", "b")
     assert not ok and "Telegram push failed" in msg
+
+
+def test_discord_requires_url():
+    for bad in ("", "   ", None):
+        ok, msg = send_discord(bad, "t", "b")  # type: ignore[arg-type]
+        assert not ok and "empty" in msg
+
+
+def test_discord_rejects_non_url():
+    ok, msg = send_discord("not-a-url", "t", "b")
+    assert not ok and "https" in msg
+
+
+def test_discord_posts_expected_request():
+    _install_fake_httpx()
+    ok, msg = send_discord(
+        "https://discord.com/api/webhooks/1/abc", "Claude limit reset", "Resume now."
+    )
+    assert ok and msg == "sent"
+    sent = _FakeClient.last
+    assert sent["url"] == "https://discord.com/api/webhooks/1/abc"
+    assert sent["json"] == {"content": "**Claude limit reset**\nResume now."}
+
+
+def test_discord_reports_error():
+    _install_fake_httpx(raise_exc=ValueError("boom"))
+    ok, msg = send_discord("https://discord.com/api/webhooks/1/abc", "t", "b")
+    assert not ok and "Discord push failed" in msg
 
 
 if __name__ == "__main__":

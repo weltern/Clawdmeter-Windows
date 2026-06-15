@@ -1,11 +1,13 @@
-"""Send a usage-limit-reset push to your phone, via ntfy or Telegram.
+"""Send a usage-limit-reset push, via ntfy, Telegram, or a Discord webhook.
 
-This is the optional "ping my phone" companion to the local reset toast. Each
-sender is a single HTTPS POST, so no new dependency is needed — httpx already
-ships with the app:
+This is the optional "ping me" companion to the local reset toast. Each sender
+is a single HTTPS POST, so no new dependency is needed — httpx already ships
+with the app:
   - ntfy (https://ntfy.sh): no account or API key; you pick a hard-to-guess
     topic name and subscribe to it in the ntfy mobile app.
   - Telegram: a bot token (from @BotFather) plus the destination chat ID.
+  - Discord: an incoming-webhook URL for a channel (Channel Settings ->
+    Integrations -> Webhooks), so alerts land in a Discord channel.
 
 This module stays Qt-free and does the network calls itself; the dashboard runs
 them off the UI thread. ntfy URL building is split out (resolve_url) so it can
@@ -96,4 +98,38 @@ def send_telegram(
             resp.raise_for_status()
     except Exception as exc:
         return False, f"Telegram push failed: {exc}"
+    return True, "sent"
+
+
+def send_discord(
+    webhook_url: str,
+    title: str,
+    body: str,
+    *,
+    timeout: float = 10.0,
+) -> tuple[bool, str]:
+    """POST a notification to a Discord channel via an incoming webhook URL.
+    Returns (ok, message).
+
+    Create the webhook in Discord: Channel Settings -> Integrations -> Webhooks
+    -> New Webhook -> Copy URL. The title becomes a bold first line. Errors are
+    reported, never raised, so a flaky push never disrupts the local path.
+    """
+    webhook_url = (webhook_url or "").strip()
+    if not webhook_url:
+        return False, "Discord webhook URL is empty"
+    if not webhook_url.startswith(("http://", "https://")):
+        return False, "Discord webhook URL must start with https://"
+
+    import httpx  # lazy, mirrors send_ntfy — keeps this Qt/httpx-free at import
+
+    # Markdown-bold title, then the body. Discord caps content at 2000 chars;
+    # trim to 1900 to leave headroom for the bold-title markup.
+    content = f"**{title}**\n{body}" if title else body
+    try:
+        with httpx.Client(timeout=timeout) as http:
+            resp = http.post(webhook_url, json={"content": content[:1900]})
+            resp.raise_for_status()
+    except Exception as exc:
+        return False, f"Discord push failed: {exc}"
     return True, "sent"

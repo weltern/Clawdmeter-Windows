@@ -219,11 +219,14 @@ Open the settings panel from the gear icon in the title bar.
   It shows a tray
   notification and briefly flashes the tray icon; **Play a sound**, **Pop the
   window to front**, and **Send a push to my phone** are optional extras you can
-  switch off. The phone push reaches you via either **ntfy** or **Telegram**:
-  with [ntfy](https://ntfy.sh) (no account or API key) you subscribe to a topic
-  of your choosing in the ntfy app — pick a long, hard-to-guess topic since
-  anyone who knows it can read your alerts; with **Telegram** you create a bot
-  via @BotFather and enter its token and your chat ID. Keep both secret.
+  switch off. The push reaches you via **ntfy**, **Telegram**, or a **Discord
+  webhook**: with [ntfy](https://ntfy.sh) (no account or API key) you subscribe
+  to a topic of your choosing in the ntfy app — pick a long, hard-to-guess topic
+  since anyone who knows it can read your alerts; with **Telegram** you create a
+  bot via @BotFather and enter its token and your chat ID; with **Discord** you
+  create an incoming webhook (Channel Settings → Integrations → Webhooks) and
+  paste its URL to have alerts land in that channel. Keep all of these secret —
+  anyone with the topic/token/URL can post to or read your alerts.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
   to pin).
 

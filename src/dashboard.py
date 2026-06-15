@@ -258,23 +258,31 @@ def _tray_alert_pixmap() -> QPixmap:
 
 def _push_configured() -> bool:
     """True if the selected push provider has the credentials it needs."""
-    if app_settings.get_reset_notify_push_provider() == "telegram":
+    provider = app_settings.get_reset_notify_push_provider()
+    if provider == "telegram":
         return bool(
             app_settings.get_reset_notify_push_tg_token()
             and app_settings.get_reset_notify_push_tg_chat()
         )
+    if provider == "discord":
+        return bool(app_settings.get_reset_notify_push_discord())
     return bool(app_settings.get_reset_notify_push_topic())
 
 
 def _dispatch_push(title: str, body: str) -> tuple[bool, str]:
     """Send a push via the configured provider. Shared by the reset
     notification and the Settings test button so both exercise one code path."""
-    if app_settings.get_reset_notify_push_provider() == "telegram":
+    provider = app_settings.get_reset_notify_push_provider()
+    if provider == "telegram":
         return remote_notify.send_telegram(
             app_settings.get_reset_notify_push_tg_token(),
             app_settings.get_reset_notify_push_tg_chat(),
             title,
             body,
+        )
+    if provider == "discord":
+        return remote_notify.send_discord(
+            app_settings.get_reset_notify_push_discord(), title, body
         )
     return remote_notify.send_ntfy(
         app_settings.get_reset_notify_push_topic(), title, body
@@ -971,6 +979,7 @@ class SettingsPanel(QWidget):
         self.notify_push_provider = QComboBox()
         self.notify_push_provider.addItem("ntfy", "ntfy")
         self.notify_push_provider.addItem("Telegram", "telegram")
+        self.notify_push_provider.addItem("Discord", "discord")
         idx = self.notify_push_provider.findData(app_settings.get_reset_notify_push_provider())
         self.notify_push_provider.setCurrentIndex(max(0, idx))
         self.notify_push_provider.currentIndexChanged.connect(
@@ -1019,6 +1028,24 @@ class SettingsPanel(QWidget):
         )
         self.notify_push_tg_hint.setWordWrap(True)
         layout.addWidget(self.notify_push_tg_hint)
+
+        # Discord fields
+        self.notify_push_discord = QLineEdit()
+        self.notify_push_discord.setPlaceholderText("Discord webhook URL")
+        self.notify_push_discord.setEchoMode(QLineEdit.Password)
+        self.notify_push_discord.setText(app_settings.get_reset_notify_push_discord())
+        self.notify_push_discord.editingFinished.connect(
+            self._on_notify_push_discord_changed
+        )
+        layout.addWidget(self.notify_push_discord)
+        self.notify_push_discord_hint = QLabel(
+            "In Discord: Channel Settings → Integrations → Webhooks → New "
+            "Webhook → Copy URL. Anyone with the URL can post to that channel, "
+            "so keep it private.",
+            objectName="sectionHint",
+        )
+        self.notify_push_discord_hint.setWordWrap(True)
+        layout.addWidget(self.notify_push_discord_hint)
 
         self.notify_push_test_btn = QPushButton("Send test notification")
         self.notify_push_test_btn.clicked.connect(self._on_test_push_clicked)
@@ -1216,6 +1243,9 @@ class SettingsPanel(QWidget):
     def _on_notify_push_tg_chat_changed(self) -> None:
         app_settings.set_reset_notify_push_tg_chat(self.notify_push_tg_chat.text())
 
+    def _on_notify_push_discord_changed(self) -> None:
+        app_settings.set_reset_notify_push_discord(self.notify_push_discord.text())
+
     def _on_test_push_clicked(self) -> None:
         """Send a one-off push with the current settings so the user can verify
         their setup. Runs off the UI thread; the result returns via signal."""
@@ -1234,7 +1264,7 @@ class SettingsPanel(QWidget):
     def _on_test_push_result(self, ok: bool, msg: str) -> None:
         self._sync_notify_subtoggles()  # re-enables the button (clears status)
         self.notify_push_test_status.setText(
-            "Sent — check your phone." if ok else f"Failed: {msg}"
+            "Sent — check your notifications." if ok else f"Failed: {msg}"
         )
 
     def _sync_notify_subtoggles(self) -> None:
@@ -1247,17 +1277,23 @@ class SettingsPanel(QWidget):
 
         push_on = on and self.notify_push_check.isChecked()
         self.notify_push_provider.setEnabled(push_on)
-        is_ntfy = self.notify_push_provider.currentData() == "ntfy"
+        provider = self.notify_push_provider.currentData()
+        is_ntfy = provider == "ntfy"
+        is_tg = provider == "telegram"
+        is_discord = provider == "discord"
 
-        # Only the chosen provider's fields are shown; both enable with push.
+        # Only the chosen provider's fields are shown; all enable with push.
         self.notify_push_topic.setVisible(is_ntfy)
         self.notify_push_ntfy_hint.setVisible(is_ntfy)
-        self.notify_push_tg_token.setVisible(not is_ntfy)
-        self.notify_push_tg_chat.setVisible(not is_ntfy)
-        self.notify_push_tg_hint.setVisible(not is_ntfy)
+        self.notify_push_tg_token.setVisible(is_tg)
+        self.notify_push_tg_chat.setVisible(is_tg)
+        self.notify_push_tg_hint.setVisible(is_tg)
+        self.notify_push_discord.setVisible(is_discord)
+        self.notify_push_discord_hint.setVisible(is_discord)
         self.notify_push_topic.setEnabled(push_on)
         self.notify_push_tg_token.setEnabled(push_on)
         self.notify_push_tg_chat.setEnabled(push_on)
+        self.notify_push_discord.setEnabled(push_on)
         self.notify_push_test_btn.setEnabled(push_on)
         if not push_on:
             self.notify_push_test_status.clear()

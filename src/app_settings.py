@@ -28,8 +28,9 @@ KEY_RESET_NOTIFY_PUSH_PROVIDER = "notify/reset_push_provider"
 KEY_RESET_NOTIFY_PUSH_TOPIC = "notify/reset_push_topic"
 KEY_RESET_NOTIFY_PUSH_TG_TOKEN = "notify/reset_push_tg_token"
 KEY_RESET_NOTIFY_PUSH_TG_CHAT = "notify/reset_push_tg_chat"
+KEY_RESET_NOTIFY_PUSH_DISCORD = "notify/reset_push_discord"
 
-PUSH_PROVIDERS = ("ntfy", "telegram")
+PUSH_PROVIDERS = ("ntfy", "telegram", "discord")
 
 # API usage poll cadence (seconds). The floor keeps the self-billed 1-token
 # probe from tripping per-minute rate limits; the ceiling keeps the usage %
@@ -278,3 +279,12 @@ def get_reset_notify_push_tg_chat() -> str:
 
 def set_reset_notify_push_tg_chat(chat: str) -> None:
     _settings().setValue(KEY_RESET_NOTIFY_PUSH_TG_CHAT, (chat or "").strip())
+
+
+def get_reset_notify_push_discord() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_DISCORD, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_discord(url: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_DISCORD, (url or "").strip())
