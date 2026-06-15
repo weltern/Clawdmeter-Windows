@@ -969,7 +969,7 @@ class SettingsPanel(QWidget):
         self.notify_popup_check.toggled.connect(self._on_notify_popup_toggled)
         layout.addWidget(self.notify_popup_check)
 
-        self.notify_push_check = QCheckBox("    Send a push to my phone")
+        self.notify_push_check = QCheckBox("    Send a push notification")
         self.notify_push_check.setChecked(app_settings.get_reset_notify_push())
         self.notify_push_check.toggled.connect(self._on_notify_push_toggled)
         layout.addWidget(self.notify_push_check)

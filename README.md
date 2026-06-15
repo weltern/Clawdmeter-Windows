@@ -218,7 +218,7 @@ Open the settings panel from the gear icon in the title bar.
 
   It shows a tray
   notification and briefly flashes the tray icon; **Play a sound**, **Pop the
-  window to front**, and **Send a push to my phone** are optional extras you can
+  window to front**, and **Send a push notification** are optional extras you can
   switch off. The push reaches you via **ntfy**, **Telegram**, or a **Discord
   webhook**: with [ntfy](https://ntfy.sh) (no account or API key) you subscribe
   to a topic of your choosing in the ntfy app — pick a long, hard-to-guess topic
