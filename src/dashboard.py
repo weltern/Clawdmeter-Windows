@@ -959,30 +959,44 @@ class SettingsPanel(QWidget):
         self.notify_check.toggled.connect(self._on_notify_toggled)
         layout.addWidget(self.notify_check)
 
-        # Windows-side channel: the desktop toast + tray flash, with sound and
-        # window-pop nested as its sub-options.
-        self.notify_toast_check = QCheckBox("    Show a Windows notification")
+        # Windows channel: the desktop toast + tray flash (indented under the
+        # master), with Play-a-sound / Pop-to-front nested in an indented box so
+        # they hide together when the channel — or the master — is off.
+        self.notify_toast_check = QCheckBox("Show a Windows notification")
+        self.notify_toast_check.setStyleSheet("margin-left: 22px;")
         self.notify_toast_check.setChecked(app_settings.get_reset_notify_toast())
         self.notify_toast_check.toggled.connect(self._on_notify_toast_toggled)
         layout.addWidget(self.notify_toast_check)
 
-        self.notify_sound_check = QCheckBox("        Play a sound")
+        self.notify_toast_box = QWidget()
+        toast_box = QVBoxLayout(self.notify_toast_box)
+        toast_box.setContentsMargins(44, 0, 0, 0)
+        toast_box.setSpacing(6)
+        self.notify_sound_check = QCheckBox("Play a sound")
         self.notify_sound_check.setChecked(app_settings.get_reset_notify_sound())
         self.notify_sound_check.toggled.connect(self._on_notify_sound_toggled)
-        layout.addWidget(self.notify_sound_check)
-
-        self.notify_popup_check = QCheckBox("        Pop the window to front")
+        toast_box.addWidget(self.notify_sound_check)
+        self.notify_popup_check = QCheckBox("Pop the window to front")
         self.notify_popup_check.setChecked(app_settings.get_reset_notify_popup())
         self.notify_popup_check.toggled.connect(self._on_notify_popup_toggled)
-        layout.addWidget(self.notify_popup_check)
+        toast_box.addWidget(self.notify_popup_check)
+        layout.addWidget(self.notify_toast_box)
 
-        self.notify_push_check = QCheckBox("    Send a push notification")
+        self.notify_push_check = QCheckBox("Send a push notification")
+        self.notify_push_check.setStyleSheet("margin-left: 22px;")
         self.notify_push_check.setChecked(app_settings.get_reset_notify_push())
         self.notify_push_check.toggled.connect(self._on_notify_push_toggled)
         layout.addWidget(self.notify_push_check)
 
+        # Push sub-options live in an indented box that hides as a unit when the
+        # push channel (or the master) is off.
+        self.notify_push_box = QWidget()
+        push_box = QVBoxLayout(self.notify_push_box)
+        push_box.setContentsMargins(44, 0, 0, 0)
+        push_box.setSpacing(6)
+
         push_provider_row = QHBoxLayout()
-        push_provider_row.addWidget(QLabel("    via"))
+        push_provider_row.addWidget(QLabel("via"))
         self.notify_push_provider = QComboBox()
         self.notify_push_provider.addItem("ntfy", "ntfy")
         self.notify_push_provider.addItem("Telegram", "telegram")
@@ -993,7 +1007,7 @@ class SettingsPanel(QWidget):
             self._on_notify_push_provider_changed
         )
         push_provider_row.addWidget(self.notify_push_provider, 1)
-        layout.addLayout(push_provider_row)
+        push_box.addLayout(push_provider_row)
 
         # ntfy fields
         self.notify_push_topic = QLineEdit()
@@ -1002,14 +1016,14 @@ class SettingsPanel(QWidget):
         )
         self.notify_push_topic.setText(app_settings.get_reset_notify_push_topic())
         self.notify_push_topic.editingFinished.connect(self._on_notify_push_topic_changed)
-        layout.addWidget(self.notify_push_topic)
+        push_box.addWidget(self.notify_push_topic)
         self.notify_push_ntfy_hint = QLabel(
             "Subscribe to the same topic in the ntfy app (Android/iOS). Pick a "
             "long, hard-to-guess topic — anyone who knows it can read your alerts.",
             objectName="sectionHint",
         )
         self.notify_push_ntfy_hint.setWordWrap(True)
-        layout.addWidget(self.notify_push_ntfy_hint)
+        push_box.addWidget(self.notify_push_ntfy_hint)
 
         # Telegram fields
         self.notify_push_tg_token = QLineEdit()
@@ -1019,14 +1033,14 @@ class SettingsPanel(QWidget):
         self.notify_push_tg_token.editingFinished.connect(
             self._on_notify_push_tg_token_changed
         )
-        layout.addWidget(self.notify_push_tg_token)
+        push_box.addWidget(self.notify_push_tg_token)
         self.notify_push_tg_chat = QLineEdit()
         self.notify_push_tg_chat.setPlaceholderText("Telegram chat ID (e.g. 123456789)")
         self.notify_push_tg_chat.setText(app_settings.get_reset_notify_push_tg_chat())
         self.notify_push_tg_chat.editingFinished.connect(
             self._on_notify_push_tg_chat_changed
         )
-        layout.addWidget(self.notify_push_tg_chat)
+        push_box.addWidget(self.notify_push_tg_chat)
         self.notify_push_tg_hint = QLabel(
             "Message @BotFather to create a bot and copy its token, then DM your "
             "bot and read your chat ID from "
@@ -1034,7 +1048,7 @@ class SettingsPanel(QWidget):
             objectName="sectionHint",
         )
         self.notify_push_tg_hint.setWordWrap(True)
-        layout.addWidget(self.notify_push_tg_hint)
+        push_box.addWidget(self.notify_push_tg_hint)
 
         # Discord fields
         self.notify_push_discord = QLineEdit()
@@ -1044,7 +1058,7 @@ class SettingsPanel(QWidget):
         self.notify_push_discord.editingFinished.connect(
             self._on_notify_push_discord_changed
         )
-        layout.addWidget(self.notify_push_discord)
+        push_box.addWidget(self.notify_push_discord)
         self.notify_push_discord_hint = QLabel(
             "In Discord: Channel Settings → Integrations → Webhooks → New "
             "Webhook → Copy URL. Anyone with the URL can post to that channel, "
@@ -1052,14 +1066,15 @@ class SettingsPanel(QWidget):
             objectName="sectionHint",
         )
         self.notify_push_discord_hint.setWordWrap(True)
-        layout.addWidget(self.notify_push_discord_hint)
+        push_box.addWidget(self.notify_push_discord_hint)
 
         self.notify_push_test_btn = QPushButton("Send test notification")
         self.notify_push_test_btn.clicked.connect(self._on_test_push_clicked)
-        layout.addWidget(self.notify_push_test_btn)
+        push_box.addWidget(self.notify_push_test_btn)
         self.notify_push_test_status = QLabel("", objectName="sectionHint")
         self.notify_push_test_status.setWordWrap(True)
-        layout.addWidget(self.notify_push_test_status)
+        push_box.addWidget(self.notify_push_test_status)
+        layout.addWidget(self.notify_push_box)
         self._push_test_result.connect(self._on_test_push_result)
 
         self._sync_notify_subtoggles()
@@ -1279,25 +1294,28 @@ class SettingsPanel(QWidget):
         )
 
     def _sync_notify_subtoggles(self) -> None:
-        """Grey out the per-method sub-toggles when the master switch is off, and
-        show only the selected push provider's credential fields. Sound and
-        window-pop are sub-options of the Windows notification, so they enable
-        only when both the master and the Windows channel are on."""
+        """Show/hide the notification sub-options to match the hierarchy: the
+        master off hides both channels; each channel's sub-box (Windows
+        sound/pop, or the push fields) hides when that channel is off; and inside
+        the push box only the selected provider's field(s) show."""
         on = self.notify_check.isChecked()
-        self.notify_toast_check.setEnabled(on)
-        toast_on = on and self.notify_toast_check.isChecked()
-        self.notify_sound_check.setEnabled(toast_on)
-        self.notify_popup_check.setEnabled(toast_on)
-        self.notify_push_check.setEnabled(on)
+        # Both channel toggles hide entirely when the master is off.
+        self.notify_toast_check.setVisible(on)
+        self.notify_push_check.setVisible(on)
 
+        # Windows channel sub-box (sound + pop): only when master + Windows on.
+        toast_on = on and self.notify_toast_check.isChecked()
+        self.notify_toast_box.setVisible(toast_on)
+
+        # Push channel sub-box: only when master + push on.
         push_on = on and self.notify_push_check.isChecked()
-        self.notify_push_provider.setEnabled(push_on)
+        self.notify_push_box.setVisible(push_on)
+
+        # Inside the push box, show only the selected provider's field(s).
         provider = self.notify_push_provider.currentData()
         is_ntfy = provider == "ntfy"
         is_tg = provider == "telegram"
         is_discord = provider == "discord"
-
-        # Only the chosen provider's fields are shown; all enable with push.
         self.notify_push_topic.setVisible(is_ntfy)
         self.notify_push_ntfy_hint.setVisible(is_ntfy)
         self.notify_push_tg_token.setVisible(is_tg)
@@ -1305,11 +1323,6 @@ class SettingsPanel(QWidget):
         self.notify_push_tg_hint.setVisible(is_tg)
         self.notify_push_discord.setVisible(is_discord)
         self.notify_push_discord_hint.setVisible(is_discord)
-        self.notify_push_topic.setEnabled(push_on)
-        self.notify_push_tg_token.setEnabled(push_on)
-        self.notify_push_tg_chat.setEnabled(push_on)
-        self.notify_push_discord.setEnabled(push_on)
-        self.notify_push_test_btn.setEnabled(push_on)
         if not push_on:
             self.notify_push_test_status.clear()
 
