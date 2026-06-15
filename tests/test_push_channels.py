@@ -49,6 +49,25 @@ def test_push_channel_configured(tmp_path, monkeypatch):
     assert app_settings.push_channel_configured("telegram")
 
 
+def test_new_channels_configured(tmp_path, monkeypatch):
+    _store(tmp_path, monkeypatch)
+    # single-field channels
+    assert not app_settings.push_channel_configured("slack")
+    app_settings.set_reset_notify_push_slack("https://hooks.slack.com/x")
+    assert app_settings.push_channel_configured("slack")
+    app_settings.set_reset_notify_push_webhook("https://example.com/h")
+    assert app_settings.push_channel_configured("webhook")
+    # two-field channels need both
+    app_settings.set_reset_notify_push_po_token("tok")
+    assert not app_settings.push_channel_configured("pushover")
+    app_settings.set_reset_notify_push_po_user("usr")
+    assert app_settings.push_channel_configured("pushover")
+    app_settings.set_reset_notify_push_gotify_url("https://g.example.com")
+    assert not app_settings.push_channel_configured("gotify")
+    app_settings.set_reset_notify_push_gotify_token("tok")
+    assert app_settings.push_channel_configured("gotify")
+
+
 def test_dispatch_sends_to_all_configured(tmp_path, monkeypatch):
     _store(tmp_path, monkeypatch)
     app_settings.set_reset_notify_push_channels(["ntfy", "discord", "telegram"])

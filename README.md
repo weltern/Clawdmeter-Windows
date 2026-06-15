@@ -221,15 +221,16 @@ Open the settings panel from the gear icon in the title bar.
   **Play a sound** and **Pop the window to front** as sub-options under it; **Send
   a push notification** delivers off this machine. Under push you can **add one or
   more channels** with **Add a channel** (remove with ✕), and **every channel you
-  add fires** on a reset — so you can get an ntfy push *and* a Discord message at
-  once. The channels are **ntfy**, **Telegram**, and a **Discord webhook**: with
-  [ntfy](https://ntfy.sh) (no account or API key) you subscribe to a topic of your
-  choosing in the ntfy app — pick a long, hard-to-guess topic since anyone who
-  knows it can read your alerts; with **Telegram** you create a bot via @BotFather
-  and enter its token and your chat ID; with **Discord** you create an incoming
-  webhook (Channel Settings → Integrations → Webhooks) and paste its URL. Keep all
-  of these secret — anyone with the topic/token/URL can post to or read your
-  alerts. **Send test notification** fires every configured channel at once.
+  add fires** on a reset — so you can get, say, a Pushover *and* a Discord alert at
+  once. The channels are **[ntfy](https://ntfy.sh)** (subscribe to a hard-to-guess
+  topic in the ntfy app — no account needed), **Telegram** (a bot token from
+  @BotFather + your chat ID), **Discord** / **Slack** (an incoming-webhook URL),
+  **Pushover** (an app API token + your user key), **Gotify** (a self-hosted server
+  URL + app token), and a **generic webhook** (a JSON `{title, body, app}` POST to
+  any URL — wire it to Zapier / Make / IFTTT / n8n / Home Assistant). Each channel's
+  in-app hint says where to get its credential; keep topics/tokens/URLs secret,
+  since anyone with them can post to or read your alerts. **Send test notification**
+  fires every configured channel at once.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
   to pin).
 

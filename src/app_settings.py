@@ -29,9 +29,16 @@ KEY_RESET_NOTIFY_PUSH_TOPIC = "notify/reset_push_topic"
 KEY_RESET_NOTIFY_PUSH_TG_TOKEN = "notify/reset_push_tg_token"
 KEY_RESET_NOTIFY_PUSH_TG_CHAT = "notify/reset_push_tg_chat"
 KEY_RESET_NOTIFY_PUSH_DISCORD = "notify/reset_push_discord"
+KEY_RESET_NOTIFY_PUSH_SLACK = "notify/reset_push_slack"
+KEY_RESET_NOTIFY_PUSH_WEBHOOK = "notify/reset_push_webhook"
+KEY_RESET_NOTIFY_PUSH_PO_TOKEN = "notify/reset_push_po_token"
+KEY_RESET_NOTIFY_PUSH_PO_USER = "notify/reset_push_po_user"
+KEY_RESET_NOTIFY_PUSH_GOTIFY_URL = "notify/reset_push_gotify_url"
+KEY_RESET_NOTIFY_PUSH_GOTIFY_TOKEN = "notify/reset_push_gotify_token"
 KEY_RESET_NOTIFY_PUSH_CHANNELS = "notify/reset_push_channels"
 
-PUSH_PROVIDERS = ("ntfy", "telegram", "discord")
+PUSH_PROVIDERS = ("ntfy", "telegram", "discord", "slack", "pushover", "gotify",
+                  "webhook")
 
 # API usage poll cadence (seconds). The floor keeps the self-billed 1-token
 # probe from tripping per-minute rate limits; the ceiling keeps the usage %
@@ -289,6 +296,60 @@ def set_reset_notify_push_discord(url: str) -> None:
     _settings().setValue(KEY_RESET_NOTIFY_PUSH_DISCORD, (url or "").strip())
 
 
+def get_reset_notify_push_slack() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_SLACK, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_slack(url: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_SLACK, (url or "").strip())
+
+
+def get_reset_notify_push_webhook() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_WEBHOOK, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_webhook(url: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_WEBHOOK, (url or "").strip())
+
+
+def get_reset_notify_push_po_token() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_PO_TOKEN, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_po_token(token: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_PO_TOKEN, (token or "").strip())
+
+
+def get_reset_notify_push_po_user() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_PO_USER, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_po_user(user: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_PO_USER, (user or "").strip())
+
+
+def get_reset_notify_push_gotify_url() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_GOTIFY_URL, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_gotify_url(url: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_GOTIFY_URL, (url or "").strip())
+
+
+def get_reset_notify_push_gotify_token() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_GOTIFY_TOKEN, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_gotify_token(token: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_GOTIFY_TOKEN, (token or "").strip())
+
+
 def push_channel_configured(provider: str) -> bool:
     """True if a push channel has the value(s) it needs to send."""
     if provider == "ntfy":
@@ -298,6 +359,16 @@ def push_channel_configured(provider: str) -> bool:
                     and get_reset_notify_push_tg_chat())
     if provider == "discord":
         return bool(get_reset_notify_push_discord())
+    if provider == "slack":
+        return bool(get_reset_notify_push_slack())
+    if provider == "webhook":
+        return bool(get_reset_notify_push_webhook())
+    if provider == "pushover":
+        return bool(get_reset_notify_push_po_token()
+                    and get_reset_notify_push_po_user())
+    if provider == "gotify":
+        return bool(get_reset_notify_push_gotify_url()
+                    and get_reset_notify_push_gotify_token())
     return False
 
 

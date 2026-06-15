@@ -203,6 +203,29 @@ QCheckBox::indicator:checked {
 }
 QWidget#scrim { background-color: rgba(0, 0, 0, 60); }
 
+/* Push-notification channel cards (Settings -> Notifications). */
+QWidget#pushCard {
+    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 6px;
+}
+QLabel#pushSummary { font-size: 12px; }
+QToolButton#pushEditBtn {
+    background: transparent; color: #9ca3af; border: 0;
+    padding: 2px 6px; border-radius: 4px; font-size: 11px;
+}
+QToolButton#pushEditBtn:hover { color: #CE7D6B; background-color: #1f2937; }
+QToolButton#pushRemoveBtn {
+    background: transparent; color: #6b7280; border: 0;
+    padding: 2px 7px; border-radius: 4px; font-size: 12px;
+}
+QToolButton#pushRemoveBtn:hover { color: #ffffff; background-color: #c13434; }
+QToolButton#addChannelBtn {
+    background: transparent; color: #CE7D6B; border: 1px dashed #374151;
+    padding: 5px 12px; border-radius: 6px; font-size: 11px;
+}
+QToolButton#addChannelBtn:hover { background-color: #1f2937; border-color: #CE7D6B; }
+QToolButton#addChannelBtn:disabled { color: #4b5563; border-color: #21262d; }
+QToolButton#addChannelBtn::menu-indicator { image: none; width: 0; }
+
 QWidget#miniRoot {
     background-color: #0e1116;
     border: 1px solid #CE7D6B;
@@ -255,7 +278,11 @@ def _tray_alert_pixmap() -> QPixmap:
     return pm
 
 
-PUSH_CHANNEL_NAMES = {"ntfy": "ntfy", "telegram": "Telegram", "discord": "Discord"}
+PUSH_CHANNEL_NAMES = {
+    "ntfy": "ntfy", "telegram": "Telegram", "discord": "Discord",
+    "slack": "Slack", "pushover": "Pushover", "gotify": "Gotify",
+    "webhook": "Webhook",
+}
 
 
 def _active_push_channels() -> list[str]:
@@ -280,6 +307,20 @@ def _send_one_channel(provider: str, title: str, body: str) -> tuple[bool, str]:
     if provider == "discord":
         return remote_notify.send_discord(
             app_settings.get_reset_notify_push_discord(), title, body)
+    if provider == "slack":
+        return remote_notify.send_slack(
+            app_settings.get_reset_notify_push_slack(), title, body)
+    if provider == "webhook":
+        return remote_notify.send_webhook(
+            app_settings.get_reset_notify_push_webhook(), title, body)
+    if provider == "pushover":
+        return remote_notify.send_pushover(
+            app_settings.get_reset_notify_push_po_token(),
+            app_settings.get_reset_notify_push_po_user(), title, body)
+    if provider == "gotify":
+        return remote_notify.send_gotify(
+            app_settings.get_reset_notify_push_gotify_url(),
+            app_settings.get_reset_notify_push_gotify_token(), title, body)
     return False, f"unknown channel {provider}"
 
 
@@ -773,6 +814,26 @@ _PUSH_FIELD_SPECS = {
     "discord": [(app_settings.get_reset_notify_push_discord,
                  app_settings.set_reset_notify_push_discord,
                  "Discord webhook URL", True)],
+    "slack": [(app_settings.get_reset_notify_push_slack,
+               app_settings.set_reset_notify_push_slack,
+               "Slack incoming webhook URL", True)],
+    "webhook": [(app_settings.get_reset_notify_push_webhook,
+                 app_settings.set_reset_notify_push_webhook,
+                 "Webhook URL (receives a JSON POST)", True)],
+    "pushover": [
+        (app_settings.get_reset_notify_push_po_token,
+         app_settings.set_reset_notify_push_po_token,
+         "Pushover application API token", True),
+        (app_settings.get_reset_notify_push_po_user,
+         app_settings.set_reset_notify_push_po_user,
+         "Pushover user key", True)],
+    "gotify": [
+        (app_settings.get_reset_notify_push_gotify_url,
+         app_settings.set_reset_notify_push_gotify_url,
+         "Gotify server URL (e.g. https://gotify.example.com)", False),
+        (app_settings.get_reset_notify_push_gotify_token,
+         app_settings.set_reset_notify_push_gotify_token,
+         "Gotify app token", True)],
 }
 _PUSH_HINTS = {
     "ntfy": "Subscribe to the same topic in the ntfy app (Android/iOS). Pick a "
@@ -783,27 +844,48 @@ _PUSH_HINTS = {
     "discord": "In Discord: Channel Settings → Integrations → Webhooks → New "
                "Webhook → Copy URL. Anyone with the URL can post there, so keep "
                "it private.",
+    "slack": "In Slack: create an Incoming Webhook for a channel "
+             "(api.slack.com/messaging/webhooks) and paste its URL. Keep it private.",
+    "webhook": "POSTs JSON {title, body, app} to any URL — wire it to Zapier, "
+               "Make, IFTTT, n8n, Home Assistant, or your own endpoint.",
+    "pushover": "Create an application at pushover.net for the API token; your "
+                "user key is on your Pushover dashboard. Get the app on iOS/Android.",
+    "gotify": "Self-hosted Gotify: your server URL plus an application token "
+              "from the Gotify apps page.",
 }
 
 
 def _push_channel_summary(provider: str) -> str:
     """Short glanceable state for a channel row (the non-secret topic for ntfy,
     a 'set'/'not set' for the secret channels)."""
+    def both(a: str, b: str, ok: str) -> str:
+        if a and b:
+            return ok
+        return "incomplete" if (a or b) else "not set"
+
     if provider == "ntfy":
         return app_settings.get_reset_notify_push_topic() or "not set"
     if provider == "telegram":
-        if app_settings.push_channel_configured("telegram"):
-            return "bot + chat set"
-        has_any = (app_settings.get_reset_notify_push_tg_token()
-                   or app_settings.get_reset_notify_push_tg_chat())
-        return "incomplete" if has_any else "not set"
+        return both(app_settings.get_reset_notify_push_tg_token(),
+                    app_settings.get_reset_notify_push_tg_chat(), "bot + chat set")
     if provider == "discord":
         return "webhook set" if app_settings.get_reset_notify_push_discord() else "not set"
+    if provider == "slack":
+        return "webhook set" if app_settings.get_reset_notify_push_slack() else "not set"
+    if provider == "webhook":
+        return "URL set" if app_settings.get_reset_notify_push_webhook() else "not set"
+    if provider == "pushover":
+        return both(app_settings.get_reset_notify_push_po_token(),
+                    app_settings.get_reset_notify_push_po_user(), "token + user key set")
+    if provider == "gotify":
+        return both(app_settings.get_reset_notify_push_gotify_url(),
+                    app_settings.get_reset_notify_push_gotify_token(), "server + token set")
     return ""
 
 
 class _PushChannelRow(QWidget):
-    """One added push channel: a glanceable summary with Edit/✕, and a
+    """One added push channel as a small card: a glanceable status line (a
+    coral/dim dot + name + muted summary) with flat Edit/✕ actions, and a
     collapsible editor (the channel's field(s) + hint) revealed by Edit."""
 
     removed = Signal()
@@ -812,29 +894,34 @@ class _PushChannelRow(QWidget):
         super().__init__(parent)
         self._provider = provider
         self._name = name
+        self.setObjectName("pushCard")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         col = QVBoxLayout(self)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(4)
+        col.setContentsMargins(10, 7, 7, 7)
+        col.setSpacing(5)
 
         head = QHBoxLayout()
-        head.setSpacing(6)
-        self._summary = QLabel()
+        head.setSpacing(4)
+        self._summary = QLabel(objectName="pushSummary")
+        self._summary.setTextFormat(Qt.RichText)
         head.addWidget(self._summary)
         head.addStretch(1)
-        self._edit_btn = QToolButton()
+        self._edit_btn = QToolButton(objectName="pushEditBtn")
         self._edit_btn.setText("Edit")
+        self._edit_btn.setCursor(Qt.PointingHandCursor)
         self._edit_btn.clicked.connect(self._toggle_edit)
         head.addWidget(self._edit_btn)
-        rm = QToolButton()
+        rm = QToolButton(objectName="pushRemoveBtn")
         rm.setText("✕")
         rm.setToolTip(f"Remove {name}")
+        rm.setCursor(Qt.PointingHandCursor)
         rm.clicked.connect(self.removed.emit)
         head.addWidget(rm)
         col.addLayout(head)
 
         self._editor = QWidget()
         ed = QVBoxLayout(self._editor)
-        ed.setContentsMargins(14, 0, 0, 0)
+        ed.setContentsMargins(2, 2, 0, 0)
         ed.setSpacing(4)
         for getter, setter, placeholder, secret in _PUSH_FIELD_SPECS[provider]:
             f = QLineEdit()
@@ -869,8 +956,15 @@ class _PushChannelRow(QWidget):
             self._first_field.setFocus()
 
     def _refresh(self) -> None:
-        dot = "●" if app_settings.push_channel_configured(self._provider) else "○"
-        self._summary.setText(f"{dot}  {self._name} — {_push_channel_summary(self._provider)}")
+        configured = app_settings.push_channel_configured(self._provider)
+        dot = "#CE7D6B" if configured else "#4b5563"
+        summary = _push_channel_summary(self._provider)
+        summary = (summary.replace("&", "&amp;").replace("<", "&lt;")
+                   .replace(">", "&gt;"))  # the ntfy topic is user-supplied
+        self._summary.setText(
+            f"<span style='color:{dot}'>●</span>&nbsp;&nbsp;"
+            f"<span style='color:#e6edf3'>{self._name}</span>&nbsp;&nbsp;"
+            f"<span style='color:#6b7280'>· {summary}</span>")
 
 
 class SettingsPanel(QWidget):
@@ -1130,8 +1224,9 @@ class SettingsPanel(QWidget):
         self.notify_push_list.setSpacing(6)
         push_box.addLayout(self.notify_push_list)
 
-        self.notify_push_add_btn = QToolButton()
-        self.notify_push_add_btn.setText("+ Add a channel")
+        self.notify_push_add_btn = QToolButton(objectName="addChannelBtn")
+        self.notify_push_add_btn.setText("+ Add a channel  ▾")
+        self.notify_push_add_btn.setCursor(Qt.PointingHandCursor)
         self.notify_push_add_btn.setPopupMode(QToolButton.InstantPopup)
         self.notify_push_add_menu = QMenu(self.notify_push_add_btn)
         self.notify_push_add_btn.setMenu(self.notify_push_add_menu)
