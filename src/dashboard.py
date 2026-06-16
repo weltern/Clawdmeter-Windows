@@ -1356,7 +1356,8 @@ class SettingsPanel(QWidget):
             "github.com/weltern/Clawdmeter-Windows\n\n"
             "MIT licensed · the Clawd mascot is © Anthropic PBC and is "
             "not covered by the MIT license · unofficial, not affiliated "
-            "with Anthropic.",
+            "with Anthropic.\n\n"
+            "Icons by Font Awesome Free (fontawesome.com) · SIL OFL 1.1.",
             objectName="sectionHint",
         )
         about.setWordWrap(True)

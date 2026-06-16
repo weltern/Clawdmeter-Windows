@@ -20,9 +20,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QParallelAnimationGroup,
     QPoint,
-    QPointF,
     QPropertyAnimation,
-    QRectF,
     QSize,
     Qt,
     Signal,
@@ -40,8 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap,
-    QPolygonF,
+    QAction, QColor, QFont, QFontMetrics, QIcon, QPainter,
 )
 
 import winutil
@@ -305,37 +302,6 @@ _BAR_TRACK = "#1f2937"
 _BAR_BORDER = "#374151"
 _BAR_OVERAGE = "#A50F1A"   # deep fire-truck red — the overage overflow
 _BAR_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
-
-
-def square_caret_icon(up: bool, color: str = "#CE7D6B", px: int = 16) -> QIcon:
-    """Hand-drawn 'square-caret' icon — a caret inside a rounded square, pointing
-    up or down (the Full<->Compact view toggle; FA's SVG can't render in the
-    size-pruned frozen build, so we paint it). Rendered at 2x for crispness."""
-    ratio = 2
-    pm = QPixmap(px * ratio, px * ratio)
-    pm.setDevicePixelRatio(ratio)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    c = QColor(color)
-    pen = QPen(c)
-    pen.setWidthF(1.4)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    m = 1.6
-    p.drawRoundedRect(QRectF(m, m, px - 2 * m, px - 2 * m), 2.5, 2.5)
-    p.setPen(Qt.NoPen)
-    p.setBrush(c)
-    cx, half = px / 2.0, 3.0
-    if up:
-        tri = [QPointF(cx - half, px * 0.60), QPointF(cx + half, px * 0.60),
-               QPointF(cx, px * 0.40)]
-    else:
-        tri = [QPointF(cx - half, px * 0.40), QPointF(cx + half, px * 0.40),
-               QPointF(cx, px * 0.60)]
-    p.drawPolygon(QPolygonF(tri))
-    p.end()
-    return QIcon(pm)
 
 
 class UsageBar(QWidget):
