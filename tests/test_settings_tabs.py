@@ -76,7 +76,7 @@ def test_prominent_close_button_present():
     sp = _panel()
     close = sp.findChild(QToolButton, "settingsClose")
     assert close is not None
-    assert close.text() == "✕"
+    assert close.text() == chr(0xF00D)  # Font Awesome xmark
 
 
 if __name__ == "__main__":

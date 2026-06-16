@@ -14,6 +14,10 @@ a = Analysis(
         ('assets/sprites', 'assets/sprites'),
         ('assets/icon.png', 'assets'),
         ('assets/icon.ico', 'assets'),
+        # Font Awesome 6 Free (Solid) — tab/nav icons. Loaded via QFontDatabase
+        # at startup; SIL OFL 1.1, license bundled alongside.
+        ('assets/fonts/fa-solid-900.ttf', 'assets/fonts'),
+        ('assets/fonts/LICENSE.txt', 'assets/fonts'),
     ],
     hiddenimports=[],
     hookspath=[],

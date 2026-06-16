@@ -75,7 +75,7 @@ from reset_notify import ResetDecision, ResetNotifier
 import update_check
 from update_check import UpdateChecker
 from session_shelf import (
-    CompactView, SessionShelf, UsageBar, apply_overage_bar, square_caret_icon,
+    CompactView, SessionShelf, UsageBar, apply_overage_bar,
 )
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
@@ -147,10 +147,10 @@ QLabel#titleAppName {
 QToolButton#titleBtn, QToolButton#closeBtn, QToolButton#settingsBtn {
     background: transparent; color: #CE7D6B; border: 0;
     min-width: 38px; min-height: 30px;
-    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+    font-family: "Font Awesome 6 Free"; font-weight: 900;
 }
-QToolButton#titleBtn, QToolButton#closeBtn { font-size: 11px; }
-QToolButton#settingsBtn { font-size: 16px; }
+QToolButton#titleBtn, QToolButton#closeBtn { font-size: 13px; }
+QToolButton#settingsBtn { font-size: 15px; }
 QToolButton#titleBtn:hover, QToolButton#settingsBtn:hover { background-color: #1f2937; color: #CE7D6B; }
 QToolButton#closeBtn:hover { background-color: #c13434; color: #ffffff; }
 
@@ -181,20 +181,23 @@ QWidget#settingsNav {
     border-right: 1px solid #1f2937;
 }
 /* QPushButton (not QToolButton) so QSS text-align actually left-aligns the
-   glyph+label. The icon font is listed first so the leading Segoe Fluent glyph
-   resolves; the Latin label falls back to Segoe UI. */
+   glyph+label. Segoe UI is primary so the Latin label stays crisp — FA Free
+   ships its own (ugly) Latin, so listing it first would hijack the words. The
+   leading FA glyph isn't in Segoe UI, so Qt falls back to Font Awesome for it.
+   FA is registered at startup in main.py via QFontDatabase. */
 QPushButton#navBtn {
     background: transparent; color: #9ca3af; border: 0;
     border-radius: 6px; padding: 9px 14px;
-    text-align: left; font-size: 12px; font-weight: 600;
-    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", "Segoe UI";
+    text-align: left; font-size: 13px; font-weight: 600;
+    font-family: "Segoe UI", "Font Awesome 6 Free";
 }
 QPushButton#navBtn:hover { background-color: #1f2937; color: #e6edf3; }
 QPushButton#navBtn:checked { background-color: #1f2937; color: #CE7D6B; }
 /* Prominent close (✕) for the full-width panel: no click-outside anymore. */
 QToolButton#settingsClose {
     background: transparent; color: #9ca3af; border: 0;
-    min-width: 34px; min-height: 34px; border-radius: 6px; font-size: 15px;
+    min-width: 34px; min-height: 34px; border-radius: 6px; font-size: 14px;
+    font-family: "Font Awesome 6 Free"; font-weight: 900;
 }
 QToolButton#settingsClose:hover { background-color: #c13434; color: #ffffff; }
 QScrollArea#settingsScroll, QWidget#settingsBody { background: transparent; border: none; }
@@ -729,40 +732,33 @@ class TitleBar(QWidget):
 
         # Glyphs from Segoe Fluent Icons / Segoe MDL2 Assets — the same
         # codepoints Windows itself uses for window controls.
-        self.settings_btn = self._tool_btn("", "Settings")   # gear
+        self.settings_btn = self._tool_btn(chr(0xF013), "Settings")   # gear
         self.settings_btn.setObjectName("settingsBtn")
         self.settings_btn.clicked.connect(on_settings)
         row.addWidget(self.settings_btn)
 
         # Full<->Compact toggle: a square-caret that points DOWN in full (click
         # to collapse to compact) and UP in compact (click to expand to full).
-        self.caret_btn = QToolButton()
-        self.caret_btn.setObjectName("titleBtn")
-        self.caret_btn.setToolTip("Compact view")
-        self.caret_btn.setIconSize(QSize(16, 16))
-        self.caret_btn.setCursor(Qt.PointingHandCursor)
-        self.caret_btn.setFocusPolicy(Qt.NoFocus)
+        self.caret_btn = self._tool_btn("", "Compact view")
         self.caret_btn.clicked.connect(on_toggle)
         row.addWidget(self.caret_btn)
 
         # Mini button (always available): Windows' restore-to-center glyph.
-        self.mini_btn = self._tool_btn("", "Mini view")  # BackToWindow
-        self.mini_btn.setText("")   # BackToWindow / arrows-to-center
-        self.mini_btn.setText(chr(0xE73F))   # BackToWindow / arrows-to-center
+        self.mini_btn = self._tool_btn(chr(0xF422), "Mini view")  # compress-to-center
         self.mini_btn.clicked.connect(on_mini)
         row.addWidget(self.mini_btn)
 
         self.set_active_mode("full")
 
-        self.min_btn = self._tool_btn("", "Minimize")        # ChromeMinimize
+        self.min_btn = self._tool_btn(chr(0xF2D1), "Minimize")        # ChromeMinimize
         self.min_btn.clicked.connect(self._win.showMinimized)
         row.addWidget(self.min_btn)
 
-        self.max_btn = self._tool_btn("", "Maximize")        # ChromeMaximize
+        self.max_btn = self._tool_btn(chr(0xF45C), "Maximize")        # ChromeMaximize
         self.max_btn.clicked.connect(self._toggle_max)
         row.addWidget(self.max_btn)
 
-        self.close_btn = self._tool_btn("", "Close")         # ChromeClose
+        self.close_btn = self._tool_btn(chr(0xF00D), "Close")         # ChromeClose
         self.close_btn.setObjectName("closeBtn")
         self.close_btn.clicked.connect(self._win.close)
         row.addWidget(self.close_btn)
@@ -780,16 +776,16 @@ class TitleBar(QWidget):
         """Point the caret toward what the toggle does next: DOWN in full (click
         -> compact), UP in compact (click -> full)."""
         up = mode == "compact"
-        self.caret_btn.setIcon(square_caret_icon(up=up))
+        self.caret_btn.setText(chr(0xF102) if up else chr(0xF103))  # angles up / down
         self.caret_btn.setToolTip("Full view" if up else "Compact view")
 
     def _toggle_max(self) -> None:
         if self._win.isMaximized():
             self._win.showNormal()
-            self.max_btn.setText("")  # ChromeMaximize
+            self.max_btn.setText(chr(0xF45C))  # square-full (maximize)
         else:
             self._win.showMaximized()
-            self.max_btn.setText("")  # ChromeRestore
+            self.max_btn.setText(chr(0xF2D2))  # window-restore
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
@@ -814,7 +810,7 @@ class TitleBar(QWidget):
             # Restore before the handoff so the window follows the cursor at
             # its normal size, like Windows' own maximized title-bar drag.
             self._win.showNormal()
-            self.max_btn.setText("")  # ChromeMaximize
+            self.max_btn.setText(chr(0xF45C))  # square-full (maximize)
         winutil.start_native_move(int(self._win.winId()))
         e.accept()
 
@@ -1039,7 +1035,7 @@ class SettingsPanel(QWidget):
         title = QLabel("SETTINGS", objectName="settingsTitle")
         close = QToolButton()
         close.setObjectName("settingsClose")
-        close.setText("✕")
+        close.setText(chr(0xF00D))
         close.setCursor(Qt.PointingHandCursor)
         close.setFocusPolicy(Qt.NoFocus)
         close.clicked.connect(self._on_close_requested)
@@ -1090,12 +1086,14 @@ class SettingsPanel(QWidget):
             self._nav_group.addButton(btn, self._stack.addWidget(page))
             return lay
 
-        # Segoe Fluent Icons / MDL2 glyphs: gear, monitor, globe, bell, info.
-        gen_layout = _make_tab("", "General")
-        disp_layout = _make_tab("", "Display")
-        conn_layout = _make_tab("", "Connection")
-        notif_layout = _make_tab("", "Notifications")
-        about_layout = _make_tab("", "About")
+        # Font Awesome 6 Free (Solid) glyphs: gear, display, circle-nodes, bell,
+        # info. Rendered as text so they recolor with the QSS accent on
+        # hover/active, exactly as the Segoe glyphs did.
+        gen_layout = _make_tab("\uF013", "General")
+        disp_layout = _make_tab("\uE163", "Display")
+        conn_layout = _make_tab("\uE4E2", "Connection")
+        notif_layout = _make_tab("\uF0F3", "Notifications")
+        about_layout = _make_tab("\uF129", "About")
         nav.addStretch(1)
         self._nav_group.idClicked.connect(self._stack.setCurrentIndex)
         self._nav_group.button(0).setChecked(True)
