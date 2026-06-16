@@ -180,14 +180,17 @@ QWidget#settingsNav {
     background-color: #0e1116;
     border-right: 1px solid #1f2937;
 }
-QToolButton#navBtn {
+/* QPushButton (not QToolButton) so QSS text-align actually left-aligns the
+   glyph+label. The icon font is listed first so the leading Segoe Fluent glyph
+   resolves; the Latin label falls back to Segoe UI. */
+QPushButton#navBtn {
     background: transparent; color: #9ca3af; border: 0;
-    border-radius: 6px; padding: 9px 12px;
+    border-radius: 6px; padding: 9px 14px;
     text-align: left; font-size: 12px; font-weight: 600;
-    qproperty-toolButtonStyle: ToolButtonTextBesideIcon;
+    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", "Segoe UI";
 }
-QToolButton#navBtn:hover { background-color: #1f2937; color: #e6edf3; }
-QToolButton#navBtn:checked { background-color: #1f2937; color: #CE7D6B; }
+QPushButton#navBtn:hover { background-color: #1f2937; color: #e6edf3; }
+QPushButton#navBtn:checked { background-color: #1f2937; color: #CE7D6B; }
 /* Prominent close (✕) for the full-width panel: no click-outside anymore. */
 QToolButton#settingsClose {
     background: transparent; color: #9ca3af; border: 0;
@@ -1066,9 +1069,8 @@ class SettingsPanel(QWidget):
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
 
-        def _make_tab(icon: str, label: str) -> QVBoxLayout:
-            btn = QToolButton(objectName="navBtn")
-            btn.setText(f"{icon}  {label}")
+        def _make_tab(glyph: str, label: str) -> QVBoxLayout:
+            btn = QPushButton(f"{glyph}   {label}", objectName="navBtn")
             btn.setCheckable(True)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setFocusPolicy(Qt.NoFocus)
@@ -1088,11 +1090,12 @@ class SettingsPanel(QWidget):
             self._nav_group.addButton(btn, self._stack.addWidget(page))
             return lay
 
-        gen_layout = _make_tab("⚙", "General")
-        disp_layout = _make_tab("🖥", "Display")
-        conn_layout = _make_tab("🔌", "Connection")
-        notif_layout = _make_tab("🔔", "Notifications")
-        about_layout = _make_tab("ℹ", "About")
+        # Segoe Fluent Icons / MDL2 glyphs: gear, monitor, globe, bell, info.
+        gen_layout = _make_tab("", "General")
+        disp_layout = _make_tab("", "Display")
+        conn_layout = _make_tab("", "Connection")
+        notif_layout = _make_tab("", "Notifications")
+        about_layout = _make_tab("", "About")
         nav.addStretch(1)
         self._nav_group.idClicked.connect(self._stack.setCurrentIndex)
         self._nav_group.button(0).setChecked(True)
