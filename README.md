@@ -136,6 +136,12 @@ Grab the latest `Clawdmeter.exe` from the
 [Releases](../../releases) page — it's a single self-contained file (~29 MB,
 bundling Python + Qt), no install needed. Just run it.
 
+Clawdmeter checks the Releases page for a newer version on launch (then about
+once a day) and, when one's out, shows an **Update available** item in the tray
+menu — click it to open the download page and swap in the new `.exe`. You can
+turn the automatic check off, or trigger one on demand, under **Settings →
+Updates**.
+
 > **Heads up:** the exe is not code-signed, so Windows SmartScreen may show a
 > "Windows protected your PC / unknown publisher" prompt the first time you run
 > it. Click **More info → Run anyway**. If you'd rather not trust the binary,

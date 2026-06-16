@@ -36,6 +36,9 @@ KEY_RESET_NOTIFY_PUSH_PO_USER = "notify/reset_push_po_user"
 KEY_RESET_NOTIFY_PUSH_GOTIFY_URL = "notify/reset_push_gotify_url"
 KEY_RESET_NOTIFY_PUSH_GOTIFY_TOKEN = "notify/reset_push_gotify_token"
 KEY_RESET_NOTIFY_PUSH_CHANNELS = "notify/reset_push_channels"
+KEY_AUTO_CHECK_UPDATES = "updates/auto_check"
+KEY_LAST_UPDATE_CHECK = "updates/last_check"
+KEY_SKIP_VERSION = "updates/skip_version"
 
 PUSH_PROVIDERS = ("ntfy", "telegram", "discord", "slack", "pushover", "gotify",
                   "webhook")
@@ -348,6 +351,40 @@ def get_reset_notify_push_gotify_token() -> str:
 
 def set_reset_notify_push_gotify_token(token: str) -> None:
     _settings().setValue(KEY_RESET_NOTIFY_PUSH_GOTIFY_TOKEN, (token or "").strip())
+
+
+def get_auto_check_updates() -> bool:
+    v = _settings().value(KEY_AUTO_CHECK_UPDATES, True)  # on by default
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_auto_check_updates(on: bool) -> None:
+    _settings().setValue(KEY_AUTO_CHECK_UPDATES, bool(on))
+
+
+def get_last_update_check() -> float:
+    """Unix timestamp of the last completed update check (0.0 if never). Used to
+    throttle the background checker to roughly once a day."""
+    try:
+        return float(_settings().value(KEY_LAST_UPDATE_CHECK, 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def set_last_update_check(ts: float) -> None:
+    _settings().setValue(KEY_LAST_UPDATE_CHECK, float(ts))
+
+
+def get_skip_version() -> str:
+    """Normalized version the user chose to skip (e.g. '2.2.0'), or ''."""
+    v = _settings().value(KEY_SKIP_VERSION, "")
+    return str(v) if v else ""
+
+
+def set_skip_version(version: str) -> None:
+    _settings().setValue(KEY_SKIP_VERSION, (version or "").strip())
 
 
 def push_channel_configured(provider: str) -> bool:
