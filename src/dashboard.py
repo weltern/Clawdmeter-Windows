@@ -1729,6 +1729,10 @@ class _StatsWorker(QThread):
         try:
             agg = stats.compute_aggregate(time.time())
         except Exception:
+            # Keep a scan crash off the UI, but leave a trace (a blank Stats tab
+            # with no diagnostics is worse than a stderr traceback in dev).
+            import traceback
+            traceback.print_exc()
             return
         self.ready.emit(agg)
 
@@ -2286,7 +2290,11 @@ class Dashboard(QMainWindow):
 
     def _refresh_stats(self) -> None:
         """Recompute the Stats aggregate off the UI thread (held ref so it lives
-        until it finishes)."""
+        until it finishes). Skips if a scan is still running so we never orphan a
+        live QThread or double-fire _on_aggregate with a staler result."""
+        worker = getattr(self, "_stats_worker", None)
+        if worker is not None and worker.isRunning():
+            return
         self._stats_worker = _StatsWorker()
         self._stats_worker.ready.connect(self._on_aggregate)
         self._stats_worker.start()
@@ -2470,17 +2478,6 @@ class Dashboard(QMainWindow):
         self._win_size_anim.setEndValue(QSize(self.width(), target_win_h))
         self._titlebar_anim_group.start()
 
-    def resizeEvent(self, event) -> None:
-        """Update the collapsed-height baseline when the user resizes manually.
-        We only do this when no animation is in flight so that animation ticks
-        don't poison the baseline."""
-        super().resizeEvent(event)
-        if (
-            self._auto_hide_enabled
-            and self._titlebar_anim_group.state() == QAbstractAnimation.Stopped
-        ):
-            self._collapsed_window_height = self.height() - self.title_bar.maximumHeight()
-
     def _reveal_titlebar(self) -> None:
         self._animate_titlebar_to(TitleBar.HEIGHT)
 
@@ -2578,7 +2575,13 @@ class Dashboard(QMainWindow):
 
     def _open_update_page(self) -> None:
         info = getattr(self, "_update_info", None)
-        QDesktopServices.openUrl(QUrl(info.url if info else update_check.RELEASES_PAGE))
+        url = info.url if info else update_check.RELEASES_PAGE
+        # The URL comes from the GitHub API response; only open it if it's this
+        # repo on github.com, else fall back to the canonical releases page —
+        # so a compromised/unexpected response can't redirect the user anywhere.
+        if not url.startswith(f"https://github.com/{update_check.REPO}/"):
+            url = update_check.RELEASES_PAGE
+        QDesktopServices.openUrl(QUrl(url))
 
     def _on_tray_message_clicked(self) -> None:
         # Only act if there's a pending update — other balloons are informational.
@@ -2958,6 +2961,13 @@ class Dashboard(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        # Keep the auto-hide collapsed-height baseline in step with manual resizes
+        # (only when no title-bar animation is in flight, so animation ticks don't
+        # poison it). Must run regardless of _auto_fit_height — it matters most
+        # once the user has set their own height (auto-fit released).
+        if (self._auto_hide_enabled
+                and self._titlebar_anim_group.state() == QAbstractAnimation.Stopped):
+            self._collapsed_window_height = self.height() - self.title_bar.maximumHeight()
         old = event.oldSize()
         max_involved = self.isMaximized() or self._was_maximized
         self._was_maximized = self.isMaximized()
@@ -3312,6 +3322,9 @@ class Dashboard(QMainWindow):
         if hasattr(self, "_update_checker"):
             self._update_checker.stop()
             self._update_checker.wait(2000)
+        worker = getattr(self, "_stats_worker", None)
+        if worker is not None:
+            worker.wait(2000)   # don't destroy a QThread mid-scan
         self._transcript.stop()
         self.sprite.stop()
         self.shelf.stop_all()

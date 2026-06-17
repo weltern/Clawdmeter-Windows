@@ -9,7 +9,8 @@ SAFETY (the failsafe):
   * A refresh is only attempted when the token is actually expired (+ a small
     skew), so we never hammer the endpoint.
   * Before writing, the current credentials are copied to a `.clawdmeter-bak`
-    backup.
+    backup; it is deleted once the write is verified good (so the old plaintext
+    tokens don't linger on disk) and kept only if the write/revert failed.
   * The write is atomic: temp file + os.replace (no half-written file).
   * After writing we re-read and validate; if anything is wrong we restore the
     backup automatically.
@@ -117,6 +118,11 @@ def _write_tokens_safely(path: Path, original_raw: str, data: dict,
             return RefreshResult(
                 False, f"Write failed AND revert failed ({exc2}) — backup at {backup}", 200
             )
+    # Verified-good write — drop the plaintext backup of the now-stale old tokens.
+    try:
+        backup.unlink()
+    except OSError:
+        pass
     return RefreshResult(True, "Token refreshed", 200)
 
 

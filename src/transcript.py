@@ -22,9 +22,10 @@ STALE_SECONDS are reported IDLE/stale so the dashboard can dim them.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -270,8 +271,18 @@ def parse_iso_ts(value: str | None) -> float | None:
     txt = value.strip()
     if txt.endswith("Z"):
         txt = txt[:-1] + "+00:00"
+
+    def _epoch(s: str) -> float:
+        dt = datetime.fromisoformat(s)
+        # A tz-less timestamp would otherwise be read as LOCAL by .timestamp(),
+        # shifting it by the UTC offset. Claude Code always writes a 'Z', but be
+        # safe: treat a naive value as UTC.
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+
     try:
-        return datetime.fromisoformat(txt).timestamp()
+        return _epoch(txt)
     except ValueError:
         pass
     # Some fromisoformat variants reject odd fractional-second digit counts;
@@ -282,7 +293,7 @@ def parse_iso_ts(value: str | None) -> float | None:
         while end < len(txt) and txt[end].isdigit():
             end += 1
         try:
-            return datetime.fromisoformat(txt[:dot] + txt[end:]).timestamp()
+            return _epoch(txt[:dot] + txt[end:])
         except ValueError:
             return None
     return None
@@ -342,6 +353,10 @@ def sum_token_windows(events, now: float) -> tuple[int, int]:
 # being actively appended (only the 1–2 live sessions are), so this skips
 # re-reading/parsing dozens of recent-but-idle transcripts on every poll.
 _TOKEN_EVENT_CACHE: dict[str, tuple[int, float, list[tuple[float, int]]]] = {}
+# account_window_tokens() is called from BOTH the poll thread and (on a
+# Show-token-usage toggle) the GUI thread; serialise their reads/writes/evicts
+# of the plain-dict cache so they can't race into a KeyError mid-eviction.
+_TOKEN_CACHE_LOCK = threading.Lock()
 
 
 def _file_token_events(fp: Path) -> list[tuple[float, int]]:
@@ -393,26 +408,27 @@ def account_window_tokens(now: float, root: Path | None = None) -> tuple[int, in
 
     all_events: list[tuple[float, int]] = []
     seen: set[str] = set()
-    for fp in root.rglob("*.jsonl"):
-        try:
-            st = fp.stat()
-        except OSError:
-            continue
-        if st.st_mtime < cut7:
-            continue
-        key = str(fp)
-        seen.add(key)
-        cached = _TOKEN_EVENT_CACHE.get(key)
-        if cached and cached[0] == st.st_size and cached[1] == st.st_mtime:
-            events = cached[2]
-        else:
-            events = _file_token_events(fp)
-            _TOKEN_EVENT_CACHE[key] = (st.st_size, st.st_mtime, events)
-        all_events.extend(events)
+    with _TOKEN_CACHE_LOCK:
+        for fp in root.rglob("*.jsonl"):
+            try:
+                st = fp.stat()
+            except OSError:
+                continue
+            if st.st_mtime < cut7:
+                continue
+            key = str(fp)
+            seen.add(key)
+            cached = _TOKEN_EVENT_CACHE.get(key)
+            if cached and cached[0] == st.st_size and cached[1] == st.st_mtime:
+                events = cached[2]
+            else:
+                events = _file_token_events(fp)
+                _TOKEN_EVENT_CACHE[key] = (st.st_size, st.st_mtime, events)
+            all_events.extend(events)
 
-    # Drop cache entries for files that aged out of the 7d window / rotated away.
-    for key in [k for k in _TOKEN_EVENT_CACHE if k not in seen]:
-        del _TOKEN_EVENT_CACHE[key]
+        # Drop cache entries for files that aged out of the 7d window / rotated away.
+        for key in [k for k in _TOKEN_EVENT_CACHE if k not in seen]:
+            del _TOKEN_EVENT_CACHE[key]
 
     return sum_token_windows(all_events, now)
 
@@ -506,17 +522,22 @@ def _file_model_events(fp: Path) -> tuple[list, list, list]:
     return rows, acts, files
 
 
-def scan_events(since_ts: float, root: Path | None = None) -> tuple[list, list, list]:
-    """The three event streams (token rows, activity events, mutated files) at/
-    after `since_ts`.
+def scan_events(since_ts: float, root: Path | None = None,
+                detail_since: float | None = None) -> tuple[list, list, list]:
+    """The three event streams (token rows, activity events, mutated files).
 
-    Only files modified at/after `since_ts` are read (an older file can't hold an
-    in-window turn), reusing the (size, mtime) per-file cache so one disk read
-    feeds every aggregate. Does disk I/O — call it off the UI thread. Pass
+    Token `rows` are returned at/after `since_ts`; the activity/file streams are
+    returned at/after `detail_since` (defaults to `since_ts`) — the aggregate
+    needs token rows for the whole lifetime but only needs activity/file detail
+    for the current month, so passing a later `detail_since` keeps those streams
+    small. Only files modified at/after `since_ts` are read (an older file can't
+    hold an in-window turn), reusing the (size, mtime) per-file cache so one disk
+    read feeds every aggregate. Does disk I/O — call it off the UI thread. Pass
     `since_ts=0` for a lifetime scan.
     """
     if root is None:
         root = Path.home() / ".claude" / "projects"
+    detail = since_ts if detail_since is None else detail_since
     out_rows: list = []
     out_acts: list = []
     out_files: list = []
@@ -537,8 +558,8 @@ def scan_events(since_ts: float, root: Path | None = None) -> tuple[list, list, 
             rows, acts, files = _file_model_events(fp)
             _MODEL_EVENT_CACHE[key] = (st.st_size, st.st_mtime, rows, acts, files)
         out_rows.extend(e for e in rows if e[0] >= since_ts)
-        out_acts.extend(a for a in acts if a[0] >= since_ts)
-        out_files.extend(f for f in files if f[0] >= since_ts)
+        out_acts.extend(a for a in acts if a[0] >= detail)
+        out_files.extend(f for f in files if f[0] >= detail)
     for key in [k for k in _MODEL_EVENT_CACHE if k not in seen]:
         del _MODEL_EVENT_CACHE[key]
     return out_rows, out_acts, out_files

@@ -302,6 +302,8 @@ class Heatmap(QWidget):
         if x < self._LABEL_W or y >= 7 * self._CELL_H:
             return
         cell_w = (self.width() - self._LABEL_W) / 24.0
+        if cell_w <= 0:        # widget pinched to <= the label gutter
+            return
         col = int((x - self._LABEL_W) / cell_w)
         row = int(y / self._CELL_H)
         if 0 <= row < 7 and 0 <= col < 24:

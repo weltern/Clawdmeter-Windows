@@ -230,6 +230,59 @@ def test_build_aggregate_language():
     assert agg["files_edited"] == 2
 
 
+def test_parse_iso_ts_utc_and_naive():
+    from transcript import parse_iso_ts
+    z = parse_iso_ts("2026-06-14T03:26:31.977Z")
+    off = parse_iso_ts("2026-06-14T03:26:31.977+00:00")
+    naive = parse_iso_ts("2026-06-14T03:26:31.977")   # tz-less -> treated as UTC
+    assert z == off == naive
+    assert parse_iso_ts("2026-06-14T03:26:31") == parse_iso_ts("2026-06-14T03:26:31Z")
+    assert parse_iso_ts(None) is None
+    assert parse_iso_ts("not-a-timestamp") is None
+
+
+def test_build_aggregate_empty_month():
+    from datetime import datetime
+    now = datetime(2026, 6, 12, 18, 0, 0).timestamp()
+    since = datetime(2026, 6, 1, 0, 0, 0).timestamp()
+    agg = stats.build_aggregate([], now, since)
+    assert agg["busiest_day"] is None        # no epoch-0 date for a zero month
+    assert agg["record_day"] is None
+    assert agg["value_total"] == 0.0 and agg["lifetime_value_usd"] == 0.0
+    assert agg["current_streak"] == 0 and agg["best_streak"] == 0
+    assert agg["files_edited"] == 0 and agg["language_counts"] == {}
+
+
+def test_scan_events_streams(tmp_path):
+    """The disk parser behind the whole Stats aggregate: token rows, activity
+    classification, and file-mutation paths from one transcript."""
+    from transcript import scan_events
+    iso = datetime.now(timezone.utc).isoformat()
+    f = tmp_path / "myproj" / "s.jsonl"
+    f.parent.mkdir(parents=True)
+    rows_in = [
+        {"cwd": "/home/u/myproj", "timestamp": iso, "message": {
+            "role": "assistant", "model": "claude-opus-4-8",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "content": [
+                {"type": "tool_use", "name": "Edit",
+                 "input": {"file_path": "/home/u/myproj/app.py"}},   # mutation -> coding + file
+                {"type": "tool_use", "name": "Read",
+                 "input": {"file_path": "/home/u/myproj/readme.md"}},  # read -> reading, NO file
+                {"type": "tool_use", "name": "mcp__github__list_prs",
+                 "input": {}},                                          # mcp -> integrating
+            ]}},
+        {"timestamp": iso, "message": {"role": "user", "content": "hi"}},  # not assistant
+    ]
+    f.write_text("\n".join(json.dumps(r) for r in rows_in), encoding="utf-8")
+    rows, acts, files = scan_events(0.0, root=tmp_path)
+    assert len(rows) == 1
+    _ts, model, project, i, o, _cr, _cw = rows[0]
+    assert (model, project, i, o) == ("claude-opus-4-8", "myproj", 10, 5)
+    assert sorted(a for _, a in acts) == ["coding", "integrating", "reading"]
+    assert [p for _, p in files] == ["/home/u/myproj/app.py"]   # only the mutating Edit
+
+
 def test_cap_eta():
     pts = [(0.0, 10.0), (1200.0, 30.0)]          # +20% over 1200s
     eta = stats.cap_eta(pts, current=30.0, now=1200.0)

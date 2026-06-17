@@ -301,26 +301,28 @@ def build_aggregate(events: list, now: float, since: float,
     turns = 0
     days_seen: set = set()
     month_ts: list = []
-    life_by_model: dict = {}
-    life_day_tokens: dict = {}                  # lifetime: date -> {model: usage}
-    life_days: set = set()
+    # Lifetime figures accumulate incrementally (model_value_usd is linear in
+    # tokens), so we never hold per-model token dicts for all of history — just a
+    # running total and a per-day dollar map (bounded by active days).
+    lifetime_value = 0.0
+    life_day_value: dict = {}                   # lifetime: date -> usd
     cut7, cut14 = now - 7 * 86400, now - 14 * 86400
     wk_this: dict = {}
     wk_last: dict = {}
 
     for ts, model, project, i, o, cr, cw in events:
         vals = (i, o, cr, cw)
-        d = datetime.fromtimestamp(ts).date()
-        _add(life_by_model.setdefault(model, _zero()), vals)
-        _add(life_day_tokens.setdefault(d, {}).setdefault(model, _zero()), vals)
-        life_days.add(d)
+        dt = datetime.fromtimestamp(ts)
+        d = dt.date()
+        ev_val = model_value_usd(model, dict(zip(_BUCKETS, vals)))
+        lifetime_value += ev_val
+        life_day_value[d] = life_day_value.get(d, 0.0) + ev_val
         if ts >= cut7:
             _add(wk_this.setdefault(model, _zero()), vals)
         elif ts >= cut14:
             _add(wk_last.setdefault(model, _zero()), vals)
         if ts >= since:
             turns += 1
-            dt = datetime.fromtimestamp(ts)
             heatmap[dt.weekday()][dt.hour] += 1
             days_seen.add(d)
             month_ts.append(ts)
@@ -338,15 +340,14 @@ def build_aggregate(events: list, now: float, since: float,
     while d <= today:
         series.append((d, value_usd(day_tokens.get(d, {}))))
         d += timedelta(days=1)
-    busiest = max(series, key=lambda dv: dv[1]) if series else None
+    busiest = max(series, key=lambda dv: dv[1]) if any(v for _, v in series) else None
 
     record_day = None
-    if life_day_tokens:
-        rd_date, rd_models = max(life_day_tokens.items(),
-                                 key=lambda kv: value_usd(kv[1]))
-        record_day = (rd_date, value_usd(rd_models))
+    if life_day_value:
+        rd_date = max(life_day_value, key=life_day_value.get)
+        record_day = (rd_date, round(life_day_value[rd_date], 2))
 
-    cur_streak, best_streak = day_streaks(life_days, today)
+    cur_streak, best_streak = day_streaks(set(life_day_value), today)
 
     activity_counts: dict = {}
     for ts, a in (activity_events or []):
@@ -373,7 +374,7 @@ def build_aggregate(events: list, now: float, since: float,
         "input_tokens": input_tokens,
         "cache_hit_rate": cache_hit_rate(cache_read_tokens, input_tokens),
         # cross-period (read the whole event list, not just the month)
-        "lifetime_value_usd": value_usd(life_by_model),
+        "lifetime_value_usd": round(lifetime_value, 2),
         "record_day": record_day,        # (date, usd) | None — biggest day ever
         "current_streak": cur_streak,
         "best_streak": best_streak,
@@ -390,6 +391,8 @@ def compute_aggregate(now: float) -> dict:
     """Full Stats aggregate: month-to-date figures plus lifetime value, streaks,
     week-over-week, activity and code-by-language breakdowns. Lifetime transcript
     scan (cached per file by size/mtime). Disk I/O — call it off the UI thread."""
-    rows, acts, files = scan_events(0.0)
-    return build_aggregate(rows, now, month_start_ts(now),
-                           activity_events=acts, file_events=files)
+    since = month_start_ts(now)
+    # Token rows scanned for the whole lifetime (lifetime value, streaks, record
+    # day, week-over-week); activity/file detail only for the month it's shown for.
+    rows, acts, files = scan_events(0.0, detail_since=since)
+    return build_aggregate(rows, now, since, activity_events=acts, file_events=files)
