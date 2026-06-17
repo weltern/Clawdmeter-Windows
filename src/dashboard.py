@@ -25,12 +25,14 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     QTimer,
+    QUrl,
     Signal,
 )
 from PySide6.QtGui import (
     QAction,
     QColor,
     QCursor,
+    QDesktopServices,
     QGuiApplication,
     QIcon,
     QPainter,
@@ -65,6 +67,8 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 from reset_notify import ResetDecision, ResetNotifier
+import update_check
+from update_check import UpdateChecker
 from session_shelf import (
     CompactView, SessionShelf, UsageBar, apply_overage_bar, square_caret_icon,
 )
@@ -981,7 +985,7 @@ class SettingsPanel(QWidget):
     def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested,
                  on_refresh_token=None, on_auto_refresh_changed=None,
                  on_poll_interval_changed=None, on_sessions_view_changed=None,
-                 on_token_view_changed=None) -> None:
+                 on_token_view_changed=None, on_check_updates=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -994,6 +998,7 @@ class SettingsPanel(QWidget):
         self._on_poll_interval_changed = on_poll_interval_changed
         self._on_sessions_view_changed = on_sessions_view_changed
         self._on_token_view_changed = on_token_view_changed
+        self._on_check_updates = on_check_updates
         self.hide()
 
         outer = QVBoxLayout(self)
@@ -1080,6 +1085,24 @@ class SettingsPanel(QWidget):
         self.quit_on_close_check.setChecked(app_settings.get_quit_on_close())
         self.quit_on_close_check.toggled.connect(self._on_quit_on_close_toggled)
         layout.addWidget(self.quit_on_close_check)
+
+        layout.addSpacing(10)
+        layout.addWidget(QLabel("UPDATES", objectName="sectionLabel"))
+        updates_hint = QLabel(
+            "Clawdmeter ships as a single .exe with no auto-installer. When a "
+            "newer release is published on GitHub, the tray menu shows an "
+            "“Update available” item — click it to open the download page.",
+            objectName="sectionHint",
+        )
+        updates_hint.setWordWrap(True)
+        layout.addWidget(updates_hint)
+        self.auto_check_updates_check = QCheckBox("Automatically check for updates")
+        self.auto_check_updates_check.setChecked(app_settings.get_auto_check_updates())
+        self.auto_check_updates_check.toggled.connect(self._on_auto_check_updates_toggled)
+        layout.addWidget(self.auto_check_updates_check)
+        self.check_updates_btn = QPushButton("Check for updates now")
+        self.check_updates_btn.clicked.connect(self._on_check_updates_clicked)
+        layout.addWidget(self.check_updates_btn)
 
         layout.addSpacing(10)
         layout.addWidget(QLabel("SESSIONS", objectName="sectionLabel"))
@@ -1389,6 +1412,14 @@ class SettingsPanel(QWidget):
     def _on_quit_on_close_toggled(self, checked: bool) -> None:
         app_settings.set_quit_on_close(checked)
 
+    def _on_auto_check_updates_toggled(self, checked: bool) -> None:
+        # The running checker reads this each cycle, so no live callback needed.
+        app_settings.set_auto_check_updates(checked)
+
+    def _on_check_updates_clicked(self) -> None:
+        if self._on_check_updates:
+            self._on_check_updates()
+
     def _on_multi_sessions_toggled(self, checked: bool) -> None:
         app_settings.set_show_multiple_sessions(checked)
         if self._on_sessions_view_changed:
@@ -1697,6 +1728,7 @@ class Dashboard(QMainWindow):
             on_poll_interval_changed=self._set_poll_interval,
             on_sessions_view_changed=self._apply_session_view,
             on_token_view_changed=self._apply_token_view,
+            on_check_updates=self._check_for_updates_now,
         )
         self.settings_panel.place_closed()
         content.installEventFilter(self)
@@ -1779,11 +1811,24 @@ class Dashboard(QMainWindow):
             act.triggered.connect(lambda _=False, m=mode: self._set_view_mode(m))
             tray_menu.addAction(act)
         tray_menu.addSeparator()
+        # Hidden until a newer release is found; clicking opens the download page.
+        self._update_action = QAction("Update available", self)
+        self._update_action.setVisible(False)
+        self._update_action.triggered.connect(self._open_update_page)
+        tray_menu.addAction(self._update_action)
+        self._check_updates_action = QAction("Check for updates", self)
+        self._check_updates_action.triggered.connect(self._check_for_updates_now)
+        tray_menu.addAction(self._check_updates_action)
+        tray_menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self._real_quit)
         tray_menu.addAction(quit_action)
         self._tray.setContextMenu(tray_menu)
         self._tray.activated.connect(self._on_tray_activated)
+        # Clicking the "update available" balloon should open the release page;
+        # messageClicked is global, so the handler checks for a pending update.
+        self._tray.messageClicked.connect(self._on_tray_message_clicked)
+        self._update_info = None
         self._tray.setToolTip("Clawdmeter - starting…")
         self._tray.show()
 
@@ -1827,6 +1872,7 @@ class Dashboard(QMainWindow):
             self._start_mock()
         else:
             self._start_poller()
+            self._start_update_checker()
             # Now that self.mini / self.sprite / self.shelf exist, the
             # watcher's initial synchronous poll can safely drive the shelf.
             self._transcript.start()
@@ -1983,6 +2029,58 @@ class Dashboard(QMainWindow):
         self._poller.sample.connect(self._on_sample)
         self._poller.refresh_status.connect(self._on_refresh_status)
         self._poller.start()
+
+    def _start_update_checker(self) -> None:
+        self._update_checker = UpdateChecker()
+        self._update_checker.update_available.connect(self._on_update_available)
+        self._update_checker.check_finished.connect(self._on_update_check_finished)
+        self._update_checker.start()
+
+    def _on_update_available(self, info) -> None:
+        """A newer release was found (background or manual check)."""
+        self._update_info = info
+        self._update_action.setText(f"Update available ({info.version}) — get it")
+        self._update_action.setVisible(True)
+        self._tray.setToolTip(f"Clawdmeter — update {info.version} available")
+        self._tray.showMessage(
+            "Clawdmeter update available",
+            f"Version {info.version} is out. Click here, or use the tray menu, "
+            "to open the download page.",
+            QSystemTrayIcon.MessageIcon.Information, 10000,
+        )
+        self._start_tray_flash()
+
+    def _on_update_check_finished(self, info) -> None:
+        """Feedback for a manual 'Check for updates' (info is None when current)."""
+        if info is None:
+            self._tray.showMessage(
+                "Clawdmeter",
+                f"You're on the latest version ({app_settings.APP_VERSION}).",
+                QSystemTrayIcon.MessageIcon.Information, 5000,
+            )
+
+    def _check_for_updates_now(self) -> None:
+        checker = getattr(self, "_update_checker", None)
+        if checker is None:
+            self._tray.showMessage(
+                "Clawdmeter", "Update check isn't available in mock mode.",
+                QSystemTrayIcon.MessageIcon.Information, 4000,
+            )
+            return
+        self._tray.showMessage(
+            "Clawdmeter", "Checking for updates…",
+            QSystemTrayIcon.MessageIcon.Information, 3000,
+        )
+        checker.request_check()
+
+    def _open_update_page(self) -> None:
+        info = getattr(self, "_update_info", None)
+        QDesktopServices.openUrl(QUrl(info.url if info else update_check.RELEASES_PAGE))
+
+    def _on_tray_message_clicked(self) -> None:
+        # Only act if there's a pending update — other balloons are informational.
+        if getattr(self, "_update_info", None) is not None:
+            self._open_update_page()
 
     def _request_token_refresh(self) -> None:
         poller = getattr(self, "_poller", None)
@@ -2696,6 +2794,9 @@ class Dashboard(QMainWindow):
         if hasattr(self, "_poller"):
             self._poller.stop()
             self._poller.wait(2000)
+        if hasattr(self, "_update_checker"):
+            self._update_checker.stop()
+            self._update_checker.wait(2000)
         self._transcript.stop()
         self.sprite.stop()
         self.shelf.stop_all()

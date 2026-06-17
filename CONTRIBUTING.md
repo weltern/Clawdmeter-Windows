@@ -18,6 +18,19 @@ process keeps it manageable:
 - **Bundle large refactors or unrelated reformatting** into a feature/fix PR.
   Small, focused diffs get reviewed and merged faster.
 
+**Cutting a release:**
+
+1. Bump `APP_VERSION` in `src/app_settings.py` to match the new tag.
+2. `./build.ps1` — produces `dist/Clawdmeter.exe` and `dist/Clawdmeter.exe.sha256`.
+3. Tag and publish: `gh release create vX.Y.Z dist/Clawdmeter.exe dist/Clawdmeter.exe.sha256`
+   with notes. **Always upload the `.sha256`** (and/or paste the hash into the
+   notes) — the in-app update check reads it to verify a download before
+   swapping the exe, and shipping it now keeps that path ready.
+
+The app checks GitHub's *latest release* on launch (then ~daily) and surfaces an
+"Update available" tray item; it compares the running `APP_VERSION` against the
+release tag, so the two must stay in lockstep.
+
 **Cross-platform (Linux/macOS):** this is intentionally a Windows-focused app,
 and that's the current scope. The UI is Qt (PySide6) so a port isn't far-fetched,
 but several pieces are Windows-specific (tray and Start-menu integration, the
