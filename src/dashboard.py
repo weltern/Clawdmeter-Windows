@@ -211,6 +211,13 @@ QLabel#pathDisplay {
 QLabel#credStatus { font-size: 10px; color: #6b7280; }
 QLabel#sectionHint { font-size: 10px; color: #6b7280; }
 QLabel#pollNote { font-size: 10px; color: #f59e0b; font-weight: 600; }
+
+/* Stats page cards */
+QFrame#statCard {
+    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 8px;
+}
+QLabel#statLabel { font-size: 10px; color: #6b7280; letter-spacing: 2px; font-weight: 600; }
+QLabel#statBig { font-size: 32px; font-weight: 700; color: #e6edf3; }
 QPushButton#resetLink {
     background: transparent; color: #9ca3af; border: 0; padding: 2px 4px;
     text-decoration: underline; font-size: 10px;
@@ -1646,6 +1653,22 @@ class NavRail(QWidget):
         self.setGeometry(0, 0, self.COLLAPSED, p.height())
 
 
+_PLAN_LABELS = {
+    "default_claude_max_20x": "Max 20×",
+    "default_claude_max_5x": "Max 5×",
+    "default_claude_pro": "Pro",
+    "default_claude_free": "Free",
+}
+
+
+def plan_label(tier: str | None) -> str:
+    """Human label for an organization.rate_limit_tier (e.g. 'Max 5×')."""
+    if not tier:
+        return "Claude"
+    return _PLAN_LABELS.get(
+        tier, tier.replace("default_claude_", "").replace("_", " ").title())
+
+
 class Dashboard(QMainWindow):
     def __init__(self, mock: bool = False) -> None:
         super().__init__()
@@ -1946,23 +1969,39 @@ class Dashboard(QMainWindow):
         self._pages.setCurrentIndex(idx)
 
     def _build_stats_page(self) -> QWidget:
-        """Placeholder Stats page for the nav-rail prototype."""
+        """Stats page. First card: real extra-usage (pay-as-you-go) spend from the
+        usage endpoint (K1). More cards (ROI, trends, heatmap) land here next."""
         page = QWidget()
         v = QVBoxLayout(page)
-        v.setContentsMargins(28, 18, 28, 14)
-        v.addStretch(1)
-        title = QLabel("STATS", objectName="sectionLabel", alignment=Qt.AlignCenter)
-        body = QLabel(
-            "Coming soon — token-usage trends, per-session history, and "
-            "limit-reset timelines.",
-            objectName="sectionHint", alignment=Qt.AlignCenter,
-        )
-        body.setWordWrap(True)
-        v.addWidget(title)
-        v.addSpacing(8)
-        v.addWidget(body)
+        v.setContentsMargins(24, 18, 24, 18)
+        v.setSpacing(14)
+        v.addWidget(QLabel("STATS", objectName="settingsTitle"))
+
+        card = QFrame(objectName="statCard")
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(16, 14, 16, 16)
+        cl.setSpacing(3)
+        cl.addWidget(QLabel("EXTRA USAGE THIS MONTH", objectName="statLabel"))
+        self.stat_spend = QLabel("—", objectName="statBig")
+        cl.addWidget(self.stat_spend)
+        self.stat_spend_sub = QLabel("", objectName="sectionHint")
+        self.stat_spend_sub.setWordWrap(True)
+        cl.addWidget(self.stat_spend_sub)
+        v.addWidget(card)
+
         v.addStretch(1)
         return page
+
+    def _update_stats(self, s: UsageSample) -> None:
+        """Refresh the Stats cards from a sample (called on every ok poll)."""
+        if s.extra_usage_enabled or s.extra_usage_used_usd:
+            self.stat_spend.setText(f"${s.extra_usage_used_usd:,.2f}")
+            cap = (f"of ${s.extra_usage_limit_usd:,.2f} cap"
+                   if s.extra_usage_limit_usd else "no monthly cap")
+            self.stat_spend_sub.setText(f"{plan_label(s.plan_tier)} · {cap}")
+        else:
+            self.stat_spend.setText("$0.00")
+            self.stat_spend_sub.setText("Pay-as-you-go off")
 
     def _set_always_on_top(self, on: bool) -> None:
         """Zero-flicker topmost via SetWindowPos. Qt's setWindowFlag forces a
@@ -2188,6 +2227,9 @@ class Dashboard(QMainWindow):
                 timestamp=time.time(),
                 tokens_5h=914_000,
                 tokens_7d=19_400_000,
+                plan_tier="default_claude_max_5x",
+                extra_usage_enabled=True,
+                extra_usage_used_usd=round(self._mock_pct * 0.3, 2),
             ))
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
@@ -2357,6 +2399,7 @@ class Dashboard(QMainWindow):
         self._sync_mini(s)
         self._update_compact_usage(
             s, s.session_reset_minutes, s.weekly_reset_minutes)
+        self._update_stats(s)
 
         self._rate.observe(s.session_pct)
         # While the shelf is up it owns the mascots (per-session tiles + the
