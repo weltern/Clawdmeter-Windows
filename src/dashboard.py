@@ -69,6 +69,7 @@ import winutil
 from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
+import stats
 from usage_history import UsageHistory
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
@@ -1969,31 +1970,47 @@ class Dashboard(QMainWindow):
         self._pages.setCurrentIndex(idx)
 
     def _build_stats_page(self) -> QWidget:
-        """Stats page. First card: real extra-usage (pay-as-you-go) spend from the
-        usage endpoint (K1). More cards (ROI, trends, heatmap) land here next."""
+        """Stats page: ROI (API value vs subscription) + real extra-usage spend.
+        More cards (trends, heatmap) land here next."""
         page = QWidget()
         v = QVBoxLayout(page)
         v.setContentsMargins(24, 18, 24, 18)
         v.setSpacing(14)
         v.addWidget(QLabel("STATS", objectName="settingsTitle"))
 
-        card = QFrame(objectName="statCard")
-        cl = QVBoxLayout(card)
-        cl.setContentsMargins(16, 14, 16, 16)
-        cl.setSpacing(3)
-        cl.addWidget(QLabel("EXTRA USAGE THIS MONTH", objectName="statLabel"))
-        self.stat_spend = QLabel("—", objectName="statBig")
-        cl.addWidget(self.stat_spend)
-        self.stat_spend_sub = QLabel("", objectName="sectionHint")
-        self.stat_spend_sub.setWordWrap(True)
-        cl.addWidget(self.stat_spend_sub)
-        v.addWidget(card)
+        def card(label: str):
+            frame = QFrame(objectName="statCard")
+            cl = QVBoxLayout(frame)
+            cl.setContentsMargins(16, 14, 16, 16)
+            cl.setSpacing(3)
+            cl.addWidget(QLabel(label, objectName="statLabel"))
+            big = QLabel("—", objectName="statBig")
+            cl.addWidget(big)
+            sub = QLabel("", objectName="sectionHint")
+            sub.setWordWrap(True)
+            cl.addWidget(sub)
+            v.addWidget(frame)
+            return big, sub
 
+        self.stat_value, self.stat_value_sub = card("API VALUE THIS MONTH")
+        self.stat_spend, self.stat_spend_sub = card("EXTRA USAGE THIS MONTH")
         v.addStretch(1)
         return page
 
     def _update_stats(self, s: UsageSample) -> None:
         """Refresh the Stats cards from a sample (called on every ok poll)."""
+        # ROI: API-equivalent value of usage vs the monthly subscription price.
+        self.stat_value.setText(f"${s.value_usd:,.2f}")
+        price = stats.plan_monthly_usd(s.plan_tier)
+        if price and s.value_usd:
+            mult = s.value_usd / price
+            mult_s = f"{mult:.0f}×" if mult >= 10 else f"{mult:.1f}×"
+            self.stat_value_sub.setText(
+                f"{plan_label(s.plan_tier)} plan · ${price:,.0f}/mo · {mult_s} the subscription")
+        else:
+            self.stat_value_sub.setText("of pay-as-you-go API value this month")
+
+        # Real extra-usage (overage) spend.
         if s.extra_usage_enabled or s.extra_usage_used_usd:
             self.stat_spend.setText(f"${s.extra_usage_used_usd:,.2f}")
             cap = (f"of ${s.extra_usage_limit_usd:,.2f} cap"
@@ -2230,6 +2247,7 @@ class Dashboard(QMainWindow):
                 plan_tier="default_claude_max_5x",
                 extra_usage_enabled=True,
                 extra_usage_used_usd=round(self._mock_pct * 0.3, 2),
+                value_usd=round(self._mock_pct * 26.0, 2),
             ))
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
