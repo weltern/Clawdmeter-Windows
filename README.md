@@ -20,6 +20,12 @@ Standalone Windows desktop dashboard for Claude Code usage.
   running
 - Three **view modes** — the full dashboard, a slim compact list, and a tiny
   always-on-top mini readout
+- A **Stats page** — what your subscription is actually worth (value vs price,
+  lifetime value, cache savings) and how you use Claude (value by model and
+  project, code by language, activity mix, streaks, a daily-value strip and an
+  activity heatmap) — all computed locally from your transcripts
+- A slim **navigation rail** down the left edge to switch between the
+  **Dashboard**, the **Stats** page, and **Settings**
 - A system-tray icon whose fill arc tracks session % — **hover it for a quick
   session & weekly readout**
 
@@ -98,6 +104,42 @@ raw totals are kept out of it, so the number reflects real work):
 It's all behind one switch — **Settings → Token usage → Show token usage** (on
 by default). Turn it off and every token figure disappears.
 
+## Stats
+
+The **chart icon** in the left nav rail opens a Stats page that turns the usage
+you've already racked up into a picture of what your Claude Code subscription is
+actually worth. The dollar figures are **computed locally** — your transcripts
+priced against a bundled rate card — enriched with Anthropic's OAuth usage
+endpoint for real spend and plan details. Every visual is hand-drawn, so the
+page adds nothing to the download size.
+
+A plan badge (e.g. `Max 5× · $100/mo`) sits at the top, and below it:
+
+- **API value this month** — what this month's usage would cost at
+  pay-as-you-go API rates, measured against your subscription price (e.g. "≈ 33×
+  your subscription this month"), with **lifetime value** and the **break-even
+  day** (when the month's value first passed what you pay) grouped alongside.
+- **Extra usage this month** — real pay-as-you-go spend beyond your plan, from
+  the usage endpoint, against your monthly cap if you have one.
+- **Cache savings this month** — dollars saved by prompt caching vs paying full
+  input price, plus your **cache hit rate**.
+- **Time to 7-day cap** — a burn-rate estimate of when you'd hit the weekly limit
+  at your current pace (or "steady" / "clear" when you're not on track to).
+- **Current streak** and **sessions this month** — your active-day streak (and
+  best ever), and how many work sessions you've had (with average and longest).
+- **Value by model** and **value by project** — where that value came from,
+  broken down by model and by project folder.
+- **Code by language** — the languages of the files Claude edited or created this
+  month, by share of files (Python, C#, TypeScript, … with an *Other* roll-up).
+- **Activity mix** — how your tool calls split across coding, reading, planning,
+  thinking, searching and integrating.
+- **This week vs last** — this week's value against last week's, with the change.
+- **Value per day** — a per-day value bar strip across the month, with date ticks.
+- **When you work** — a 7×24 weekday-by-hour heatmap of your activity.
+- a **this-month recap** — top model, busiest day, biggest day ever, and totals.
+
+![Clawdmeter-Windows Stats page — subscription value and ROI, cache savings, value by model/project, code by language, an activity heatmap and a monthly recap](assets/Screenshot-stats.png)
+
 ## Overage
 
 Go past a limit and keep working on paid **usage credits**, and that window's bar
@@ -152,8 +194,12 @@ Updates**.
 It reads your Claude Code OAuth token from `~/.claude/.credentials.json`,
 sends a minimal 1-token request to `api.anthropic.com/v1/messages` on a
 configurable interval (60s by default), and reads the rate-limit headers from
-the response. The window minimises to the system tray; closing the window
-hides it. **Quit** from the tray menu fully exits.
+the response. On the same poll it also reads Anthropic's OAuth usage and profile
+endpoints (`/api/oauth/usage`, `/api/oauth/profile`) for your plan, extra-usage
+spend and per-model limits. The Stats page values your **local transcripts**
+against a bundled price map — no extra API calls. The window minimises to the
+system tray; closing the window hides it. **Quit** from the tray menu fully
+exits.
 
 ## Requirements
 
@@ -191,7 +237,10 @@ now need.
 
 ## Settings
 
-Open the settings panel from the gear icon in the title bar.
+Open Settings from the **gear at the bottom of the left nav rail** — it's a
+full page in the same window, alongside the Dashboard and Stats, organized into
+tabs (**General**, **Display**, **Connection**, **Notifications**, **About**)
+that each scroll on their own.
 
 ![Clawdmeter-Windows settings panel](assets/Screenshot-2-Settings.png)
 
@@ -239,8 +288,6 @@ Open the settings panel from the gear icon in the title bar.
   fires every configured channel at once.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
   to pin).
-
-The panel scrolls if the window is too short to fit every section.
 
 ## Credit
 
