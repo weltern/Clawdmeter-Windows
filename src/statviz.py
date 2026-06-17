@@ -187,6 +187,98 @@ class PercentBars(QWidget):
         p.end()
 
 
+class CategoryBars(QWidget):
+    """Rows of (label, pct, color_hex): label · proportional bar · 'N%'. Each row
+    carries its own colour and bars scale to the largest row, so small slices stay
+    visible. Used for the activity breakdown (coding/reading/…)."""
+
+    _ROW_H = 22
+    _LABEL_W = 96
+    _VALUE_W = 40
+
+    def __init__(self, parent=None, empty_text: str = "—") -> None:
+        super().__init__(parent)
+        self._rows: list = []
+        self._empty = empty_text
+        self.setFixedHeight(self._ROW_H)
+
+    def set_data(self, rows: list) -> None:
+        self._rows = [r for r in (rows or []) if r[1] > 0][:8]
+        self.setFixedHeight(max(1, len(self._rows)) * self._ROW_H)
+        self.update()
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        font = p.font()
+        font.setPixelSize(11)
+        p.setFont(font)
+        w = self.width()
+        if not self._rows:
+            p.setPen(_DIM)
+            p.drawText(self.rect(), Qt.AlignVCenter | Qt.AlignLeft, self._empty)
+            p.end()
+            return
+        vmax = max(r[1] for r in self._rows) or 1
+        bar_max = max(10.0, w - self._LABEL_W - self._VALUE_W - 8)
+        for i, (label, pct, color) in enumerate(self._rows):
+            y = i * self._ROW_H
+            cy = y + self._ROW_H / 2
+            p.setPen(_DIM)
+            p.drawText(QRectF(0, y, self._LABEL_W - 8, self._ROW_H),
+                       Qt.AlignVCenter | Qt.AlignLeft, label)
+            bw = max(2.0, (pct / vmax) * bar_max)
+            p.fillRect(QRectF(self._LABEL_W, cy - 5, bw, 10), QColor(color))
+            p.setPen(QColor("#e6edf3"))
+            p.drawText(QRectF(w - self._VALUE_W, y, self._VALUE_W, self._ROW_H),
+                       Qt.AlignVCenter | Qt.AlignRight, f"{pct:.0f}%")
+        p.end()
+
+
+class WeekBars(QWidget):
+    """This-week vs last-week dollar value as two horizontal bars (this week in
+    accent, last week dimmed), each labelled with its total. set_data(this, last)."""
+
+    _ROW_H = 26
+    _LABEL_W = 66
+    _VALUE_W = 78
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._this = 0.0
+        self._last = 0.0
+        self.setFixedHeight(self._ROW_H * 2 + 6)
+
+    def set_data(self, this_v: float, last_v: float) -> None:
+        self._this = float(this_v or 0.0)
+        self._last = float(last_v or 0.0)
+        self.update()
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        font = p.font()
+        font.setPixelSize(11)
+        p.setFont(font)
+        w = self.width()
+        vmax = max(self._this, self._last, 1.0)
+        bar_max = max(10.0, w - self._LABEL_W - self._VALUE_W - 8)
+        rows = (("This week", self._this, _ACCENT),
+                ("Last week", self._last, _lerp(_ACCENT, _EMPTY, 0.55)))
+        for i, (label, val, color) in enumerate(rows):
+            y = i * self._ROW_H + 2
+            cy = y + self._ROW_H / 2
+            p.setPen(_DIM)
+            p.drawText(QRectF(0, y, self._LABEL_W - 6, self._ROW_H),
+                       Qt.AlignVCenter | Qt.AlignLeft, label)
+            bw = max(2.0, (val / vmax) * bar_max)
+            p.fillRect(QRectF(self._LABEL_W, cy - 6, bw, 12), color)
+            p.setPen(QColor("#e6edf3"))
+            p.drawText(QRectF(w - self._VALUE_W, y, self._VALUE_W, self._ROW_H),
+                       Qt.AlignVCenter | Qt.AlignRight, f"${val:,.0f}")
+        p.end()
+
+
 class Heatmap(QWidget):
     """7x24 weekday(row) x hour(col) activity grid. set_data(grid[7][24])."""
 

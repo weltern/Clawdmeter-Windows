@@ -71,7 +71,7 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 import stats
-from statviz import DailyBars, Heatmap, ModelBreakdown
+from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, WeekBars
 from usage_history import UsageHistory
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
@@ -82,6 +82,7 @@ from session_shelf import (
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
     ACTIVITY_ANIMS,
+    ACTIVITY_COLORS,
     ACTIVITY_LABELS,
     Activity as TranscriptActivity,
     AgentState as TranscriptAgentState,
@@ -221,7 +222,10 @@ QFrame#statCard {
 }
 QLabel#statLabel { font-size: 10px; color: #6b7280; letter-spacing: 2px; font-weight: 600; }
 QLabel#statBig { font-size: 32px; font-weight: 700; color: #e6edf3; }
+QLabel#statMid { font-size: 18px; font-weight: 700; color: #e6edf3; }
 QLabel#statPlan { font-size: 12px; color: #CE7D6B; font-weight: 600; letter-spacing: 1px; }
+QLabel#statDelta { font-size: 12px; font-weight: 700; }
+QFrame#statDivider { background: #1f2937; max-height: 1px; min-height: 1px; border: 0; }
 QPushButton#resetLink {
     background: transparent; color: #9ca3af; border: 0; padding: 2px 4px;
     text-decoration: underline; font-size: 10px;
@@ -1684,15 +1688,25 @@ def _fmt_count(n: int) -> str:
     return str(int(n))
 
 
+def _fmt_dur(secs: float) -> str:
+    """Compact duration label: 9120 -> '2.5h', 1500 -> '25m', 42 -> '42s'."""
+    secs = max(0, int(secs))
+    if secs >= 3600:
+        return f"{secs / 3600:.1f}h"
+    if secs >= 60:
+        return f"{secs // 60}m"
+    return f"{secs}s"
+
+
 class _StatsWorker(QThread):
-    """Computes the monthly Stats aggregate off the UI thread (a month-long
-    transcript scan + valuation). Emits the aggregate dict when done."""
+    """Computes the full Stats aggregate off the UI thread (a lifetime transcript
+    scan + valuation, cached per file). Emits the aggregate dict when done."""
 
     ready = Signal(object)
 
     def run(self) -> None:
         try:
-            agg = stats.monthly_aggregate(time.time())
+            agg = stats.compute_aggregate(time.time())
         except Exception:
             return
         self.ready.emit(agg)
@@ -2032,25 +2046,97 @@ class Dashboard(QMainWindow):
             v.addWidget(f)
             return big, sub
 
-        def viz_card(label: str, widget: QWidget) -> None:
+        def viz_card(label: str, widget: QWidget, delta: QLabel | None = None) -> None:
             f = QFrame(objectName="statCard")
             cl = QVBoxLayout(f)
             cl.setContentsMargins(16, 14, 16, 14)
             cl.setSpacing(8)
-            cl.addWidget(QLabel(label, objectName="statLabel"))
+            head = QHBoxLayout()
+            head.setContentsMargins(0, 0, 0, 0)
+            head.addWidget(QLabel(label, objectName="statLabel"))
+            if delta is not None:
+                head.addStretch(1)
+                head.addWidget(delta, 0, Qt.AlignVCenter)
+            cl.addLayout(head)
             cl.addWidget(widget)
             v.addWidget(f)
 
-        self.stat_value, self.stat_value_sub = num_card("API VALUE THIS MONTH")
+        def num_pair(label_a: str, label_b: str):
+            row = QHBoxLayout()
+            row.setSpacing(14)
+            outs = []
+            for lab in (label_a, label_b):
+                f = QFrame(objectName="statCard")
+                cl = QVBoxLayout(f)
+                cl.setContentsMargins(16, 14, 16, 16)
+                cl.setSpacing(3)
+                cl.addWidget(QLabel(lab, objectName="statLabel"))
+                big = QLabel("—", objectName="statBig")
+                cl.addWidget(big)
+                sub = QLabel("", objectName="sectionHint")
+                sub.setWordWrap(True)
+                cl.addWidget(sub)
+                row.addWidget(f, 1)
+                outs.append((big, sub))
+            v.addLayout(row)
+            return outs
+
+        # ROI card — API value this month, with lifetime value + break-even day
+        # grouped underneath (the "what is my plan worth" block).
+        roi = QFrame(objectName="statCard")
+        rl = QVBoxLayout(roi)
+        rl.setContentsMargins(16, 14, 16, 16)
+        rl.setSpacing(3)
+        rl.addWidget(QLabel("API VALUE THIS MONTH", objectName="statLabel"))
+        self.stat_value = QLabel("—", objectName="statBig")
+        rl.addWidget(self.stat_value)
+        self.stat_value_sub = QLabel("", objectName="sectionHint")
+        self.stat_value_sub.setWordWrap(True)
+        rl.addWidget(self.stat_value_sub)
+        divider = QFrame(objectName="statDivider")
+        rl.addSpacing(6)
+        rl.addWidget(divider)
+        rl.addSpacing(8)
+        extra = QHBoxLayout()
+        extra.setContentsMargins(0, 0, 0, 0)
+        extra.setSpacing(16)
+
+        def mini(label: str):
+            box = QVBoxLayout()
+            box.setSpacing(1)
+            val = QLabel("—", objectName="statMid")
+            box.addWidget(val)
+            box.addWidget(QLabel(label, objectName="statLabel"))
+            holder = QWidget()
+            holder.setLayout(box)
+            extra.addWidget(holder, 1)
+            return val
+
+        self.stat_lifetime = mini("LIFETIME VALUE")
+        self.stat_breakeven = mini("BROKE EVEN")
+        rl.addLayout(extra)
+        v.addWidget(roi)
+
         self.stat_spend, self.stat_spend_sub = num_card("EXTRA USAGE THIS MONTH")
         self.stat_cache, self.stat_cache_sub = num_card("CACHE SAVINGS THIS MONTH")
         self.stat_burn, self.stat_burn_sub = num_card("TIME TO 7-DAY CAP")
+
+        (self.stat_streak, self.stat_streak_sub), \
+            (self.stat_sessions, self.stat_sessions_sub) = \
+            num_pair("CURRENT STREAK", "SESSIONS THIS MONTH")
 
         self.stat_models = ModelBreakdown()
         viz_card("VALUE BY MODEL", self.stat_models)
 
         self.stat_projects = ModelBreakdown()
         viz_card("VALUE BY PROJECT", self.stat_projects)
+
+        self.stat_activity = CategoryBars(empty_text="No tool activity yet")
+        viz_card("WHAT YOU DO", self.stat_activity)
+
+        self.stat_week = WeekBars()
+        self.stat_week_delta = QLabel("", objectName="statDelta")
+        viz_card("THIS WEEK VS LAST", self.stat_week, delta=self.stat_week_delta)
 
         self.stat_bars = DailyBars()
         viz_card("VALUE PER DAY", self.stat_bars)
@@ -2076,16 +2162,65 @@ class Dashboard(QMainWindow):
         feed the ROI card's dollar value."""
         self._agg = agg
         self._render_roi()
+
         cr = agg.get("cache_read_tokens", 0)
+        rate = agg.get("cache_hit_rate", 0.0) * 100
         self.stat_cache.setText(f"${agg.get('cache_savings_usd', 0):,.2f}")
         self.stat_cache_sub.setText(
-            f"vs paying full input price on {_fmt_count(cr)} cache reads")
+            f"{rate:.0f}% cache hit rate · vs full input price on "
+            f"{_fmt_count(cr)} reads")
+
         self.stat_models.set_data(
             [(stats.model_display(m).replace("Claude ", ""), v)
              for m, v in agg.get("by_model_value", {}).items()])
         self.stat_projects.set_data(list(agg.get("by_project_value", {}).items()))
         self.stat_bars.set_data(agg.get("value_by_day", []))
         self.stat_heat.set_data(agg.get("heatmap"))
+
+        # Streak + sessions
+        cur = agg.get("current_streak", 0)
+        best = agg.get("best_streak", 0)
+        self.stat_streak.setText(str(cur))
+        self.stat_streak_sub.setText(
+            f"day{'' if cur == 1 else 's'} · best ever {best}")
+        sess = agg.get("sessions") or {}
+        self.stat_sessions.setText(f"{sess.get('count', 0):,}")
+        self.stat_sessions_sub.setText(
+            f"avg {_fmt_dur(sess.get('avg_secs', 0))} · "
+            f"longest {_fmt_dur(sess.get('longest_secs', 0))}")
+
+        # Activity breakdown — counts -> % rows with the mascot activity colours.
+        counts = agg.get("activity_counts") or {}
+        total = sum(counts.values())
+        rows = []
+        if total:
+            for key, n in counts.items():
+                try:
+                    act = TranscriptActivity(key)
+                except ValueError:
+                    continue
+                rows.append((ACTIVITY_LABELS.get(act, key.upper()),
+                             n / total * 100.0, ACTIVITY_COLORS.get(act, "#6b7280")))
+            rows.sort(key=lambda r: r[1], reverse=True)
+        self.stat_activity.set_data(rows)
+
+        # This week vs last week + delta badge
+        wt = agg.get("week_this_usd", 0.0)
+        wl = agg.get("week_last_usd", 0.0)
+        self.stat_week.set_data(wt, wl)
+        if wl > 0:
+            pct = (wt - wl) / wl * 100.0
+            up = pct >= 0
+            self.stat_week_delta.setText(f"{'+' if up else '−'}{abs(pct):.0f}%")
+            self.stat_week_delta.setStyleSheet(
+                f"color: {'#5FB3A1' if up else '#c13434'};")
+        elif wt > 0:
+            self.stat_week_delta.setText("new")
+            self.stat_week_delta.setStyleSheet("color: #5FB3A1;")
+        else:
+            self.stat_week_delta.setText("")
+
+        # Recap
         parts = []
         tm = agg.get("top_model")
         if tm and tm[1]:
@@ -2093,7 +2228,11 @@ class Dashboard(QMainWindow):
         bd = agg.get("busiest_day")
         if bd and bd[1]:
             parts.append(f"Busiest day — {bd[0]:%a %b %d} (${bd[1]:,.0f})")
-        parts.append(f"{agg.get('turns', 0):,} turns over {agg.get('active_days', 0)} active days")
+        rd = agg.get("record_day")
+        if rd and rd[1]:
+            parts.append(f"Biggest day ever — {rd[0]:%b %d, %Y} (${rd[1]:,.0f})")
+        parts.append(f"{agg.get('turns', 0):,} turns over "
+                     f"{agg.get('active_days', 0)} active days")
         self.stat_wrap.setText("\n".join(parts))
 
     def _refresh_stats(self) -> None:
@@ -2119,8 +2258,16 @@ class Dashboard(QMainWindow):
             "turns": 16704, "active_days": 12,
             "cache_savings_usd": 16999.36,
             "cache_read_tokens": 3_470_000_000, "input_tokens": 12_400_000,
+            "cache_hit_rate": 3_470_000_000 / (3_470_000_000 + 12_400_000),
             "by_project_value": {"Clawdmeter-Windows": 1880.0, "ReadyUp-Dev": 960.0,
                                  "Watchlist-Dev": 540.0},
+            "lifetime_value_usd": 48231.0,
+            "record_day": (today - timedelta(days=21), 612.0),
+            "current_streak": 12, "best_streak": 19,
+            "week_this_usd": 1180.0, "week_last_usd": 960.0,
+            "sessions": {"count": 147, "avg_secs": 38 * 60, "longest_secs": 2.4 * 3600},
+            "activity_counts": {"coding": 5200, "reading": 3100, "planning": 1400,
+                                "thinking": 900, "searching": 420, "integrating": 180},
         }
 
     def _update_stats(self, s: UsageSample) -> None:
@@ -2183,6 +2330,8 @@ class Dashboard(QMainWindow):
         if agg is None:                       # aggregate not computed yet
             self.stat_value.setText("—")
             self.stat_value_sub.setText("computing…")
+            self.stat_lifetime.setText("—")
+            self.stat_breakeven.setText("—")
             return
         val = agg["value_total"]
         self.stat_value.setText(f"${val:,.2f}")
@@ -2192,6 +2341,10 @@ class Dashboard(QMainWindow):
             self.stat_value_sub.setText(f"{mult_s} your subscription this month")
         else:
             self.stat_value_sub.setText("of pay-as-you-go API value this month")
+
+        self.stat_lifetime.setText(f"${agg.get('lifetime_value_usd', 0):,.0f}")
+        be = stats.break_even_day(agg.get("value_by_day", []), price)
+        self.stat_breakeven.setText(f"{be:%b %d}" if be else ("—" if price else "n/a"))
 
     def _set_always_on_top(self, on: bool) -> None:
         """Zero-flicker topmost via SetWindowPos. Qt's setWindowFlag forces a

@@ -417,19 +417,26 @@ def account_window_tokens(now: float, root: Path | None = None) -> tuple[int, in
     return sum_token_windows(all_events, now)
 
 
-# Per-file cache of parsed (ts, model, input, output, cache_read, cache_write)
-# token events for the by-model value scan, keyed/invalidated like the window
-# cache above. Separate cache because this scan reaches back further (a month)
-# and keeps all four token buckets + the model.
-_MODEL_EVENT_CACHE: dict[str, tuple[int, float, list]] = {}
+# Per-file cache of parsed events for the value/activity scan, keyed/invalidated
+# like the window cache above. Each entry holds BOTH the per-turn token rows
+# (ts, model, project, input, output, cache_read, cache_write) and the per-tool
+# activity events (ts, activity_str) so one file read serves every Stats
+# aggregate. Separate cache because this scan reaches back further than 7d.
+_MODEL_EVENT_CACHE: dict[str, tuple[int, float, list, list]] = {}
 
 
-def _file_model_events(fp: Path) -> list:
-    """Parse one transcript into (ts, model, project, input, output, cache_read,
-    cache_write) for every assistant turn with a model + usage + timestamp. The
-    project (the cwd leaf, captured once per file) lets the value be bucketed by
-    project as well as by model."""
+def _file_model_events(fp: Path) -> tuple[list, list]:
+    """Parse one transcript once into two parallel streams:
+
+      * rows  — (ts, model, project, input, output, cache_read, cache_write) for
+                every assistant turn with a model + usage + timestamp. The project
+                (cwd leaf, captured once per file) lets value bucket by project.
+      * acts  — (ts, activity_str) for every tool_use block (one per call, so
+                parallel tool calls each count), classified via TOOL_MAP. Drives
+                the activity breakdown.
+    """
     rows: list = []
+    acts: list = []
     cwd: str | None = None
     try:
         with fp.open(encoding="utf-8", errors="replace") as fh:
@@ -448,12 +455,21 @@ def _file_model_events(fp: Path) -> list:
                 msg = ev.get("message")
                 if not isinstance(msg, dict) or msg.get("role") != "assistant":
                     continue
+                ts = parse_iso_ts(ev.get("timestamp"))
+                if ts is None:
+                    continue
+
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            name = block.get("name")
+                            if isinstance(name, str) and name:
+                                acts.append((ts, _activity_for_tool(name).value))
+
                 usage = msg.get("usage")
                 model = msg.get("model")
                 if not isinstance(usage, dict) or not model:
-                    continue
-                ts = parse_iso_ts(ev.get("timestamp"))
-                if ts is None:
                     continue
 
                 def n(k: str) -> int:
@@ -466,23 +482,24 @@ def _file_model_events(fp: Path) -> list:
                              n("cache_read_input_tokens"),
                              n("cache_creation_input_tokens")))
     except OSError:
-        return []
+        return [], []
     project = project_name_from_cwd(cwd, fp)
-    return [(ts, model, project, i, o, cr, cw) for (ts, model, i, o, cr, cw) in rows]
+    rows = [(ts, model, project, i, o, cr, cw) for (ts, model, i, o, cr, cw) in rows]
+    return rows, acts
 
 
-def iter_model_events(since_ts: float, root: Path | None = None) -> list:
-    """Every (ts, model, input, output, cache_read, cache_write) assistant turn
-    at/after `since_ts`, across transcripts.
+def scan_events(since_ts: float, root: Path | None = None) -> tuple[list, list]:
+    """Both event streams (token rows, activity events) at/after `since_ts`.
 
     Only files modified at/after `since_ts` are read (an older file can't hold an
-    in-window turn), reusing the (size, mtime) per-file cache. Does disk I/O —
-    call it off the UI thread. The shared scanner behind the token/value/heatmap
-    aggregates so they all pass over the transcripts just once.
+    in-window turn), reusing the (size, mtime) per-file cache so one disk read
+    feeds every aggregate. Does disk I/O — call it off the UI thread. Pass
+    `since_ts=0` for a lifetime scan.
     """
     if root is None:
         root = Path.home() / ".claude" / "projects"
-    out: list = []
+    out_rows: list = []
+    out_acts: list = []
     seen: set[str] = set()
     for fp in root.rglob("*.jsonl"):
         try:
@@ -495,14 +512,22 @@ def iter_model_events(since_ts: float, root: Path | None = None) -> list:
         seen.add(key)
         cached = _MODEL_EVENT_CACHE.get(key)
         if cached and cached[0] == st.st_size and cached[1] == st.st_mtime:
-            events = cached[2]
+            rows, acts = cached[2], cached[3]
         else:
-            events = _file_model_events(fp)
-            _MODEL_EVENT_CACHE[key] = (st.st_size, st.st_mtime, events)
-        out.extend(e for e in events if e[0] >= since_ts)
+            rows, acts = _file_model_events(fp)
+            _MODEL_EVENT_CACHE[key] = (st.st_size, st.st_mtime, rows, acts)
+        out_rows.extend(e for e in rows if e[0] >= since_ts)
+        out_acts.extend(a for a in acts if a[0] >= since_ts)
     for key in [k for k in _MODEL_EVENT_CACHE if k not in seen]:
         del _MODEL_EVENT_CACHE[key]
-    return out
+    return out_rows, out_acts
+
+
+def iter_model_events(since_ts: float, root: Path | None = None) -> list:
+    """Every (ts, model, project, input, output, cache_read, cache_write)
+    assistant turn at/after `since_ts`, across transcripts. Thin wrapper over
+    `scan_events` (token rows only)."""
+    return scan_events(since_ts, root)[0]
 
 
 def account_tokens_by_model(since_ts: float, root: Path | None = None) -> dict:

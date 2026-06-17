@@ -125,6 +125,71 @@ def test_cache_savings():
     assert stats.cache_savings_usd({}) == 0.0
 
 
+def test_break_even_day():
+    from datetime import date
+    series = [(date(2026, 6, 1), 40.0), (date(2026, 6, 2), 80.0),
+              (date(2026, 6, 3), 10.0)]
+    assert stats.break_even_day(series, 100.0) == date(2026, 6, 2)   # 40+80 >= 100
+    assert stats.break_even_day(series, 5.0) == date(2026, 6, 1)
+    assert stats.break_even_day(series, 1000.0) is None              # never reached
+    assert stats.break_even_day(series, None) is None
+    assert stats.break_even_day(series, 0.0) is None
+
+
+def test_cache_hit_rate():
+    assert stats.cache_hit_rate(900, 100) == 0.9
+    assert stats.cache_hit_rate(0, 0) == 0.0
+    assert stats.cache_hit_rate(0, 500) == 0.0
+
+
+def test_sessionize_and_stats():
+    ts = [0, 60, 120, 2120, 2150]   # gap 2000s (>1800) splits before 2120
+    sess = stats.sessionize(ts, gap=1800)
+    assert sess == [(0, 120), (2120, 2150)]
+    st = stats.session_stats(ts, gap=1800)
+    assert st["count"] == 2
+    assert st["longest_secs"] == 120
+    assert st["avg_secs"] == 75
+    assert stats.session_stats([], gap=1800) == {
+        "count": 0, "avg_secs": 0.0, "longest_secs": 0.0}
+
+
+def test_day_streaks():
+    from datetime import date
+    today = date(2026, 6, 17)
+    cur, best = stats.day_streaks({date(2026, 6, 17), date(2026, 6, 16),
+                                   date(2026, 6, 15), date(2026, 6, 10)}, today)
+    assert cur == 3 and best == 3
+    # today inactive but yesterday active -> streak survives, anchored yesterday
+    cur, _ = stats.day_streaks({date(2026, 6, 16), date(2026, 6, 15)}, today)
+    assert cur == 2
+    assert stats.day_streaks(set(), today) == (0, 0)
+
+
+def test_build_aggregate_cross_period():
+    from datetime import datetime
+    d1 = datetime(2026, 6, 16, 14, 0, 0)
+    d2 = datetime(2026, 6, 16, 14, 5, 0)   # +5min: same session as d1
+    ev = [
+        (d1.timestamp(), "claude-opus-4-8", "alpha", 1_000_000, 0, 800_000, 0),
+        (d2.timestamp(), "claude-opus-4-8", "alpha", 0, 1_000_000, 0, 0),
+    ]
+    now = datetime(2026, 6, 17, 12, 0, 0).timestamp()
+    since = datetime(2026, 6, 1, 0, 0, 0).timestamp()
+    acts = [(d1.timestamp(), "coding"), (d2.timestamp(), "reading"),
+            (since - 10, "coding")]   # pre-month tool call -> excluded
+    agg = stats.build_aggregate(ev, now, since, activity_events=acts)
+
+    assert agg["lifetime_value_usd"] == agg["value_total"]   # all events in-month
+    assert agg["current_streak"] >= 1 and agg["best_streak"] >= 1
+    assert agg["week_this_usd"] == agg["value_total"]        # both within 7d of now
+    assert agg["week_last_usd"] == 0.0
+    assert agg["sessions"]["count"] == 1                     # 5-min gap < 30min
+    assert agg["activity_counts"] == {"coding": 1, "reading": 1}
+    assert 0.0 < agg["cache_hit_rate"] < 1.0                 # 800k cache vs 1M input
+    assert agg["record_day"][1] == agg["value_total"]
+
+
 def test_cap_eta():
     pts = [(0.0, 10.0), (1200.0, 30.0)]          # +20% over 1200s
     eta = stats.cap_eta(pts, current=30.0, now=1200.0)
