@@ -56,6 +56,50 @@ class DailyBars(QWidget):
         p.end()
 
 
+class ModelBreakdown(QWidget):
+    """Value-by-model: one row per model — label, a proportional bar, the $value.
+    set_data([(label, value)]); sorted desc, zero-value models dropped."""
+
+    _ROW_H = 24
+    _LABEL_W = 104
+    _VALUE_W = 72
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._rows: list = []
+        self.setFixedHeight(self._ROW_H)
+
+    def set_data(self, rows: list) -> None:
+        self._rows = sorted((r for r in (rows or []) if r[1] > 0),
+                            key=lambda r: r[1], reverse=True)[:8]
+        self.setFixedHeight(max(1, len(self._rows)) * self._ROW_H)
+        self.update()
+
+    def paintEvent(self, _e) -> None:
+        if not self._rows:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        font = p.font()
+        font.setPixelSize(11)
+        p.setFont(font)
+        w = self.width()
+        vmax = max(v for _, v in self._rows) or 1
+        bar_max = max(10.0, w - self._LABEL_W - self._VALUE_W - 8)
+        for i, (label, value) in enumerate(self._rows):
+            y = i * self._ROW_H
+            cy = y + self._ROW_H / 2
+            p.setPen(_DIM)
+            p.drawText(QRectF(0, y, self._LABEL_W - 8, self._ROW_H),
+                       Qt.AlignVCenter | Qt.AlignLeft, label)
+            bw = max(2.0, (value / vmax) * bar_max)
+            p.fillRect(QRectF(self._LABEL_W, cy - 5, bw, 10), _ACCENT)
+            p.setPen(QColor("#e6edf3"))
+            p.drawText(QRectF(w - self._VALUE_W, y, self._VALUE_W, self._ROW_H),
+                       Qt.AlignVCenter | Qt.AlignRight, f"${value:,.0f}")
+        p.end()
+
+
 class Heatmap(QWidget):
     """7x24 weekday(row) x hour(col) activity grid. set_data(grid[7][24])."""
 

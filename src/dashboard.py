@@ -71,7 +71,7 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 import stats
-from statviz import DailyBars, Heatmap
+from statviz import DailyBars, Heatmap, ModelBreakdown
 from usage_history import UsageHistory
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
@@ -2026,6 +2026,9 @@ class Dashboard(QMainWindow):
         self.stat_value, self.stat_value_sub = num_card("API VALUE THIS MONTH")
         self.stat_spend, self.stat_spend_sub = num_card("EXTRA USAGE THIS MONTH")
 
+        self.stat_models = ModelBreakdown()
+        viz_card("VALUE BY MODEL", self.stat_models)
+
         self.stat_bars = DailyBars()
         viz_card("VALUE PER DAY", self.stat_bars)
 
@@ -2050,6 +2053,9 @@ class Dashboard(QMainWindow):
         feed the ROI card's dollar value."""
         self._agg = agg
         self._render_roi()
+        self.stat_models.set_data(
+            [(stats.model_display(m).replace("Claude ", ""), v)
+             for m, v in agg.get("by_model_value", {}).items()])
         self.stat_bars.set_data(agg.get("value_by_day", []))
         self.stat_heat.set_data(agg.get("heatmap"))
         parts = []
