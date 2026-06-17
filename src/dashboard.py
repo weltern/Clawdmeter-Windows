@@ -35,11 +35,9 @@ from PySide6.QtGui import (
     QDesktopServices,
     QGuiApplication,
     QIcon,
-    QKeySequence,
     QPainter,
     QPixmap,
     QRegularExpressionValidator,
-    QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -173,9 +171,8 @@ QPushButton:disabled { background-color: #161b22; color: #4b5563; border-color: 
 
 QWidget#settingsPanel {
     background-color: #0a0d12;
-    border-left: 1px solid #1f2937;
 }
-/* Left tab rail in the full-width settings panel. */
+/* Left tab rail in the settings page (sits right of the app nav rail). */
 QWidget#settingsNav {
     background-color: #0e1116;
     border-right: 1px solid #1f2937;
@@ -193,13 +190,6 @@ QPushButton#navBtn {
 }
 QPushButton#navBtn:hover { background-color: #1f2937; color: #e6edf3; }
 QPushButton#navBtn:checked { background-color: #1f2937; color: #CE7D6B; }
-/* Prominent close (✕) for the full-width panel: no click-outside anymore. */
-QToolButton#settingsClose {
-    background: transparent; color: #9ca3af; border: 0;
-    min-width: 34px; min-height: 34px; border-radius: 6px; font-size: 14px;
-    font-family: "Font Awesome 6 Free"; font-weight: 900;
-}
-QToolButton#settingsClose:hover { background-color: #c13434; color: #ffffff; }
 QScrollArea#settingsScroll, QWidget#settingsBody { background: transparent; border: none; }
 QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 0; }
 QScrollBar::handle:vertical { background: #374151; border-radius: 4px; min-height: 24px; }
@@ -235,7 +225,23 @@ QCheckBox::indicator:checked {
     background-color: #CE7D6B; border-color: #CE7D6B;
     image: none;
 }
-QWidget#scrim { background-color: rgba(0, 0, 0, 60); }
+
+/* Slim left nav rail (overlay). Same icon+label language as the settings tabs:
+   Segoe UI primary so labels stay crisp; the leading FA glyph falls back to FA.
+   Labels are clipped while the rail is collapsed and revealed as it expands. */
+QWidget#navRail {
+    background-color: #0e1116;
+    border-right: 1px solid #1f2937;
+}
+QPushButton#railBtn {
+    background: transparent; color: #9ca3af; border: 0;
+    border-radius: 6px; padding: 9px 0px 9px 8px;  /* no right pad: icon never clips,
+                                                       and stays put as the rail widens */
+    text-align: left; font-size: 15px; font-weight: 600;
+    font-family: "Segoe UI", "Font Awesome 6 Free";
+}
+QPushButton#railBtn:hover { background-color: #1f2937; color: #e6edf3; }
+QPushButton#railBtn:checked { background-color: #1f2937; color: #CE7D6B; }
 
 /* Push-notification channel cards (Settings -> Notifications). */
 QWidget#pushCard {
@@ -674,32 +680,13 @@ class ResetToast(QWidget):
             super().mousePressEvent(e)
 
 
-class Scrim(QWidget):
-    """Click-to-dismiss overlay shown behind the settings panel."""
-
-    clicked = Signal()
-
-    def __init__(self, parent: QWidget) -> None:
-        super().__init__(parent)
-        self.setObjectName("scrim")
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.hide()
-
-    def mousePressEvent(self, e) -> None:
-        if e.button() == Qt.LeftButton:
-            self.clicked.emit()
-            e.accept()
-        else:
-            super().mousePressEvent(e)
-
-
 class TitleBar(QWidget):
-    """Custom frameless title bar: icon, drag area, settings + window buttons."""
+    """Custom frameless title bar: icon, drag area, view + window buttons."""
 
     HEIGHT = 48
     ICON_SIZE = 36
 
-    def __init__(self, window: QMainWindow, on_settings, on_toggle, on_mini) -> None:
+    def __init__(self, window: QMainWindow, on_toggle, on_mini) -> None:
         super().__init__(window)
         self.setObjectName("titleBar")
         # Allow vertical animation: min=0, max=HEIGHT. Auto-hide animates
@@ -714,31 +701,16 @@ class TitleBar(QWidget):
         row.setContentsMargins(8, 0, 0, 0)
         row.setSpacing(8)
 
-        icon_label = QLabel()
-        icon_path = assets_root() / "icon.png"
-        if icon_path.exists():
-            pm = QPixmap(str(icon_path)).scaled(
-                self.ICON_SIZE, self.ICON_SIZE,
-                Qt.KeepAspectRatio, Qt.FastTransformation,
-            )
-            icon_label.setPixmap(pm)
-        icon_label.setFixedSize(self.ICON_SIZE + 2, self.ICON_SIZE + 2)
-        icon_label.setAlignment(Qt.AlignCenter)
-        row.addWidget(icon_label)
-
+        # The app icon now lives at the top of the nav rail (so it survives the
+        # auto-hide title bar), not here. The title bar starts with the wordmark.
         name = QLabel("CLAWDMETER", objectName="titleAppName")
         row.addWidget(name)
         row.addStretch(1)
 
-        # Glyphs from Segoe Fluent Icons / Segoe MDL2 Assets — the same
-        # codepoints Windows itself uses for window controls.
-        self.settings_btn = self._tool_btn(chr(0xF013), "Settings")   # gear
-        self.settings_btn.setObjectName("settingsBtn")
-        self.settings_btn.clicked.connect(on_settings)
-        row.addWidget(self.settings_btn)
-
-        # Full<->Compact toggle: a square-caret that points DOWN in full (click
-        # to collapse to compact) and UP in compact (click to expand to full).
+        # Font Awesome glyphs for the view toggles + window controls. (Settings
+        # now lives in the nav rail, so there's no gear here.)
+        # Full<->Compact toggle: angles that point DOWN in full (click to collapse
+        # to compact) and UP in compact (click to expand to full).
         self.caret_btn = self._tool_btn("", "Compact view")
         self.caret_btn.clicked.connect(on_toggle)
         row.addWidget(self.caret_btn)
@@ -753,10 +725,6 @@ class TitleBar(QWidget):
         self.min_btn = self._tool_btn(chr(0xF2D1), "Minimize")        # ChromeMinimize
         self.min_btn.clicked.connect(self._win.showMinimized)
         row.addWidget(self.min_btn)
-
-        self.max_btn = self._tool_btn(chr(0xF45C), "Maximize")        # ChromeMaximize
-        self.max_btn.clicked.connect(self._toggle_max)
-        row.addWidget(self.max_btn)
 
         self.close_btn = self._tool_btn(chr(0xF00D), "Close")         # ChromeClose
         self.close_btn.setObjectName("closeBtn")
@@ -779,14 +747,6 @@ class TitleBar(QWidget):
         self.caret_btn.setText(chr(0xF102) if up else chr(0xF103))  # angles up / down
         self.caret_btn.setToolTip("Full view" if up else "Compact view")
 
-    def _toggle_max(self) -> None:
-        if self._win.isMaximized():
-            self._win.showNormal()
-            self.max_btn.setText(chr(0xF45C))  # square-full (maximize)
-        else:
-            self._win.showMaximized()
-            self.max_btn.setText(chr(0xF2D2))  # window-restore
-
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
             self._press_pos = e.globalPosition().toPoint()
@@ -798,7 +758,7 @@ class TitleBar(QWidget):
         # manual self._win.move() approach made Qt recompute the window geometry
         # on each step, which ballooned the frameless window when it was dragged
         # onto a higher-DPI monitor. The native loop is DPI-aware and avoids it.
-        # Under the threshold we do nothing so double-click-to-maximize still
+        # Under the threshold we do nothing so the double-click-to-reset still
         # registers.
         if not (e.buttons() & Qt.LeftButton) or self._press_pos is None:
             return
@@ -807,10 +767,9 @@ class TitleBar(QWidget):
             return
         self._press_pos = None
         if self._win.isMaximized():
-            # Restore before the handoff so the window follows the cursor at
-            # its normal size, like Windows' own maximized title-bar drag.
+            # If the OS maximized us (e.g. Win+Up), restore before the handoff so
+            # the window follows the cursor at its normal size.
             self._win.showNormal()
-            self.max_btn.setText(chr(0xF45C))  # square-full (maximize)
         winutil.start_native_move(int(self._win.winId()))
         e.accept()
 
@@ -819,7 +778,7 @@ class TitleBar(QWidget):
 
     def mouseDoubleClickEvent(self, e) -> None:
         # Double-click snaps the window back to the snug auto-fit height (undoes
-        # a manual height resize). Maximize stays on the title-bar [ ] button.
+        # a manual height resize).
         if e.button() == Qt.LeftButton:
             self._win.reset_to_fit()
             e.accept()
@@ -995,53 +954,40 @@ class _PushChannelRow(QWidget):
 
 
 class SettingsPanel(QWidget):
-    """Right-side slide-in panel. Lives as a child of `parent` (the content
-    area). Call open()/close() to animate. Position is set externally on
-    parent resize."""
-
-    ANIM_MS = 220
+    """The Settings page — a destination in the app nav rail (not an overlay).
+    Holds a left tab rail (General/Display/Connection/Notifications/About) plus
+    the matching forms. Lives as a page in the content stack; you leave it by
+    clicking another rail item."""
 
     # Emitted from the push-test worker thread; delivered on the UI thread.
     _push_test_result = Signal(bool, str)
 
-    def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested,
+    def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed,
                  on_refresh_token=None, on_auto_refresh_changed=None,
                  on_poll_interval_changed=None, on_sessions_view_changed=None,
                  on_token_view_changed=None, on_check_updates=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setFocusPolicy(Qt.StrongFocus)
-        self._open = False
         self._on_aot_changed = on_always_on_top_changed
         self._on_auto_hide_changed = on_auto_hide_changed
-        self._on_close_requested = on_close_requested
         self._on_refresh_token = on_refresh_token
         self._on_auto_refresh_changed = on_auto_refresh_changed
         self._on_poll_interval_changed = on_poll_interval_changed
         self._on_sessions_view_changed = on_sessions_view_changed
         self._on_token_view_changed = on_token_view_changed
         self._on_check_updates = on_check_updates
-        self.hide()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # Fixed header (stays put while the body scrolls).
+        # Page header — just the title now; you leave Settings via the nav rail.
         header_w = QWidget()
         header = QHBoxLayout(header_w)
         header.setContentsMargins(20, 18, 20, 8)
-        title = QLabel("SETTINGS", objectName="settingsTitle")
-        close = QToolButton()
-        close.setObjectName("settingsClose")
-        close.setText(chr(0xF00D))
-        close.setCursor(Qt.PointingHandCursor)
-        close.setFocusPolicy(Qt.NoFocus)
-        close.clicked.connect(self._on_close_requested)
-        header.addWidget(title)
+        header.addWidget(QLabel("SETTINGS", objectName="settingsTitle"))
         header.addStretch(1)
-        header.addWidget(close)
         outer.addWidget(header_w)
 
         # Body: a left tab rail + one stacked page per tab. Each page scrolls on
@@ -1367,15 +1313,6 @@ class SettingsPanel(QWidget):
         for _page_layout in (gen_layout, disp_layout, conn_layout, notif_layout, about_layout):
             _page_layout.addStretch(1)
 
-        # Close on Esc — the full-width panel has no click-outside fallback.
-        esc = QShortcut(QKeySequence(Qt.Key_Escape), self)
-        esc.setContext(Qt.WidgetWithChildrenShortcut)
-        esc.activated.connect(self._on_close_requested)
-
-        self._anim = QPropertyAnimation(self, b"geometry", self)
-        self._anim.setDuration(self.ANIM_MS)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
-
     def _refresh_cred_status(self) -> None:
         override = app_settings.get_credentials_override()
         if override:
@@ -1630,60 +1567,6 @@ class SettingsPanel(QWidget):
                 QMessageBox.warning(self, "Clawdmeter", f"Failed to create shortcut:\n{msg}")
         self._refresh_start_menu_btn()
 
-    def is_open(self) -> bool:
-        return self._open
-
-    def place_closed(self) -> None:
-        """Snap to off-screen-right at current parent size (no animation)."""
-        p = self.parentWidget()
-        if not p:
-            return
-        self.setGeometry(p.width(), 0, p.width(), p.height())
-        self._open = False
-
-    def reposition(self) -> None:
-        """Called on parent resize. Keeps panel anchored correctly."""
-        p = self.parentWidget()
-        if not p:
-            return
-        if self._open:
-            self.setGeometry(0, 0, p.width(), p.height())
-        else:
-            self.setGeometry(p.width(), 0, p.width(), p.height())
-
-    def open_panel(self) -> None:
-        if self._open:
-            return
-        p = self.parentWidget()
-        if not p:
-            return
-        self.refresh_token_status()
-        self.show()
-        self.raise_()
-        self.setFocus(Qt.OtherFocusReason)
-        start = QRect(p.width(), 0, p.width(), p.height())
-        end = QRect(0, 0, p.width(), p.height())
-        self.setGeometry(start)
-        self._anim.stop()
-        self._anim.setStartValue(start)
-        self._anim.setEndValue(end)
-        self._anim.start()
-        self._open = True
-
-    def close_panel(self) -> None:
-        if not self._open:
-            return
-        p = self.parentWidget()
-        if not p:
-            return
-        start = self.geometry()
-        end = QRect(p.width(), 0, p.width(), p.height())
-        self._anim.stop()
-        self._anim.setStartValue(start)
-        self._anim.setEndValue(end)
-        self._anim.start()
-        self._open = False
-
     def _choose_credentials(self) -> None:
         start = str(credentials_path())
         path, _ = QFileDialog.getOpenFileName(self, "Locate .credentials.json", start, "JSON (*.json)")
@@ -1699,6 +1582,69 @@ class SettingsPanel(QWidget):
         self._refresh_cred_status()
 
 
+class NavRail(QWidget):
+    """Slim vertical icon rail down the content area's left edge — icon-only, with
+    names shown via tooltips. The mascot sits at the top; the active page is
+    accent-highlighted. Full-height (parented to root) so it survives the
+    auto-hide title bar. Lives only on the full window."""
+
+    COLLAPSED = 46   # the rail's fixed width
+
+    def __init__(self, parent: QWidget, on_select) -> None:
+        super().__init__(parent)
+        self.setObjectName("navRail")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self._on_select = on_select
+
+        col = QVBoxLayout(self)
+        col.setContentsMargins(6, 6, 6, 10)
+        col.setSpacing(4)
+
+        # Mascot at the rail's top-left — where the title-bar icon used to sit,
+        # but on the rail so it survives the auto-hide title bar.
+        icon_lbl = QLabel()
+        ip = assets_root() / "icon.png"
+        if ip.exists():
+            icon_lbl.setPixmap(QPixmap(str(ip)).scaled(
+                34, 34, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        icon_lbl.setFixedSize(34, 34)
+        col.addWidget(icon_lbl, 0, Qt.AlignLeft)
+        col.addSpacing(12)
+
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+
+        self.dash_btn = self._item(chr(0xF015), "Dashboard", page=0)   # house
+        self.stats_btn = self._item(chr(0xF201), "Stats", page=1)      # chart-line
+        col.addWidget(self.dash_btn)
+        col.addWidget(self.stats_btn)
+        col.addStretch(1)
+        self.settings_btn = self._item(chr(0xF013), "Settings", page=2)  # gear
+        col.addWidget(self.settings_btn)
+
+        self.dash_btn.setChecked(True)
+        self._group.idClicked.connect(self._on_select)
+
+    def _item(self, glyph: str, label: str, page) -> QPushButton:
+        # Icon only; the destination name lives on the tooltip.
+        b = QPushButton(glyph, objectName="railBtn")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setFocusPolicy(Qt.NoFocus)
+        b.setToolTip(label)
+        b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        if page is not None:
+            b.setCheckable(True)
+            self._group.addButton(b, page)
+        return b
+
+    def reposition(self) -> None:
+        """Anchor to the parent's left edge, full height."""
+        p = self.parentWidget()
+        if not p:
+            return
+        self.setGeometry(0, 0, self.COLLAPSED, p.height())
+
+
 class Dashboard(QMainWindow):
     def __init__(self, mock: bool = False) -> None:
         super().__init__()
@@ -1712,8 +1658,10 @@ class Dashboard(QMainWindow):
         # Width: ~3 shelf tiles (130px sprites + margins/spacing) fit without
         # scrolling; overflow scrolls horizontally inside the shelf's QScrollArea,
         # so the window never balloons sideways.
-        self.setMinimumSize(520, self._min_window_h)
-        self.resize(520, 520)
+        # +NavRail.COLLAPSED so the shelf keeps room for ~3 tiles now that the
+        # rail reserves the content's left edge (otherwise 3 sessions scroll).
+        self.setMinimumSize(520 + NavRail.COLLAPSED, self._min_window_h)
+        self.resize(520 + NavRail.COLLAPSED, 520)
         self.setStyleSheet(STYLESHEET)
 
         icon_path = assets_root() / "icon.png"
@@ -1723,18 +1671,32 @@ class Dashboard(QMainWindow):
         root = QWidget(objectName="root")
         self.setCentralWidget(root)
         self._root = root
-        self._outer = QVBoxLayout(root)
-        self._outer.setContentsMargins(0, 0, 0, 0)
+        # Full-height nav rail down the left (overlay, created after content); the
+        # rest of the UI sits in a right column whose left edge is reserved for the
+        # collapsed rail. Keeping the rail outside the title bar means it — and the
+        # mascot pinned at its top — survive the auto-hide title bar.
+        self._outer = QHBoxLayout(root)
+        self._outer.setContentsMargins(NavRail.COLLAPSED, 0, 0, 0)
         self._outer.setSpacing(0)
 
-        self.title_bar = TitleBar(self, on_settings=self._toggle_settings,
-                                  on_toggle=self._toggle_full_compact,
+        right_col = QWidget()
+        self._outer.addWidget(right_col, 1)
+        right_layout = QVBoxLayout(right_col)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        self.title_bar = TitleBar(self, on_toggle=self._toggle_full_compact,
                                   on_mini=lambda: self._set_view_mode("mini"))
-        self._outer.addWidget(self.title_bar)
+        right_layout.addWidget(self.title_bar)
 
         content = QWidget()
-        self._outer.addWidget(content, 1)
-        layout = QVBoxLayout(content)
+        right_layout.addWidget(content, 1)
+
+        # The mascot + bars now live on a "Dashboard page"; it and the Stats page
+        # sit in a stack the nav rail switches between. `layout` still refers to
+        # the dashboard page below, so the existing content code is unchanged.
+        self.dashboard_page = QWidget()
+        layout = QVBoxLayout(self.dashboard_page)
         layout.setContentsMargins(24, 14, 24, 11)
         layout.setSpacing(12)
 
@@ -1787,17 +1749,25 @@ class Dashboard(QMainWindow):
         layout.addWidget(self.status_container)
         layout.addStretch(1)
 
-        # Settings panel is parented to the central widget so it overlays
-        # everything below the title bar and resizes with the window. The
-        # scrim sits between content and panel: clicks on it close the panel.
+        # Page stack (Dashboard + Stats) inside the content area. content_box
+        # reserves the collapsed rail's width on the left so content never sits
+        # under it; the rail itself is an overlay added after the settings panel.
+        self.stats_page = self._build_stats_page()
+        self._pages = QStackedWidget()
+        self._pages.addWidget(self.dashboard_page)   # index 0
+        self._pages.addWidget(self.stats_page)       # index 1
+        content_box = QVBoxLayout(content)
+        content_box.setContentsMargins(0, 0, 0, 0)  # rail width reserved at root
+        content_box.setSpacing(0)
+        content_box.addWidget(self._pages)
+
+        # Settings is the third page in the content stack — a nav-rail
+        # destination, not an overlay. You leave it by clicking another rail item.
         self._content = content
-        self.scrim = Scrim(content)
-        self.scrim.clicked.connect(self._close_settings)
         self.settings_panel = SettingsPanel(
             content,
             on_always_on_top_changed=self._set_always_on_top,
             on_auto_hide_changed=self._apply_auto_hide,
-            on_close_requested=self._close_settings,
             on_refresh_token=self._request_token_refresh,
             on_auto_refresh_changed=self._set_auto_refresh,
             on_poll_interval_changed=self._set_poll_interval,
@@ -1805,8 +1775,15 @@ class Dashboard(QMainWindow):
             on_token_view_changed=self._apply_token_view,
             on_check_updates=self._check_for_updates_now,
         )
-        self.settings_panel.place_closed()
-        content.installEventFilter(self)
+        self._pages.addWidget(self.settings_panel)   # index 2 (Settings)
+
+        # Full-height slim icon nav rail down root's left edge. Parented to root
+        # (not content) so it spans the whole left side and the mascot at its top
+        # stays put when the title bar auto-hides.
+        self.nav_rail = NavRail(root, on_select=self._show_page)
+        self.nav_rail.reposition()
+        self.nav_rail.raise_()
+        root.installEventFilter(self)
 
         # Apply persisted always-on-top before the first show().
         if app_settings.get_always_on_top():
@@ -1954,28 +1931,33 @@ class Dashboard(QMainWindow):
 
 
     def eventFilter(self, obj, ev):
-        if obj is self._content and ev.type() == ev.Type.Resize:
-            self.settings_panel.reposition()
-            if self.scrim.isVisible():
-                self.scrim.setGeometry(0, 0, self._content.width(), self._content.height())
+        if ev.type() == ev.Type.Resize and obj is self._root:
+            self.nav_rail.reposition()   # rail spans full root height
         return super().eventFilter(obj, ev)
 
-    def _toggle_settings(self) -> None:
-        if self.settings_panel.is_open():
-            self._close_settings()
-        else:
-            self._open_settings()
+    def _show_page(self, idx: int) -> None:
+        """Switch the content stack to a nav-rail destination (0=Dashboard,
+        1=Stats, 2=Settings)."""
+        self._pages.setCurrentIndex(idx)
 
-    def _open_settings(self) -> None:
-        self.scrim.setGeometry(0, 0, self._content.width(), self._content.height())
-        self.scrim.show()
-        self.scrim.raise_()
-        self.settings_panel.open_panel()
-        self.settings_panel.raise_()
-
-    def _close_settings(self) -> None:
-        self.settings_panel.close_panel()
-        self.scrim.hide()
+    def _build_stats_page(self) -> QWidget:
+        """Placeholder Stats page for the nav-rail prototype."""
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(28, 18, 28, 14)
+        v.addStretch(1)
+        title = QLabel("STATS", objectName="sectionLabel", alignment=Qt.AlignCenter)
+        body = QLabel(
+            "Coming soon — token-usage trends, per-session history, and "
+            "limit-reset timelines.",
+            objectName="sectionHint", alignment=Qt.AlignCenter,
+        )
+        body.setWordWrap(True)
+        v.addWidget(title)
+        v.addSpacing(8)
+        v.addWidget(body)
+        v.addStretch(1)
+        return page
 
     def _set_always_on_top(self, on: bool) -> None:
         """Zero-flicker topmost via SetWindowPos. Qt's setWindowFlag forces a
@@ -2741,8 +2723,6 @@ class Dashboard(QMainWindow):
         # Keep both switchers' active segment in sync with the real mode.
         self.title_bar.set_active_mode(mode)
         self.compact_view.set_active_mode(mode)
-        if self.settings_panel.is_open():
-            self._close_settings()
         self._stash_mini()
         self._stash_compact()
         if mode == "full":
