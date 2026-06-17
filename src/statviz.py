@@ -26,9 +26,13 @@ def _lerp(a: QColor, b: QColor, t: float) -> QColor:
 
 
 class DailyBars(QWidget):
-    """Per-day value bars (oldest left -> today right). set_data([(date, usd)])."""
+    """Per-day value bars (oldest left -> today right). set_data([(date, usd)]).
+    A footer strip carries first/mid/last date ticks so the axis reads without
+    hovering."""
 
-    def __init__(self, parent=None, height: int = 60) -> None:
+    _FOOT = 15   # date-tick strip below the bars
+
+    def __init__(self, parent=None, height: int = 74) -> None:
         super().__init__(parent)
         self.setFixedHeight(height)
         self.setMouseTracking(True)
@@ -57,14 +61,35 @@ class DailyBars(QWidget):
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        h = self.height()
+        bar_area = self.height() - self._FOOT
         vmax = max((v for _, v in self._data), default=0.0) or 1.0
         bw, gap = self._bar_w()
         for i, (_d, v) in enumerate(self._data):
             x = i * (bw + gap)
-            bh = max(1.0, (v / vmax) * (h - 2)) if v else 1.0
+            bh = max(1.0, (v / vmax) * (bar_area - 2)) if v else 1.0
             track = v > 0
-            p.fillRect(QRectF(x, h - bh, bw, bh), _ACCENT if track else _EMPTY)
+            p.fillRect(QRectF(x, bar_area - bh, bw, bh), _ACCENT if track else _EMPTY)
+
+        # date ticks: first (left), middle (centre), last (right)
+        n = len(self._data)
+        font = p.font()
+        font.setPixelSize(9)
+        p.setFont(font)
+        p.setPen(_DIM)
+        w = self.width()
+        yf = bar_area + 1
+
+        def tick(d) -> str:
+            return f"{d:%b} {d.day}"
+
+        p.drawText(QRectF(0, yf, w / 2, self._FOOT),
+                   Qt.AlignLeft | Qt.AlignTop, tick(self._data[0][0]))
+        if n >= 2:
+            p.drawText(QRectF(w / 2, yf, w / 2, self._FOOT),
+                       Qt.AlignRight | Qt.AlignTop, tick(self._data[-1][0]))
+        if n >= 7:
+            p.drawText(QRectF(0, yf, w, self._FOOT),
+                       Qt.AlignHCenter | Qt.AlignTop, tick(self._data[n // 2][0]))
         p.end()
 
 

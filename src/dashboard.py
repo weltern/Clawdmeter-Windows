@@ -71,7 +71,7 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 import stats
-from statviz import DailyBars, Heatmap, ModelBreakdown, PercentBars
+from statviz import DailyBars, Heatmap, ModelBreakdown
 from usage_history import UsageHistory
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
@@ -221,6 +221,7 @@ QFrame#statCard {
 }
 QLabel#statLabel { font-size: 10px; color: #6b7280; letter-spacing: 2px; font-weight: 600; }
 QLabel#statBig { font-size: 32px; font-weight: 700; color: #e6edf3; }
+QLabel#statPlan { font-size: 12px; color: #CE7D6B; font-weight: 600; letter-spacing: 1px; }
 QPushButton#resetLink {
     background: transparent; color: #9ca3af; border: 0; padding: 2px 4px;
     text-decoration: underline; font-size: 10px;
@@ -2009,7 +2010,13 @@ class Dashboard(QMainWindow):
         v = QVBoxLayout(body)
         v.setContentsMargins(24, 18, 24, 18)
         v.setSpacing(14)
-        v.addWidget(QLabel("STATS", objectName="settingsTitle"))
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.addWidget(QLabel("STATS", objectName="settingsTitle"))
+        header.addStretch(1)
+        self.stat_plan = QLabel("", objectName="statPlan")
+        header.addWidget(self.stat_plan, 0, Qt.AlignVCenter)
+        v.addLayout(header)
 
         def num_card(label: str):
             f = QFrame(objectName="statCard")
@@ -2038,9 +2045,6 @@ class Dashboard(QMainWindow):
         self.stat_spend, self.stat_spend_sub = num_card("EXTRA USAGE THIS MONTH")
         self.stat_cache, self.stat_cache_sub = num_card("CACHE SAVINGS THIS MONTH")
         self.stat_burn, self.stat_burn_sub = num_card("TIME TO 7-DAY CAP")
-
-        self.stat_windows = PercentBars(empty_text="No usage windows reported")
-        viz_card("USAGE WINDOWS", self.stat_windows)
 
         self.stat_models = ModelBreakdown()
         viz_card("VALUE BY MODEL", self.stat_models)
@@ -2124,18 +2128,13 @@ class Dashboard(QMainWindow):
         ROI card's plan side. The ROI dollar value comes from the aggregate."""
         if s.extra_usage_enabled or s.extra_usage_used_usd:
             self.stat_spend.setText(f"${s.extra_usage_used_usd:,.2f}")
-            cap = (f"of ${s.extra_usage_limit_usd:,.2f} cap"
-                   if s.extra_usage_limit_usd else "no monthly cap")
-            self.stat_spend_sub.setText(f"{plan_label(s.plan_tier)} · {cap}")
+            self.stat_spend_sub.setText(
+                f"of ${s.extra_usage_limit_usd:,.2f} cap"
+                if s.extra_usage_limit_usd else "pay-as-you-go · no monthly cap")
         else:
             self.stat_spend.setText("$0.00")
             self.stat_spend_sub.setText("Pay-as-you-go off")
         self._render_roi()
-        # Usage windows: the overall 5h/7d windows (always present) + any
-        # per-model windows the API reports. Fixed order, so don't sort.
-        windows = [("Session (5h)", s.session_pct), ("Weekly (7d)", s.weekly_pct)]
-        windows += [(f"Weekly · {m}", p) for m, p in s.model_windows.items()]
-        self.stat_windows.set_data(windows, sort=False)
         self._update_burn(s)
 
     def _update_burn(self, s: UsageSample) -> None:
@@ -2175,6 +2174,11 @@ class Dashboard(QMainWindow):
     def _render_roi(self) -> None:
         """ROI card from the latest aggregate (the dollar value) + the latest
         sample (the plan tier). Either source updating refreshes the card."""
+        s = getattr(self, "_last_sample", None)
+        tier = s.plan_tier if s else None
+        price = stats.plan_monthly_usd(tier)
+        self.stat_plan.setText(
+            f"{plan_label(tier)} · ${price:,.0f}/mo" if price else plan_label(tier))
         agg = getattr(self, "_agg", None)
         if agg is None:                       # aggregate not computed yet
             self.stat_value.setText("—")
@@ -2182,14 +2186,10 @@ class Dashboard(QMainWindow):
             return
         val = agg["value_total"]
         self.stat_value.setText(f"${val:,.2f}")
-        s = getattr(self, "_last_sample", None)
-        tier = s.plan_tier if s else None
-        price = stats.plan_monthly_usd(tier)
         if price and val:
             mult = val / price
             mult_s = f"{mult:.0f}×" if mult >= 10 else f"{mult:.1f}×"
-            self.stat_value_sub.setText(
-                f"{plan_label(tier)} plan · ${price:,.0f}/mo · {mult_s} the subscription")
+            self.stat_value_sub.setText(f"{mult_s} your subscription this month")
         else:
             self.stat_value_sub.setText("of pay-as-you-go API value this month")
 
