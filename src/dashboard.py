@@ -2039,8 +2039,8 @@ class Dashboard(QMainWindow):
         self.stat_cache, self.stat_cache_sub = num_card("CACHE SAVINGS THIS MONTH")
         self.stat_burn, self.stat_burn_sub = num_card("TIME TO 7-DAY CAP")
 
-        self.stat_windows = PercentBars(empty_text="No per-model limits on your plan")
-        viz_card("WEEKLY WINDOWS BY MODEL", self.stat_windows)
+        self.stat_windows = PercentBars(empty_text="No usage windows reported")
+        viz_card("USAGE WINDOWS", self.stat_windows)
 
         self.stat_models = ModelBreakdown()
         viz_card("VALUE BY MODEL", self.stat_models)
@@ -2131,7 +2131,11 @@ class Dashboard(QMainWindow):
             self.stat_spend.setText("$0.00")
             self.stat_spend_sub.setText("Pay-as-you-go off")
         self._render_roi()
-        self.stat_windows.set_data(list(s.model_windows.items()))   # per-model headroom
+        # Usage windows: the overall 5h/7d windows (always present) + any
+        # per-model windows the API reports. Fixed order, so don't sort.
+        windows = [("Session (5h)", s.session_pct), ("Weekly (7d)", s.weekly_pct)]
+        windows += [(f"Weekly · {m}", p) for m, p in s.model_windows.items()]
+        self.stat_windows.set_data(windows, sort=False)
         self._update_burn(s)
 
     def _update_burn(self, s: UsageSample) -> None:

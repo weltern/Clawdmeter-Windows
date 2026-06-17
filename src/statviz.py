@@ -126,8 +126,11 @@ class PercentBars(QWidget):
         self._empty = empty_text
         self.setFixedHeight(self._ROW_H)
 
-    def set_data(self, rows: list) -> None:
-        self._rows = sorted(rows or [], key=lambda r: r[1], reverse=True)[:8]
+    def set_data(self, rows: list, sort: bool = True) -> None:
+        rows = list(rows or [])
+        if sort:
+            rows.sort(key=lambda r: r[1], reverse=True)
+        self._rows = rows[:8]
         self.setFixedHeight(max(1, len(self._rows)) * self._ROW_H)
         self.update()
 
