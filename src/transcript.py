@@ -463,17 +463,18 @@ def _file_model_events(fp: Path) -> list:
     return events
 
 
-def account_tokens_by_model(since_ts: float, root: Path | None = None) -> dict:
-    """Per-model token totals across transcripts for assistant turns at/after
-    `since_ts`. Returns {model_id: {input, output, cache_read, cache_write}}.
+def iter_model_events(since_ts: float, root: Path | None = None) -> list:
+    """Every (ts, model, input, output, cache_read, cache_write) assistant turn
+    at/after `since_ts`, across transcripts.
 
     Only files modified at/after `since_ts` are read (an older file can't hold an
-    in-window turn), reusing the same (size, mtime) per-file cache discipline as
-    the window scan. Does disk I/O — call it off the UI thread.
+    in-window turn), reusing the (size, mtime) per-file cache. Does disk I/O —
+    call it off the UI thread. The shared scanner behind the token/value/heatmap
+    aggregates so they all pass over the transcripts just once.
     """
     if root is None:
         root = Path.home() / ".claude" / "projects"
-    out: dict[str, dict[str, int]] = {}
+    out: list = []
     seen: set[str] = set()
     for fp in root.rglob("*.jsonl"):
         try:
@@ -490,17 +491,23 @@ def account_tokens_by_model(since_ts: float, root: Path | None = None) -> dict:
         else:
             events = _file_model_events(fp)
             _MODEL_EVENT_CACHE[key] = (st.st_size, st.st_mtime, events)
-        for ts, model, i, o, cr, cw in events:
-            if ts < since_ts:
-                continue
-            acc = out.setdefault(
-                model, {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0})
-            acc["input"] += i
-            acc["output"] += o
-            acc["cache_read"] += cr
-            acc["cache_write"] += cw
+        out.extend(e for e in events if e[0] >= since_ts)
     for key in [k for k in _MODEL_EVENT_CACHE if k not in seen]:
         del _MODEL_EVENT_CACHE[key]
+    return out
+
+
+def account_tokens_by_model(since_ts: float, root: Path | None = None) -> dict:
+    """Per-model token totals (input, output, cache_read, cache_write) for turns
+    at/after `since_ts`. Returns {model_id: {...}}."""
+    out: dict[str, dict[str, int]] = {}
+    for _ts, model, i, o, cr, cw in iter_model_events(since_ts, root):
+        acc = out.setdefault(
+            model, {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0})
+        acc["input"] += i
+        acc["output"] += o
+        acc["cache_read"] += cr
+        acc["cache_write"] += cw
     return out
 
 

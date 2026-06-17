@@ -87,6 +87,35 @@ def test_account_tokens_by_model(tmp_path):
                    {"input": 200, "output": 100, "cache_read": 10, "cache_write": 5}}
 
 
+def test_build_aggregate():
+    from datetime import date, datetime
+    d1 = datetime(2026, 6, 10, 14, 0, 0)   # two opus turns this day
+    d2 = datetime(2026, 6, 10, 15, 0, 0)
+    d3 = datetime(2026, 6, 12, 9, 0, 0)    # one sonnet turn, different day
+    ev = [
+        (d1.timestamp(), "claude-opus-4-8", 1_000_000, 0, 0, 0),   # $5
+        (d2.timestamp(), "claude-opus-4-8", 0, 1_000_000, 0, 0),   # $25
+        (d3.timestamp(), "claude-sonnet-4-6", 1_000_000, 0, 0, 0),
+    ]
+    now = datetime(2026, 6, 12, 18, 0, 0).timestamp()
+    since = datetime(2026, 6, 1, 0, 0, 0).timestamp()
+    agg = stats.build_aggregate(ev, now, since)
+
+    assert agg["turns"] == 3
+    assert agg["active_days"] == 2
+    sonnet_v = stats.model_value_usd("claude-sonnet-4-6", {"input": 1_000_000})
+    assert agg["value_total"] == round(30.0 + sonnet_v, 2)
+    assert agg["top_model"] == ("claude-opus-4-8", 30.0)
+    assert agg["heatmap"][d1.weekday()][14] == 1
+    assert agg["heatmap"][d1.weekday()][15] == 1
+    assert agg["heatmap"][d3.weekday()][9] == 1
+    series = dict(agg["value_by_day"])
+    assert series[date(2026, 6, 10)] == 30.0
+    assert series[date(2026, 6, 11)] == 0.0
+    assert agg["busiest_day"][0] == date(2026, 6, 10)
+    assert len(agg["value_by_day"]) == 12   # Jun 1..12 inclusive
+
+
 if __name__ == "__main__":
     import tempfile
     from pathlib import Path

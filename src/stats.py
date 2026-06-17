@@ -13,10 +13,10 @@ the "your $X plan delivered $Y of pay-as-you-go value" ROI figure.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pricing import model_rates
-from transcript import account_tokens_by_model
+from transcript import account_tokens_by_model, iter_model_events
 
 # Monthly subscription price (USD) keyed by organization.rate_limit_tier.
 PLAN_PRICES = {
@@ -78,3 +78,60 @@ def month_start_ts(now: float) -> float:
 def monthly_value_usd(now: float) -> float:
     """API-equivalent USD value of this calendar month's usage (transcript scan)."""
     return value_usd(account_tokens_by_model(month_start_ts(now)))
+
+
+_BUCKETS = ("input", "output", "cache_read", "cache_write")
+
+
+def build_aggregate(events: list, now: float, since: float) -> dict:
+    """Compute the Stats aggregates from raw model events in one pass (pure).
+
+    `events`: list of (ts, model, input, output, cache_read, cache_write).
+    `since`: window start (the per-day series spans since..today). Returns the
+    month-to-date value, a per-day value series (sparkline), a 7x24 weekday/hour
+    assistant-turn heatmap, per-model value, and the Wrapped headline figures.
+    """
+    by_model: dict[str, dict[str, int]] = {}
+    day_tokens: dict = {}                       # date -> {model: usage}
+    heatmap = [[0] * 24 for _ in range(7)]      # [weekday 0=Mon][hour] turn counts
+    turns = 0
+    days_seen: set = set()
+    for ts, model, i, o, cr, cw in events:
+        turns += 1
+        dt = datetime.fromtimestamp(ts)
+        heatmap[dt.weekday()][dt.hour] += 1
+        d = dt.date()
+        days_seen.add(d)
+        acc = by_model.setdefault(model, {k: 0 for k in _BUCKETS})
+        dacc = day_tokens.setdefault(d, {}).setdefault(model, {k: 0 for k in _BUCKETS})
+        for key, v in zip(_BUCKETS, (i, o, cr, cw)):
+            acc[key] += v
+            dacc[key] += v
+
+    by_model_value = {m: round(model_value_usd(m, u), 2) for m, u in by_model.items()}
+    top_model = max(by_model_value.items(), key=lambda kv: kv[1]) if by_model_value else None
+
+    series: list = []
+    d = datetime.fromtimestamp(since).date()
+    today = datetime.fromtimestamp(now).date()
+    while d <= today:
+        series.append((d, value_usd(day_tokens.get(d, {}))))
+        d += timedelta(days=1)
+    busiest = max(series, key=lambda dv: dv[1]) if series else None
+
+    return {
+        "value_total": value_usd(by_model),
+        "value_by_day": series,          # [(date, usd)] oldest..today
+        "heatmap": heatmap,              # [7][24] assistant-turn counts
+        "by_model_value": by_model_value,
+        "top_model": top_model,          # (model_id, usd) | None
+        "busiest_day": busiest,          # (date, usd) | None
+        "turns": turns,
+        "active_days": len(days_seen),
+    }
+
+
+def monthly_aggregate(now: float) -> dict:
+    """Build the full Stats aggregate for the current calendar month (disk scan)."""
+    since = month_start_ts(now)
+    return build_aggregate(iter_model_events(since), now, since)
