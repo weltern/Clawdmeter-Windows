@@ -2010,6 +2010,10 @@ class Dashboard(QMainWindow):
         """Switch the content stack to a nav-rail destination (0=Dashboard,
         1=Stats, 2=Settings)."""
         self._pages.setCurrentIndex(idx)
+        if idx == 0:
+            # Returning to the Dashboard: re-snap to its (possibly changed)
+            # content height, which was left alone while away.
+            self._fit_window_height()
 
     def _build_stats_page(self) -> QWidget:
         """Stats page: ROI + extra-usage spend, a per-day value strip, a 7x24
@@ -2862,6 +2866,11 @@ class Dashboard(QMainWindow):
         below the bars; the height follows the shelf as it grows/shrinks. Does
         nothing once the user has set their own height (auto-fit released)."""
         if not self._auto_fit_height:
+            return
+        # Only the Dashboard hugs its content. On Stats/Settings the height stays
+        # put (those pages scroll) — otherwise a background shelf/badge change on
+        # the hidden Dashboard would resize the window out from under those pages.
+        if self._pages.currentIndex() != 0:
             return
         if self.isMaximized() or self.isFullScreen():
             return
