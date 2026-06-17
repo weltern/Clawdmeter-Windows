@@ -77,6 +77,42 @@ def value_usd(tokens_by_model: dict) -> float:
     return round(sum(model_value_usd(m, u) for m, u in tokens_by_model.items()), 2)
 
 
+def cache_savings_usd(tokens_by_model: dict) -> float:
+    """USD saved by cache reads vs paying the full input rate for those tokens
+    (cache reads are far cheaper than fresh input). Unknown models contribute 0."""
+    total = 0.0
+    for m, u in tokens_by_model.items():
+        rates = _rates_for(m)
+        if not rates:
+            continue
+        ir, crr = rates.get("input"), rates.get("cache_read")
+        if isinstance(ir, (int, float)) and isinstance(crr, (int, float)):
+            total += (u.get("cache_read", 0) or 0) * (ir - crr) / 1_000_000.0
+    return round(total, 2)
+
+
+def cap_eta(points: list, current: float, now: float, min_span: float = 600.0) -> float | None:
+    """Estimate when a rising window hits 100%, from recent (ts, pct) samples.
+
+    Linear slope across the sampled span (oldest->newest). Returns the projected
+    epoch, or None when there isn't enough data (need >= min_span seconds of it),
+    the window isn't rising, or it's already at/over the cap. Strictly "at current
+    pace" — bursty work makes this optimistic/pessimistic, so callers must label it.
+    """
+    pts = sorted((p for p in points if p[0] is not None and p[1] is not None),
+                 key=lambda p: p[0])
+    if len(pts) < 2 or current >= 100:
+        return None
+    (t0, p0), (t1, p1) = pts[0], pts[-1]
+    span = t1 - t0
+    if span < min_span:
+        return None
+    slope = (p1 - p0) / span            # percent per second
+    if slope <= 0:
+        return None
+    return now + (100.0 - current) / slope
+
+
 def month_start_ts(now: float) -> float:
     """Epoch of local midnight on the 1st of `now`'s month."""
     dt = datetime.fromtimestamp(now)
@@ -136,6 +172,9 @@ def build_aggregate(events: list, now: float, since: float) -> dict:
         "busiest_day": busiest,          # (date, usd) | None
         "turns": turns,
         "active_days": len(days_seen),
+        "cache_savings_usd": cache_savings_usd(by_model),
+        "cache_read_tokens": sum(u["cache_read"] for u in by_model.values()),
+        "input_tokens": sum(u["input"] for u in by_model.values()),
     }
 
 

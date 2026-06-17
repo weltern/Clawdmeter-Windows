@@ -71,7 +71,7 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 import stats
-from statviz import DailyBars, Heatmap, ModelBreakdown
+from statviz import DailyBars, Heatmap, ModelBreakdown, PercentBars
 from usage_history import UsageHistory
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
@@ -2025,6 +2025,11 @@ class Dashboard(QMainWindow):
 
         self.stat_value, self.stat_value_sub = num_card("API VALUE THIS MONTH")
         self.stat_spend, self.stat_spend_sub = num_card("EXTRA USAGE THIS MONTH")
+        self.stat_cache, self.stat_cache_sub = num_card("CACHE SAVINGS THIS MONTH")
+        self.stat_burn, self.stat_burn_sub = num_card("TIME TO 7-DAY CAP")
+
+        self.stat_windows = PercentBars(empty_text="No per-model limits on your plan")
+        viz_card("WEEKLY WINDOWS BY MODEL", self.stat_windows)
 
         self.stat_models = ModelBreakdown()
         viz_card("VALUE BY MODEL", self.stat_models)
@@ -2053,6 +2058,10 @@ class Dashboard(QMainWindow):
         feed the ROI card's dollar value."""
         self._agg = agg
         self._render_roi()
+        cr, inp = agg.get("cache_read_tokens", 0), agg.get("input_tokens", 0)
+        self.stat_cache.setText(f"${agg.get('cache_savings_usd', 0):,.2f}")
+        pct = 100 * cr / (cr + inp) if (cr + inp) else 0
+        self.stat_cache_sub.setText(f"{pct:.0f}% of input served from cache")
         self.stat_models.set_data(
             [(stats.model_display(m).replace("Claude ", ""), v)
              for m, v in agg.get("by_model_value", {}).items()])
@@ -2089,6 +2098,8 @@ class Dashboard(QMainWindow):
             "top_model": ("claude-opus-4-8", 2500.0),
             "busiest_day": (today - timedelta(days=3), 412.0),
             "turns": 16704, "active_days": 12,
+            "cache_savings_usd": 16999.36,
+            "cache_read_tokens": 3_470_000_000, "input_tokens": 12_400_000,
         }
 
     def _update_stats(self, s: UsageSample) -> None:
@@ -2103,6 +2114,37 @@ class Dashboard(QMainWindow):
             self.stat_spend.setText("$0.00")
             self.stat_spend_sub.setText("Pay-as-you-go off")
         self._render_roi()
+        self.stat_windows.set_data(list(s.model_windows.items()))   # per-model headroom
+        self._update_burn(s)
+
+    def _update_burn(self, s: UsageSample) -> None:
+        """Time-to-cap card from the recent 7-day utilisation slope (K2 ring)."""
+        if s.weekly_pct >= 100:
+            self.stat_burn.setText("over")
+            self.stat_burn_sub.setText("7-day window already in overage")
+            return
+        ring = getattr(self, "usage_history", None)
+        points = [(p["ts"], p["w"]) for p in ring.ring] if ring else []
+        now = time.time()
+        eta = stats.cap_eta(points, s.weekly_pct, now)
+        if eta is None:
+            self.stat_burn.setText("—")
+            self.stat_burn_sub.setText("not on pace to cap (gathering data)")
+            return
+        secs = eta - now
+        reset_secs = (s.weekly_reset_minutes or 0) * 60
+        if reset_secs and secs > reset_secs:
+            self.stat_burn.setText("—")
+            self.stat_burn_sub.setText("on pace to reset before capping")
+            return
+        if secs >= 86400:
+            amt = f"~{secs / 86400:.1f} days"
+        elif secs >= 3600:
+            amt = f"~{secs / 3600:.0f} hours"
+        else:
+            amt = f"~{max(1, int(secs / 60))} min"
+        self.stat_burn.setText(amt)
+        self.stat_burn_sub.setText("until the 7-day cap · at current pace")
 
     def _render_roi(self) -> None:
         """ROI card from the latest aggregate (the dollar value) + the latest
@@ -2358,6 +2400,7 @@ class Dashboard(QMainWindow):
                 plan_tier="default_claude_max_5x",
                 extra_usage_enabled=True,
                 extra_usage_used_usd=round(self._mock_pct * 0.3, 2),
+                model_windows={"Opus": 62, "Sonnet": 18},
             ))
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)

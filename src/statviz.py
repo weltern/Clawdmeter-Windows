@@ -100,6 +100,53 @@ class ModelBreakdown(QWidget):
         p.end()
 
 
+class PercentBars(QWidget):
+    """Per-item percent bars (0-100): label · bar to 100% · "N%". The bar warms
+    from accent toward red as it fills. Empty data -> a dim hint line."""
+
+    _ROW_H = 24
+    _LABEL_W = 104
+    _VALUE_W = 46
+
+    def __init__(self, parent=None, empty_text: str = "—") -> None:
+        super().__init__(parent)
+        self._rows: list = []
+        self._empty = empty_text
+        self.setFixedHeight(self._ROW_H)
+
+    def set_data(self, rows: list) -> None:
+        self._rows = sorted(rows or [], key=lambda r: r[1], reverse=True)[:8]
+        self.setFixedHeight(max(1, len(self._rows)) * self._ROW_H)
+        self.update()
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        font = p.font()
+        font.setPixelSize(11)
+        p.setFont(font)
+        w = self.width()
+        if not self._rows:
+            p.setPen(_DIM)
+            p.drawText(self.rect(), Qt.AlignVCenter | Qt.AlignLeft, self._empty)
+            p.end()
+            return
+        bar_max = max(10.0, w - self._LABEL_W - self._VALUE_W - 8)
+        for i, (label, pct) in enumerate(self._rows):
+            y = i * self._ROW_H
+            cy = y + self._ROW_H / 2
+            frac = max(0.0, min(1.0, pct / 100.0))
+            p.setPen(_DIM)
+            p.drawText(QRectF(0, y, self._LABEL_W - 8, self._ROW_H),
+                       Qt.AlignVCenter | Qt.AlignLeft, label)
+            p.fillRect(QRectF(self._LABEL_W, cy - 5, max(2.0, frac * bar_max), 10),
+                       _lerp(_ACCENT, QColor("#c13434"), frac))
+            p.setPen(QColor("#e6edf3"))
+            p.drawText(QRectF(w - self._VALUE_W, y, self._VALUE_W, self._ROW_H),
+                       Qt.AlignVCenter | Qt.AlignRight, f"{int(pct)}%")
+        p.end()
+
+
 class Heatmap(QWidget):
     """7x24 weekday(row) x hour(col) activity grid. set_data(grid[7][24])."""
 

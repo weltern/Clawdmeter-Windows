@@ -114,6 +114,24 @@ def test_build_aggregate():
     assert series[date(2026, 6, 11)] == 0.0
     assert agg["busiest_day"][0] == date(2026, 6, 10)
     assert len(agg["value_by_day"]) == 12   # Jun 1..12 inclusive
+    assert "cache_savings_usd" in agg and "cache_read_tokens" in agg
+
+
+def test_cache_savings():
+    # opus input 5.0, cache_read 0.5 -> saved (5.0-0.5) per MTok of cache reads
+    assert stats.cache_savings_usd({"claude-opus-4-8": {"cache_read": 1_000_000}}) == 4.5
+    assert stats.cache_savings_usd({"unknown-x": {"cache_read": 1_000_000}}) == 0.0
+    assert stats.cache_savings_usd({}) == 0.0
+
+
+def test_cap_eta():
+    pts = [(0.0, 10.0), (1200.0, 30.0)]          # +20% over 1200s
+    eta = stats.cap_eta(pts, current=30.0, now=1200.0)
+    assert eta is not None and abs(eta - 5400.0) < 1.0   # 70% left / slope
+    assert stats.cap_eta([(0.0, 50.0), (1200.0, 50.0)], 50.0, 1200.0) is None   # flat
+    assert stats.cap_eta([(0.0, 10.0), (100.0, 30.0)], 30.0, 100.0) is None     # span<600
+    assert stats.cap_eta(pts, current=100.0, now=1200.0) is None                # at cap
+    assert stats.cap_eta([(0.0, 10.0)], 10.0, 0.0) is None                      # one point
 
 
 if __name__ == "__main__":
