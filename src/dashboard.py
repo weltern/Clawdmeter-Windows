@@ -35,12 +35,15 @@ from PySide6.QtGui import (
     QDesktopServices,
     QGuiApplication,
     QIcon,
+    QKeySequence,
     QPainter,
     QPixmap,
     QRegularExpressionValidator,
+    QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QFileDialog,
     QFrame,
@@ -53,6 +56,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QStackedWidget,
     QSystemTrayIcon,
     QToolButton,
     QVBoxLayout,
@@ -70,7 +75,7 @@ from reset_notify import ResetDecision, ResetNotifier
 import update_check
 from update_check import UpdateChecker
 from session_shelf import (
-    CompactView, SessionShelf, UsageBar, apply_overage_bar, square_caret_icon,
+    CompactView, SessionShelf, UsageBar, apply_overage_bar,
 )
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
@@ -142,10 +147,10 @@ QLabel#titleAppName {
 QToolButton#titleBtn, QToolButton#closeBtn, QToolButton#settingsBtn {
     background: transparent; color: #CE7D6B; border: 0;
     min-width: 38px; min-height: 30px;
-    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+    font-family: "Font Awesome 6 Free"; font-weight: 900;
 }
-QToolButton#titleBtn, QToolButton#closeBtn { font-size: 11px; }
-QToolButton#settingsBtn { font-size: 16px; }
+QToolButton#titleBtn, QToolButton#closeBtn { font-size: 13px; }
+QToolButton#settingsBtn { font-size: 15px; }
 QToolButton#titleBtn:hover, QToolButton#settingsBtn:hover { background-color: #1f2937; color: #CE7D6B; }
 QToolButton#closeBtn:hover { background-color: #c13434; color: #ffffff; }
 
@@ -170,6 +175,31 @@ QWidget#settingsPanel {
     background-color: #0a0d12;
     border-left: 1px solid #1f2937;
 }
+/* Left tab rail in the full-width settings panel. */
+QWidget#settingsNav {
+    background-color: #0e1116;
+    border-right: 1px solid #1f2937;
+}
+/* QPushButton (not QToolButton) so QSS text-align actually left-aligns the
+   glyph+label. Segoe UI is primary so the Latin label stays crisp — FA Free
+   ships its own (ugly) Latin, so listing it first would hijack the words. The
+   leading FA glyph isn't in Segoe UI, so Qt falls back to Font Awesome for it.
+   FA is registered at startup in main.py via QFontDatabase. */
+QPushButton#navBtn {
+    background: transparent; color: #9ca3af; border: 0;
+    border-radius: 6px; padding: 9px 14px;
+    text-align: left; font-size: 13px; font-weight: 600;
+    font-family: "Segoe UI", "Font Awesome 6 Free";
+}
+QPushButton#navBtn:hover { background-color: #1f2937; color: #e6edf3; }
+QPushButton#navBtn:checked { background-color: #1f2937; color: #CE7D6B; }
+/* Prominent close (✕) for the full-width panel: no click-outside anymore. */
+QToolButton#settingsClose {
+    background: transparent; color: #9ca3af; border: 0;
+    min-width: 34px; min-height: 34px; border-radius: 6px; font-size: 14px;
+    font-family: "Font Awesome 6 Free"; font-weight: 900;
+}
+QToolButton#settingsClose:hover { background-color: #c13434; color: #ffffff; }
 QScrollArea#settingsScroll, QWidget#settingsBody { background: transparent; border: none; }
 QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 0; }
 QScrollBar::handle:vertical { background: #374151; border-radius: 4px; min-height: 24px; }
@@ -702,40 +732,33 @@ class TitleBar(QWidget):
 
         # Glyphs from Segoe Fluent Icons / Segoe MDL2 Assets — the same
         # codepoints Windows itself uses for window controls.
-        self.settings_btn = self._tool_btn("", "Settings")   # gear
+        self.settings_btn = self._tool_btn(chr(0xF013), "Settings")   # gear
         self.settings_btn.setObjectName("settingsBtn")
         self.settings_btn.clicked.connect(on_settings)
         row.addWidget(self.settings_btn)
 
         # Full<->Compact toggle: a square-caret that points DOWN in full (click
         # to collapse to compact) and UP in compact (click to expand to full).
-        self.caret_btn = QToolButton()
-        self.caret_btn.setObjectName("titleBtn")
-        self.caret_btn.setToolTip("Compact view")
-        self.caret_btn.setIconSize(QSize(16, 16))
-        self.caret_btn.setCursor(Qt.PointingHandCursor)
-        self.caret_btn.setFocusPolicy(Qt.NoFocus)
+        self.caret_btn = self._tool_btn("", "Compact view")
         self.caret_btn.clicked.connect(on_toggle)
         row.addWidget(self.caret_btn)
 
         # Mini button (always available): Windows' restore-to-center glyph.
-        self.mini_btn = self._tool_btn("", "Mini view")  # BackToWindow
-        self.mini_btn.setText("")   # BackToWindow / arrows-to-center
-        self.mini_btn.setText(chr(0xE73F))   # BackToWindow / arrows-to-center
+        self.mini_btn = self._tool_btn(chr(0xF422), "Mini view")  # compress-to-center
         self.mini_btn.clicked.connect(on_mini)
         row.addWidget(self.mini_btn)
 
         self.set_active_mode("full")
 
-        self.min_btn = self._tool_btn("", "Minimize")        # ChromeMinimize
+        self.min_btn = self._tool_btn(chr(0xF2D1), "Minimize")        # ChromeMinimize
         self.min_btn.clicked.connect(self._win.showMinimized)
         row.addWidget(self.min_btn)
 
-        self.max_btn = self._tool_btn("", "Maximize")        # ChromeMaximize
+        self.max_btn = self._tool_btn(chr(0xF45C), "Maximize")        # ChromeMaximize
         self.max_btn.clicked.connect(self._toggle_max)
         row.addWidget(self.max_btn)
 
-        self.close_btn = self._tool_btn("", "Close")         # ChromeClose
+        self.close_btn = self._tool_btn(chr(0xF00D), "Close")         # ChromeClose
         self.close_btn.setObjectName("closeBtn")
         self.close_btn.clicked.connect(self._win.close)
         row.addWidget(self.close_btn)
@@ -753,16 +776,16 @@ class TitleBar(QWidget):
         """Point the caret toward what the toggle does next: DOWN in full (click
         -> compact), UP in compact (click -> full)."""
         up = mode == "compact"
-        self.caret_btn.setIcon(square_caret_icon(up=up))
+        self.caret_btn.setText(chr(0xF102) if up else chr(0xF103))  # angles up / down
         self.caret_btn.setToolTip("Full view" if up else "Compact view")
 
     def _toggle_max(self) -> None:
         if self._win.isMaximized():
             self._win.showNormal()
-            self.max_btn.setText("")  # ChromeMaximize
+            self.max_btn.setText(chr(0xF45C))  # square-full (maximize)
         else:
             self._win.showMaximized()
-            self.max_btn.setText("")  # ChromeRestore
+            self.max_btn.setText(chr(0xF2D2))  # window-restore
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
@@ -787,7 +810,7 @@ class TitleBar(QWidget):
             # Restore before the handoff so the window follows the cursor at
             # its normal size, like Windows' own maximized title-bar drag.
             self._win.showNormal()
-            self.max_btn.setText("")  # ChromeMaximize
+            self.max_btn.setText(chr(0xF45C))  # square-full (maximize)
         winutil.start_native_move(int(self._win.winId()))
         e.accept()
 
@@ -976,7 +999,6 @@ class SettingsPanel(QWidget):
     area). Call open()/close() to animate. Position is set externally on
     parent resize."""
 
-    WIDTH = 340
     ANIM_MS = 220
 
     # Emitted from the push-test worker thread; delivered on the UI thread.
@@ -989,6 +1011,7 @@ class SettingsPanel(QWidget):
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFocusPolicy(Qt.StrongFocus)
         self._open = False
         self._on_aot_changed = on_always_on_top_changed
         self._on_auto_hide_changed = on_auto_hide_changed
@@ -1011,8 +1034,8 @@ class SettingsPanel(QWidget):
         header.setContentsMargins(20, 18, 20, 8)
         title = QLabel("SETTINGS", objectName="settingsTitle")
         close = QToolButton()
-        close.setObjectName("titleBtn")
-        close.setText("✕")
+        close.setObjectName("settingsClose")
+        close.setText(chr(0xF00D))
         close.setCursor(Qt.PointingHandCursor)
         close.setFocusPolicy(Qt.NoFocus)
         close.clicked.connect(self._on_close_requested)
@@ -1021,21 +1044,63 @@ class SettingsPanel(QWidget):
         header.addWidget(close)
         outer.addWidget(header_w)
 
-        # Scrollable body — settings grow without clipping or cramping.
-        scroll = QScrollArea()
-        scroll.setObjectName("settingsScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.viewport().setStyleSheet("background: transparent;")
-        outer.addWidget(scroll, 1)
+        # Body: a left tab rail + one stacked page per tab. Each page scrolls on
+        # its own so a long tab (Notifications) never drags the shorter ones, and
+        # new settings slot into the tab that owns their concern.
+        content_row = QHBoxLayout()
+        content_row.setContentsMargins(0, 0, 0, 0)
+        content_row.setSpacing(0)
+        outer.addLayout(content_row, 1)
 
-        body = QWidget()
-        body.setObjectName("settingsBody")
-        scroll.setWidget(body)
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(20, 6, 20, 18)
-        layout.setSpacing(12)
+        nav_w = QWidget(objectName="settingsNav")
+        nav_w.setFixedWidth(148)
+        nav = QVBoxLayout(nav_w)
+        nav.setContentsMargins(8, 8, 8, 8)
+        nav.setSpacing(4)
+        content_row.addWidget(nav_w)
+
+        self._stack = QStackedWidget()
+        content_row.addWidget(self._stack, 1)
+
+        self._nav_group = QButtonGroup(self)
+        self._nav_group.setExclusive(True)
+
+        def _make_tab(glyph: str, label: str) -> QVBoxLayout:
+            btn = QPushButton(f"{glyph}   {label}", objectName="navBtn")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            nav.addWidget(btn)
+            page = QScrollArea()
+            page.setObjectName("settingsScroll")
+            page.setWidgetResizable(True)
+            page.setFrameShape(QFrame.NoFrame)
+            page.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            page.viewport().setStyleSheet("background: transparent;")
+            page_body = QWidget(objectName="settingsBody")
+            page.setWidget(page_body)
+            lay = QVBoxLayout(page_body)
+            lay.setContentsMargins(20, 8, 20, 18)
+            lay.setSpacing(12)
+            self._nav_group.addButton(btn, self._stack.addWidget(page))
+            return lay
+
+        # Font Awesome 6 Free (Solid) glyphs: gear, display, circle-nodes, bell,
+        # info. Rendered as text so they recolor with the QSS accent on
+        # hover/active, exactly as the Segoe glyphs did.
+        gen_layout = _make_tab("\uF013", "General")
+        disp_layout = _make_tab("\uE163", "Display")
+        conn_layout = _make_tab("\uE4E2", "Connection")
+        notif_layout = _make_tab("\uF0F3", "Notifications")
+        about_layout = _make_tab("\uF129", "About")
+        nav.addStretch(1)
+        self._nav_group.idClicked.connect(self._stack.setCurrentIndex)
+        self._nav_group.button(0).setChecked(True)
+
+        # `layout` is a moving cursor: each section appends to whichever tab page
+        # it currently points at, reassigned at the section boundaries below.
+        layout = conn_layout
 
         layout.addWidget(QLabel("CREDENTIALS", objectName="sectionLabel"))
         self.cred_btn = QPushButton("Use alternative credentials")
@@ -1069,7 +1134,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.refresh_token_btn)
         self.refresh_token_status()
 
-        layout.addSpacing(10)
+        layout = gen_layout
         layout.addWidget(QLabel("WINDOW", objectName="sectionLabel"))
         self.aot_check = QCheckBox("Always on top")
         self.aot_check.setChecked(app_settings.get_always_on_top())
@@ -1104,7 +1169,7 @@ class SettingsPanel(QWidget):
         self.check_updates_btn.clicked.connect(self._on_check_updates_clicked)
         layout.addWidget(self.check_updates_btn)
 
-        layout.addSpacing(10)
+        layout = disp_layout
         layout.addWidget(QLabel("SESSIONS", objectName="sectionLabel"))
         sessions_hint = QLabel(
             "Show every active Claude Code session as its own mascot, and the "
@@ -1138,6 +1203,7 @@ class SettingsPanel(QWidget):
         self.token_usage_check.toggled.connect(self._on_token_usage_toggled)
         layout.addWidget(self.token_usage_check)
 
+        layout = conn_layout
         layout.addSpacing(10)
         layout.addWidget(QLabel("USAGE POLLING", objectName="sectionLabel"))
         poll_hint = QLabel(
@@ -1192,7 +1258,7 @@ class SettingsPanel(QWidget):
         self._poll_note_hold.timeout.connect(self._fade_poll_note)
         layout.addWidget(self.poll_interval_note)
 
-        layout.addSpacing(10)
+        layout = notif_layout
         layout.addWidget(QLabel("NOTIFICATIONS", objectName="sectionLabel"))
         notify_hint = QLabel(
             "Alert me when a usage limit resets and I can resume — only when I "
@@ -1268,6 +1334,7 @@ class SettingsPanel(QWidget):
 
         self._sync_notify_subtoggles()
 
+        layout = gen_layout
         layout.addSpacing(10)
         layout.addWidget(QLabel("START MENU", objectName="sectionLabel"))
         hint = QLabel(
@@ -1281,7 +1348,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.start_btn)
         self._refresh_start_menu_btn()
 
-        layout.addSpacing(10)
+        layout = about_layout
         layout.addWidget(QLabel("ABOUT", objectName="sectionLabel"))
         about = QLabel(
             f"Clawdmeter-Windows  v{app_settings.APP_VERSION}\n"
@@ -1289,14 +1356,21 @@ class SettingsPanel(QWidget):
             "github.com/weltern/Clawdmeter-Windows\n\n"
             "MIT licensed · the Clawd mascot is © Anthropic PBC and is "
             "not covered by the MIT license · unofficial, not affiliated "
-            "with Anthropic.",
+            "with Anthropic.\n\n"
+            "Icons by Font Awesome Free (fontawesome.com) · SIL OFL 1.1.",
             objectName="sectionHint",
         )
         about.setWordWrap(True)
         about.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(about)
 
-        layout.addStretch(1)
+        for _page_layout in (gen_layout, disp_layout, conn_layout, notif_layout, about_layout):
+            _page_layout.addStretch(1)
+
+        # Close on Esc — the full-width panel has no click-outside fallback.
+        esc = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        esc.setContext(Qt.WidgetWithChildrenShortcut)
+        esc.activated.connect(self._on_close_requested)
 
         self._anim = QPropertyAnimation(self, b"geometry", self)
         self._anim.setDuration(self.ANIM_MS)
@@ -1564,7 +1638,7 @@ class SettingsPanel(QWidget):
         p = self.parentWidget()
         if not p:
             return
-        self.setGeometry(p.width(), 0, self.WIDTH, p.height())
+        self.setGeometry(p.width(), 0, p.width(), p.height())
         self._open = False
 
     def reposition(self) -> None:
@@ -1573,9 +1647,9 @@ class SettingsPanel(QWidget):
         if not p:
             return
         if self._open:
-            self.setGeometry(p.width() - self.WIDTH, 0, self.WIDTH, p.height())
+            self.setGeometry(0, 0, p.width(), p.height())
         else:
-            self.setGeometry(p.width(), 0, self.WIDTH, p.height())
+            self.setGeometry(p.width(), 0, p.width(), p.height())
 
     def open_panel(self) -> None:
         if self._open:
@@ -1586,8 +1660,9 @@ class SettingsPanel(QWidget):
         self.refresh_token_status()
         self.show()
         self.raise_()
-        start = QRect(p.width(), 0, self.WIDTH, p.height())
-        end = QRect(p.width() - self.WIDTH, 0, self.WIDTH, p.height())
+        self.setFocus(Qt.OtherFocusReason)
+        start = QRect(p.width(), 0, p.width(), p.height())
+        end = QRect(0, 0, p.width(), p.height())
         self.setGeometry(start)
         self._anim.stop()
         self._anim.setStartValue(start)
@@ -1602,7 +1677,7 @@ class SettingsPanel(QWidget):
         if not p:
             return
         start = self.geometry()
-        end = QRect(p.width(), 0, self.WIDTH, p.height())
+        end = QRect(p.width(), 0, p.width(), p.height())
         self._anim.stop()
         self._anim.setStartValue(start)
         self._anim.setEndValue(end)
