@@ -2132,7 +2132,7 @@ class Dashboard(QMainWindow):
         viz_card("VALUE BY PROJECT", self.stat_projects)
 
         self.stat_activity = CategoryBars(empty_text="No tool activity yet")
-        viz_card("WHAT YOU DO", self.stat_activity)
+        viz_card("ACTIVITY MIX", self.stat_activity)
 
         self.stat_week = WeekBars()
         self.stat_week_delta = QLabel("", objectName="statDelta")
