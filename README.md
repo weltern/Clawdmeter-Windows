@@ -238,36 +238,51 @@ now need.
 ## Settings
 
 Open Settings from the **gear at the bottom of the left nav rail** — it's a
-full page in the same window, alongside the Dashboard and Stats, organized into
-tabs (**General**, **Display**, **Connection**, **Notifications**, **About**)
-that each scroll on their own.
+full page in the same window, alongside the Dashboard and Stats, split across
+five tabs that each scroll on their own. Here's every setting, grouped by tab.
 
-![Clawdmeter-Windows settings panel](assets/Screenshot-2-Settings.png)
+![Clawdmeter-Windows settings panel — the General tab and the tab rail](assets/Screenshot-2-Settings.png)
 
-- **Credentials** — by default the app reads `~/.claude/.credentials.json`. Use
-  **Use alternative credentials** (or set `CLAUDE_CREDENTIALS_PATH`) to point at
-  a non-default `.credentials.json`.
-- **Token** — Claude's OAuth access token expires roughly every 8 hours,
-  which would otherwise blank the dashboard. With **Auto-refresh when expired**
-  on (the default), the app mints a fresh token automatically so it stays live.
-  The **Refresh token now** button is a manual override and is enabled only when
-  the token is actually expired.
-- **Window** — toggle **Always on top**, **Auto-hide title bar**, and **Quit on
-  close** (closes the app instead of minimizing to the tray).
+### General
+
+- **Window** — toggle **Always on top**, **Auto-hide title bar** (the title bar
+  collapses until you hover the top edge), and **Quit on close** (closes the app
+  instead of minimizing to the tray).
+- **Updates** — **Automatically check for updates** (on by default — checks the
+  GitHub releases on launch, then about once a day) and **Check for updates now**.
+- **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
+  to pin).
+
+### Display
+
 - **Sessions** — **Show multiple sessions** (the session shelf; off shows a single
   mascot for the most recent session) and **Show subagents** (the child mascots).
   Both on by default.
 - **Token usage** — **Show token usage** toggles every token figure (the totals
   beside the bars, the per-session tiles and hover breakdown, and the tray line).
   On by default; read from your local transcripts, never the API.
+
+### Connection
+
+- **Credentials** — by default the app reads `~/.claude/.credentials.json`. Use
+  **Use alternative credentials** (or set `CLAUDE_CREDENTIALS_PATH`) to point at
+  a non-default `.credentials.json`.
+- **Token** — Claude's OAuth access token expires roughly every 8 hours, which
+  would otherwise blank the dashboard. With **Auto-refresh when expired** on (the
+  default), the app mints a fresh token automatically so it stays live. The
+  **Refresh token now** button is a manual override, enabled only when the token
+  is actually expired.
 - **Usage polling** — how often the app checks your usage. Each check is a tiny
   billed API request, so the interval is adjustable from **10 to 600 seconds**
-  (60 by default): lower is fresher but makes more requests; higher is gentler
-  on your quota when you leave it running. Out-of-range entries snap to the
-  nearest allowed value.
-- **Notifications** — **Notify on limit reset** pings you the moment a usage
-  limit resets so you know you can resume — but only when you were actually near
-  the limit (or already throttled), so it stays quiet otherwise.
+  (60 by default): lower is fresher but makes more requests; higher is gentler on
+  your quota when you leave it running. Out-of-range entries snap to the nearest
+  allowed value.
+
+### Notifications
+
+- **Notify on limit reset** pings you the moment a usage limit resets so you know
+  you can resume — but only when you were actually near the limit (or already
+  throttled), so it stays quiet otherwise.
 
   ![Clawdmeter-Windows limit-reset notification — "Claude limit reset: Session limit has reset, you can resume"](assets/Screenshot-Session-Limit-Reset.png)
 
@@ -286,8 +301,11 @@ that each scroll on their own.
   in-app hint says where to get its credential; keep topics/tokens/URLs secret,
   since anyone with them can post to or read your alerts. **Send test notification**
   fires every configured channel at once.
-- **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
-  to pin).
+
+### About
+
+- Version, author, and credits — the source is **MIT** licensed; the Clawd mascot
+  is © Anthropic PBC and **not** covered by it; icons are Font Awesome Free.
 
 ## Credit
 
