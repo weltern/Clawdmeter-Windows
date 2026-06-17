@@ -17,7 +17,7 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from PySide6.QtWidgets import QApplication, QToolButton, QWidget  # noqa: E402
+from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
 from dashboard import SettingsPanel  # noqa: E402
 
@@ -26,9 +26,10 @@ _app = QApplication.instance() or QApplication([])
 
 def _panel() -> SettingsPanel:
     # Top-level (parent=None) so the returned panel owns itself and survives the
-    # call; the geometry methods that need a real parent aren't exercised here.
+    # call. Settings is now a stacked page (no overlay/close), so the two
+    # required callbacks are all it needs.
     noop = lambda *a, **k: None
-    return SettingsPanel(None, noop, noop, noop)
+    return SettingsPanel(None, noop, noop)
 
 
 def test_five_tabs_in_order():
@@ -70,13 +71,6 @@ def test_sections_routed_to_expected_tabs():
     for tab, widgets in expected.items():
         for w in widgets:
             assert page[tab].isAncestorOf(w), f"{w.objectName() or w} not on {tab} tab"
-
-
-def test_prominent_close_button_present():
-    sp = _panel()
-    close = sp.findChild(QToolButton, "settingsClose")
-    assert close is not None
-    assert close.text() == chr(0xF00D)  # Font Awesome xmark
 
 
 if __name__ == "__main__":
