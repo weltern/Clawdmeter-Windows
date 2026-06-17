@@ -3,7 +3,7 @@
 Standalone Windows desktop dashboard for Claude Code usage.
 
 <p align="center">
-  <img src="assets/ClawdMeter-Windows-v2.3.0.gif" width="420"
+  <img src="assets/ClawdMeter-Windows-v2.3.0.gif" width="560"
        alt="Clawdmeter-Windows — the Clawd mascot reacting live to Claude Code activity, with session and weekly usage">
 </p>
 
