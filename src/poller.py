@@ -14,7 +14,7 @@ import json
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
@@ -25,6 +25,10 @@ import token_refresh
 from transcript import account_window_tokens
 
 API_URL = "https://api.anthropic.com/v1/messages"
+# OAuth usage/profile endpoints (the desktop Settings -> Usage page uses these).
+# Same auth + anthropic-beta header as the messages probe.
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 API_HEADERS_TEMPLATE = {
     "anthropic-version": "2023-06-01",
     "anthropic-beta": "oauth-2025-04-20",
@@ -61,6 +65,13 @@ class UsageSample:
     # from the local transcripts (0 when the token-usage display is off).
     tokens_5h: int = 0
     tokens_7d: int = 0
+    # K1: OAuth usage/profile endpoint data. Defaults apply when those endpoints
+    # weren't reached (the header-derived fields above still populate).
+    plan_tier: str | None = None            # e.g. "default_claude_max_5x"
+    extra_usage_enabled: bool = False
+    extra_usage_used_usd: float = 0.0       # real extra-usage spend, in dollars
+    extra_usage_limit_usd: float | None = None  # monthly cap in $, None = uncapped
+    model_windows: dict = field(default_factory=dict)  # {model display name: percent}
 
 
 def credentials_path() -> Path:
@@ -141,6 +152,50 @@ def sample_from_headers(headers, now: float) -> UsageSample:
     )
 
 
+def usage_fields_from_json(usage: dict | None, profile: dict | None) -> dict:
+    """Extract the K1 fields from /api/oauth/usage + /api/oauth/profile JSON.
+
+    Pure (no network) and defensive: every field falls back to a sane default on
+    missing/null input, so a partial or changed response can't crash a poll.
+    Money comes from `spend.used` (amount_minor / 10**exponent) — never read the
+    minor-unit integer as dollars. Per-model windows come from the `limits[]`
+    array's model-scoped entries.
+    """
+    usage = usage or {}
+    profile = profile or {}
+    org = profile.get("organization") or {}
+
+    spend = usage.get("spend") or {}
+    used = spend.get("used") or {}
+    exp = used.get("exponent", 2) if isinstance(used.get("exponent"), int) else 2
+    amt = used.get("amount_minor")
+    used_usd = amt / (10 ** exp) if isinstance(amt, (int, float)) else 0.0
+
+    raw_limit = spend.get("limit")
+    if isinstance(raw_limit, dict):
+        la, le = raw_limit.get("amount_minor"), raw_limit.get("exponent", exp)
+        limit_usd = la / (10 ** le) if isinstance(la, (int, float)) else None
+    elif isinstance(raw_limit, (int, float)):
+        limit_usd = raw_limit / (10 ** exp)
+    else:
+        limit_usd = None
+
+    windows: dict[str, int] = {}
+    for entry in usage.get("limits") or []:
+        model = ((entry.get("scope") or {}).get("model") or {}).get("display_name")
+        pct = entry.get("percent")
+        if model and isinstance(pct, (int, float)):
+            windows[model] = int(pct)
+
+    return {
+        "plan_tier": org.get("rate_limit_tier"),
+        "extra_usage_enabled": bool(spend.get("enabled")),
+        "extra_usage_used_usd": round(float(used_usd), 2),
+        "extra_usage_limit_usd": round(float(limit_usd), 2) if limit_usd is not None else None,
+        "model_windows": windows,
+    }
+
+
 def _poll_once(token: str) -> UsageSample:
     """Make one rate-limit probe. Returns a sample with ok=False on failure."""
     headers = dict(API_HEADERS_TEMPLATE)
@@ -149,9 +204,19 @@ def _poll_once(token: str) -> UsageSample:
     try:
         with httpx.Client(timeout=20.0) as http:
             resp = http.post(API_URL, headers=headers, json=API_BODY)
+            sample = sample_from_headers(resp.headers, now)
+            # K1: enrich with the OAuth usage + profile endpoints (plan tier,
+            # extra-usage spend, per-model windows) on the same client/cadence.
+            # Non-fatal: any failure leaves the header-derived sample intact.
+            try:
+                usage = http.get(USAGE_URL, headers=headers).json()
+                profile = http.get(PROFILE_URL, headers=headers).json()
+                for k, v in usage_fields_from_json(usage, profile).items():
+                    setattr(sample, k, v)
+            except (httpx.HTTPError, ValueError, TypeError):
+                pass
     except httpx.HTTPError as exc:
         return UsageSample(0, 0, 0, 0, "error", False, str(exc), now)
-    sample = sample_from_headers(resp.headers, now)
     # Sum the local transcripts' input+output over the 5h/7d windows — only when
     # the token display is on, so we don't scan files for nothing.
     if app_settings.get_show_token_usage():
