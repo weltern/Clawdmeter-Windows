@@ -1672,6 +1672,17 @@ def plan_label(tier: str | None) -> str:
         tier, tier.replace("default_claude_", "").replace("_", " ").title())
 
 
+def _fmt_count(n: int) -> str:
+    """Compact token/count label: 3_470_000_000 -> '3.5B'."""
+    if n >= 1_000_000_000:
+        return f"{n / 1e9:.1f}B"
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1e3:.0f}K"
+    return str(int(n))
+
+
 class _StatsWorker(QThread):
     """Computes the monthly Stats aggregate off the UI thread (a month-long
     transcript scan + valuation). Emits the aggregate dict when done."""
@@ -2061,10 +2072,10 @@ class Dashboard(QMainWindow):
         feed the ROI card's dollar value."""
         self._agg = agg
         self._render_roi()
-        cr, inp = agg.get("cache_read_tokens", 0), agg.get("input_tokens", 0)
+        cr = agg.get("cache_read_tokens", 0)
         self.stat_cache.setText(f"${agg.get('cache_savings_usd', 0):,.2f}")
-        pct = 100 * cr / (cr + inp) if (cr + inp) else 0
-        self.stat_cache_sub.setText(f"{pct:.0f}% of input served from cache")
+        self.stat_cache_sub.setText(
+            f"vs paying full input price on {_fmt_count(cr)} cache reads")
         self.stat_models.set_data(
             [(stats.model_display(m).replace("Claude ", ""), v)
              for m, v in agg.get("by_model_value", {}).items()])
@@ -2134,14 +2145,19 @@ class Dashboard(QMainWindow):
         now = time.time()
         eta = stats.cap_eta(points, s.weekly_pct, now)
         if eta is None:
-            self.stat_burn.setText("—")
-            self.stat_burn_sub.setText("not on pace to cap (gathering data)")
+            span = (points[-1][0] - points[0][0]) if len(points) >= 2 else 0
+            if len(points) < 2 or span < 600:
+                self.stat_burn.setText("—")
+                self.stat_burn_sub.setText("gathering pace data")
+            else:
+                self.stat_burn.setText("steady")
+                self.stat_burn_sub.setText("not on pace to cap")
             return
         secs = eta - now
         reset_secs = (s.weekly_reset_minutes or 0) * 60
         if reset_secs and secs > reset_secs:
-            self.stat_burn.setText("—")
-            self.stat_burn_sub.setText("on pace to reset before capping")
+            self.stat_burn.setText("clear")
+            self.stat_burn_sub.setText("resets before you'd cap · at current pace")
             return
         if secs >= 86400:
             amt = f"~{secs / 86400:.1f} days"

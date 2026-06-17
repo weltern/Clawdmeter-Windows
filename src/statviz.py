@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QToolTip, QWidget
 
 _ACCENT = QColor("#CE7D6B")
 _EMPTY = QColor("#161b22")     # an empty cell / zero bar track
@@ -31,23 +31,35 @@ class DailyBars(QWidget):
     def __init__(self, parent=None, height: int = 60) -> None:
         super().__init__(parent)
         self.setFixedHeight(height)
+        self.setMouseTracking(True)
         self._data: list = []
 
     def set_data(self, series: list) -> None:
         self._data = list(series or [])
-        self.setToolTip("")
         self.update()
+
+    def _bar_w(self) -> tuple[float, float]:
+        n = max(1, len(self._data))
+        gap = 2.0
+        return max(1.0, (self.width() - gap * (n - 1)) / n), gap
+
+    def mouseMoveEvent(self, e) -> None:
+        if not self._data:
+            return
+        bw, gap = self._bar_w()
+        i = int(e.position().x() // (bw + gap))
+        if 0 <= i < len(self._data):
+            d, v = self._data[i]
+            QToolTip.showText(e.globalPosition().toPoint(), f"{d:%b %d} · ${v:,.2f}", self)
 
     def paintEvent(self, _e) -> None:
         if not self._data:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
-        n = len(self._data)
+        h = self.height()
         vmax = max((v for _, v in self._data), default=0.0) or 1.0
-        gap = 2.0
-        bw = max(1.0, (w - gap * (n - 1)) / n)
+        bw, gap = self._bar_w()
         for i, (_d, v) in enumerate(self._data):
             x = i * (bw + gap)
             bh = max(1.0, (v / vmax) * (h - 2)) if v else 1.0
@@ -159,10 +171,24 @@ class Heatmap(QWidget):
         super().__init__(parent)
         self._grid = [[0] * 24 for _ in range(7)]
         self.setMinimumHeight(7 * self._CELL_H + self._FOOT + 4)
+        self.setMouseTracking(True)
 
     def set_data(self, grid: list) -> None:
         self._grid = grid or [[0] * 24 for _ in range(7)]
         self.update()
+
+    def mouseMoveEvent(self, e) -> None:
+        x, y = e.position().x(), e.position().y()
+        if x < self._LABEL_W or y >= 7 * self._CELL_H:
+            return
+        cell_w = (self.width() - self._LABEL_W) / 24.0
+        col = int((x - self._LABEL_W) / cell_w)
+        row = int(y / self._CELL_H)
+        if 0 <= row < 7 and 0 <= col < 24:
+            n = self._grid[row][col]
+            QToolTip.showText(
+                e.globalPosition().toPoint(),
+                f"{self._DOW[row]} {col:02d}:00 · {n} turn{'' if n == 1 else 's'}", self)
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
