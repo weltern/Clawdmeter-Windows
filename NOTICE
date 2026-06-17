@@ -22,6 +22,9 @@ Attribution
     Clawdmeter-Windows is a software-only Windows port of that work.
   * Clawd pixel art — https://claudepix.vercel.app
   * Clawd mascot — (c) Anthropic PBC.
+  * Icons — Font Awesome Free (https://fontawesome.com). The bundled font
+    assets/fonts/fa-solid-900.ttf is licensed under SIL OFL 1.1 (see
+    assets/fonts/LICENSE.txt); icon designs are CC BY 4.0.
 
 Disclaimer
 ----------

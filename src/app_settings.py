@@ -6,7 +6,7 @@ from PySide6.QtCore import QSettings
 
 ORG = "Clawdmeter"
 APP = "Clawdmeter"
-APP_VERSION = "2.0.1"
+APP_VERSION = "2.3.0"
 
 KEY_CRED_PATH = "credentials/path"
 KEY_ALWAYS_ON_TOP = "window/always_on_top"
@@ -21,15 +21,27 @@ KEY_SHOW_TOKEN_USAGE = "tokens/show_usage"
 KEY_AUTO_REFRESH = "token/auto_refresh"
 KEY_POLL_INTERVAL = "poll/interval_seconds"
 KEY_RESET_NOTIFY = "notify/reset_enabled"
+KEY_RESET_NOTIFY_TOAST = "notify/reset_toast"
 KEY_RESET_NOTIFY_SOUND = "notify/reset_sound"
 KEY_RESET_NOTIFY_POPUP = "notify/reset_popup"
 KEY_RESET_NOTIFY_PUSH = "notify/reset_push"
-KEY_RESET_NOTIFY_PUSH_PROVIDER = "notify/reset_push_provider"
 KEY_RESET_NOTIFY_PUSH_TOPIC = "notify/reset_push_topic"
 KEY_RESET_NOTIFY_PUSH_TG_TOKEN = "notify/reset_push_tg_token"
 KEY_RESET_NOTIFY_PUSH_TG_CHAT = "notify/reset_push_tg_chat"
+KEY_RESET_NOTIFY_PUSH_DISCORD = "notify/reset_push_discord"
+KEY_RESET_NOTIFY_PUSH_SLACK = "notify/reset_push_slack"
+KEY_RESET_NOTIFY_PUSH_WEBHOOK = "notify/reset_push_webhook"
+KEY_RESET_NOTIFY_PUSH_PO_TOKEN = "notify/reset_push_po_token"
+KEY_RESET_NOTIFY_PUSH_PO_USER = "notify/reset_push_po_user"
+KEY_RESET_NOTIFY_PUSH_GOTIFY_URL = "notify/reset_push_gotify_url"
+KEY_RESET_NOTIFY_PUSH_GOTIFY_TOKEN = "notify/reset_push_gotify_token"
+KEY_RESET_NOTIFY_PUSH_CHANNELS = "notify/reset_push_channels"
+KEY_AUTO_CHECK_UPDATES = "updates/auto_check"
+KEY_LAST_UPDATE_CHECK = "updates/last_check"
+KEY_SKIP_VERSION = "updates/skip_version"
 
-PUSH_PROVIDERS = ("ntfy", "telegram")
+PUSH_PROVIDERS = ("ntfy", "telegram", "discord", "slack", "pushover", "gotify",
+                  "webhook")
 
 # API usage poll cadence (seconds). The floor keeps the self-billed 1-token
 # probe from tripping per-minute rate limits; the ceiling keeps the usage %
@@ -207,6 +219,17 @@ def set_reset_notify(on: bool) -> None:
     _settings().setValue(KEY_RESET_NOTIFY, bool(on))
 
 
+def get_reset_notify_toast() -> bool:
+    v = _settings().value(KEY_RESET_NOTIFY_TOAST, True)  # on by default
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_reset_notify_toast(on: bool) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_TOAST, bool(on))
+
+
 def get_reset_notify_sound() -> bool:
     v = _settings().value(KEY_RESET_NOTIFY_SOUND, True)  # on by default
     if isinstance(v, str):
@@ -240,19 +263,6 @@ def set_reset_notify_push(on: bool) -> None:
     _settings().setValue(KEY_RESET_NOTIFY_PUSH, bool(on))
 
 
-def get_reset_notify_push_provider() -> str:
-    v = _settings().value(KEY_RESET_NOTIFY_PUSH_PROVIDER, "ntfy")
-    s = str(v).lower() if v else "ntfy"
-    return s if s in PUSH_PROVIDERS else "ntfy"
-
-
-def set_reset_notify_push_provider(provider: str) -> None:
-    p = (provider or "ntfy").lower()
-    _settings().setValue(
-        KEY_RESET_NOTIFY_PUSH_PROVIDER, p if p in PUSH_PROVIDERS else "ntfy"
-    )
-
-
 def get_reset_notify_push_topic() -> str:
     v = _settings().value(KEY_RESET_NOTIFY_PUSH_TOPIC, "")
     return str(v) if v else ""
@@ -278,3 +288,146 @@ def get_reset_notify_push_tg_chat() -> str:
 
 def set_reset_notify_push_tg_chat(chat: str) -> None:
     _settings().setValue(KEY_RESET_NOTIFY_PUSH_TG_CHAT, (chat or "").strip())
+
+
+def get_reset_notify_push_discord() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_DISCORD, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_discord(url: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_DISCORD, (url or "").strip())
+
+
+def get_reset_notify_push_slack() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_SLACK, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_slack(url: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_SLACK, (url or "").strip())
+
+
+def get_reset_notify_push_webhook() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_WEBHOOK, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_webhook(url: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_WEBHOOK, (url or "").strip())
+
+
+def get_reset_notify_push_po_token() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_PO_TOKEN, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_po_token(token: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_PO_TOKEN, (token or "").strip())
+
+
+def get_reset_notify_push_po_user() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_PO_USER, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_po_user(user: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_PO_USER, (user or "").strip())
+
+
+def get_reset_notify_push_gotify_url() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_GOTIFY_URL, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_gotify_url(url: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_GOTIFY_URL, (url or "").strip())
+
+
+def get_reset_notify_push_gotify_token() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_GOTIFY_TOKEN, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_gotify_token(token: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_GOTIFY_TOKEN, (token or "").strip())
+
+
+def get_auto_check_updates() -> bool:
+    v = _settings().value(KEY_AUTO_CHECK_UPDATES, True)  # on by default
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_auto_check_updates(on: bool) -> None:
+    _settings().setValue(KEY_AUTO_CHECK_UPDATES, bool(on))
+
+
+def get_last_update_check() -> float:
+    """Unix timestamp of the last completed update check (0.0 if never). Used to
+    throttle the background checker to roughly once a day."""
+    try:
+        return float(_settings().value(KEY_LAST_UPDATE_CHECK, 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def set_last_update_check(ts: float) -> None:
+    _settings().setValue(KEY_LAST_UPDATE_CHECK, float(ts))
+
+
+def get_skip_version() -> str:
+    """Normalized version the user chose to skip (e.g. '2.2.0'), or ''."""
+    v = _settings().value(KEY_SKIP_VERSION, "")
+    return str(v) if v else ""
+
+
+def set_skip_version(version: str) -> None:
+    _settings().setValue(KEY_SKIP_VERSION, (version or "").strip())
+
+
+def push_channel_configured(provider: str) -> bool:
+    """True if a push channel has the value(s) it needs to send."""
+    if provider == "ntfy":
+        return bool(get_reset_notify_push_topic())
+    if provider == "telegram":
+        return bool(get_reset_notify_push_tg_token()
+                    and get_reset_notify_push_tg_chat())
+    if provider == "discord":
+        return bool(get_reset_notify_push_discord())
+    if provider == "slack":
+        return bool(get_reset_notify_push_slack())
+    if provider == "webhook":
+        return bool(get_reset_notify_push_webhook())
+    if provider == "pushover":
+        return bool(get_reset_notify_push_po_token()
+                    and get_reset_notify_push_po_user())
+    if provider == "gotify":
+        return bool(get_reset_notify_push_gotify_url()
+                    and get_reset_notify_push_gotify_token())
+    return False
+
+
+def get_reset_notify_push_channels() -> list[str]:
+    """The push channels the user has ADDED (any subset of PUSH_PROVIDERS), in
+    order. Migration: when unset, seed from any channel that already has a saved
+    value so an upgrading user keeps their configured push targets."""
+    raw = _settings().value(KEY_RESET_NOTIFY_PUSH_CHANNELS, None)
+    if raw is None:
+        return [p for p in PUSH_PROVIDERS if push_channel_configured(p)]
+    items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+    out: list[str] = []
+    for s in (str(x).strip().lower() for x in items):
+        if s in PUSH_PROVIDERS and s not in out:
+            out.append(s)
+    return out
+
+
+def set_reset_notify_push_channels(channels) -> None:
+    valid: list[str] = []
+    for c in channels:
+        c = str(c).strip().lower()
+        if c in PUSH_PROVIDERS and c not in valid:
+            valid.append(c)
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_CHANNELS, ",".join(valid))

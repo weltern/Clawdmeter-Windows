@@ -20,9 +20,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QParallelAnimationGroup,
     QPoint,
-    QPointF,
     QPropertyAnimation,
-    QRectF,
     QSize,
     Qt,
     Signal,
@@ -40,8 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap,
-    QPolygonF,
+    QAction, QColor, QFont, QFontMetrics, QIcon, QPainter,
 )
 
 import winutil
@@ -305,37 +302,6 @@ _BAR_TRACK = "#1f2937"
 _BAR_BORDER = "#374151"
 _BAR_OVERAGE = "#A50F1A"   # deep fire-truck red — the overage overflow
 _BAR_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
-
-
-def square_caret_icon(up: bool, color: str = "#CE7D6B", px: int = 16) -> QIcon:
-    """Hand-drawn 'square-caret' icon — a caret inside a rounded square, pointing
-    up or down (the Full<->Compact view toggle; FA's SVG can't render in the
-    size-pruned frozen build, so we paint it). Rendered at 2x for crispness."""
-    ratio = 2
-    pm = QPixmap(px * ratio, px * ratio)
-    pm.setDevicePixelRatio(ratio)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    c = QColor(color)
-    pen = QPen(c)
-    pen.setWidthF(1.4)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
-    m = 1.6
-    p.drawRoundedRect(QRectF(m, m, px - 2 * m, px - 2 * m), 2.5, 2.5)
-    p.setPen(Qt.NoPen)
-    p.setBrush(c)
-    cx, half = px / 2.0, 3.0
-    if up:
-        tri = [QPointF(cx - half, px * 0.60), QPointF(cx + half, px * 0.60),
-               QPointF(cx, px * 0.40)]
-    else:
-        tri = [QPointF(cx - half, px * 0.40), QPointF(cx + half, px * 0.40),
-               QPointF(cx, px * 0.60)]
-    p.drawPolygon(QPolygonF(tri))
-    p.end()
-    return QIcon(pm)
 
 
 class UsageBar(QWidget):
@@ -1128,21 +1094,13 @@ class CompactView(QWidget):
         trow.addStretch(1)
         # Caret toggle (points UP in compact -> click expands to full) + the
         # mini button, matching the full window's switcher.
-        self.caret_btn = self._tbtn("", "Full view")
-        self.caret_btn.setIcon(square_caret_icon(up=True))
-        self.caret_btn.setIconSize(QSize(16, 16))
+        self.caret_btn = self._tbtn(chr(0xF102), "Full view")  # angles-up
         self.caret_btn.clicked.connect(lambda: self.set_mode_requested.emit("full"))
         trow.addWidget(self.caret_btn)
-        self.mini_btn = self._tbtn(chr(0xE73F), "Mini view")  # BackToWindow
-        # The glyph is a Segoe icon-font codepoint; the compact stylesheet
-        # doesn't set that family (unlike the full title bar), so apply it here
-        # or it falls back to a default font and renders as tofu.
-        _iconf = self.mini_btn.font()
-        _iconf.setFamilies(["Segoe Fluent Icons", "Segoe MDL2 Assets"])
-        self.mini_btn.setFont(_iconf)
+        self.mini_btn = self._tbtn(chr(0xF422), "Mini view")  # compress-to-center
         self.mini_btn.clicked.connect(lambda: self.set_mode_requested.emit("mini"))
         trow.addWidget(self.mini_btn)
-        self.close_btn = self._tbtn("✕", "Hide to tray")  # ✕
+        self.close_btn = self._tbtn(chr(0xF00D), "Hide to tray")  # ✕
         self.close_btn.clicked.connect(self.hide_requested.emit)
         trow.addSpacing(4)
         trow.addWidget(self.close_btn)
@@ -1188,6 +1146,10 @@ class CompactView(QWidget):
     def _tbtn(self, glyph: str, tip: str) -> QToolButton:
         b = QToolButton()
         b.setObjectName("compactBtn")
+        f = b.font()
+        f.setFamilies(["Font Awesome 6 Free"])
+        f.setWeight(QFont.Black)  # 900 = Solid
+        b.setFont(f)
         b.setText(glyph)
         b.setToolTip(tip)
         b.setCursor(Qt.PointingHandCursor)
@@ -1196,7 +1158,7 @@ class CompactView(QWidget):
     def set_active_mode(self, mode: str) -> None:
         """Compact's caret always points up (click -> full); kept for parity
         with the full title bar's switcher API."""
-        self.caret_btn.setIcon(square_caret_icon(up=True))
+        self.caret_btn.setText(chr(0xF102))  # angles-up
 
     def _slim_bar(self, parent_col: QVBoxLayout):
         head = QHBoxLayout()

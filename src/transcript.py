@@ -22,9 +22,10 @@ STALE_SECONDS are reported IDLE/stale so the dashboard can dim them.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -270,8 +271,18 @@ def parse_iso_ts(value: str | None) -> float | None:
     txt = value.strip()
     if txt.endswith("Z"):
         txt = txt[:-1] + "+00:00"
+
+    def _epoch(s: str) -> float:
+        dt = datetime.fromisoformat(s)
+        # A tz-less timestamp would otherwise be read as LOCAL by .timestamp(),
+        # shifting it by the UTC offset. Claude Code always writes a 'Z', but be
+        # safe: treat a naive value as UTC.
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+
     try:
-        return datetime.fromisoformat(txt).timestamp()
+        return _epoch(txt)
     except ValueError:
         pass
     # Some fromisoformat variants reject odd fractional-second digit counts;
@@ -282,7 +293,7 @@ def parse_iso_ts(value: str | None) -> float | None:
         while end < len(txt) and txt[end].isdigit():
             end += 1
         try:
-            return datetime.fromisoformat(txt[:dot] + txt[end:]).timestamp()
+            return _epoch(txt[:dot] + txt[end:])
         except ValueError:
             return None
     return None
@@ -342,6 +353,10 @@ def sum_token_windows(events, now: float) -> tuple[int, int]:
 # being actively appended (only the 1–2 live sessions are), so this skips
 # re-reading/parsing dozens of recent-but-idle transcripts on every poll.
 _TOKEN_EVENT_CACHE: dict[str, tuple[int, float, list[tuple[float, int]]]] = {}
+# account_window_tokens() is called from BOTH the poll thread and (on a
+# Show-token-usage toggle) the GUI thread; serialise their reads/writes/evicts
+# of the plain-dict cache so they can't race into a KeyError mid-eviction.
+_TOKEN_CACHE_LOCK = threading.Lock()
 
 
 def _file_token_events(fp: Path) -> list[tuple[float, int]]:
@@ -393,28 +408,182 @@ def account_window_tokens(now: float, root: Path | None = None) -> tuple[int, in
 
     all_events: list[tuple[float, int]] = []
     seen: set[str] = set()
+    with _TOKEN_CACHE_LOCK:
+        for fp in root.rglob("*.jsonl"):
+            try:
+                st = fp.stat()
+            except OSError:
+                continue
+            if st.st_mtime < cut7:
+                continue
+            key = str(fp)
+            seen.add(key)
+            cached = _TOKEN_EVENT_CACHE.get(key)
+            if cached and cached[0] == st.st_size and cached[1] == st.st_mtime:
+                events = cached[2]
+            else:
+                events = _file_token_events(fp)
+                _TOKEN_EVENT_CACHE[key] = (st.st_size, st.st_mtime, events)
+            all_events.extend(events)
+
+        # Drop cache entries for files that aged out of the 7d window / rotated away.
+        for key in [k for k in _TOKEN_EVENT_CACHE if k not in seen]:
+            del _TOKEN_EVENT_CACHE[key]
+
+    return sum_token_windows(all_events, now)
+
+
+# File-mutating tools whose target path feeds the "code by language" breakdown
+# (matched lowercase). Reads/searches are deliberately excluded — only files
+# Claude actually created or changed count as "assisted".
+_FILE_MUTATION_TOOLS = {"write", "edit", "multiedit", "notebookedit"}
+
+
+# Per-file cache of parsed events for the value/activity scan, keyed/invalidated
+# like the window cache above. Each entry holds the per-turn token rows
+# (ts, model, project, input, output, cache_read, cache_write), the per-tool
+# activity events (ts, activity_str), and the mutated-file events (ts, path) so
+# one file read serves every Stats aggregate. Separate cache because this scan
+# reaches back further than 7d.
+_MODEL_EVENT_CACHE: dict[str, tuple[int, float, list, list, list]] = {}
+
+
+def _file_model_events(fp: Path) -> tuple[list, list, list]:
+    """Parse one transcript once into three parallel streams:
+
+      * rows  — (ts, model, project, input, output, cache_read, cache_write) for
+                every assistant turn with a model + usage + timestamp. The project
+                (cwd leaf, captured once per file) lets value bucket by project.
+      * acts  — (ts, activity_str) for every tool_use block (one per call, so
+                parallel tool calls each count), classified via TOOL_MAP. Drives
+                the activity breakdown.
+      * files — (ts, file_path) for every file-mutating tool call (Write/Edit/…).
+                Drives the code-by-language breakdown.
+    """
+    rows: list = []
+    acts: list = []
+    files: list = []
+    cwd: str | None = None
+    try:
+        with fp.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if cwd is None:
+                    c = ev.get("cwd")
+                    if isinstance(c, str) and c:
+                        cwd = c
+                msg = ev.get("message")
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
+                ts = parse_iso_ts(ev.get("timestamp"))
+                if ts is None:
+                    continue
+
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict) or block.get("type") != "tool_use":
+                            continue
+                        name = block.get("name")
+                        if not isinstance(name, str) or not name:
+                            continue
+                        acts.append((ts, _activity_for_tool(name).value))
+                        if name.lower() in _FILE_MUTATION_TOOLS:
+                            inp = block.get("input")
+                            if isinstance(inp, dict):
+                                p = inp.get("file_path") or inp.get("notebook_path")
+                                if isinstance(p, str) and p:
+                                    files.append((ts, p))
+
+                usage = msg.get("usage")
+                model = msg.get("model")
+                if not isinstance(usage, dict) or not model:
+                    continue
+
+                def n(k: str) -> int:
+                    try:
+                        return int(usage.get(k) or 0)
+                    except (TypeError, ValueError):
+                        return 0
+
+                rows.append((ts, model, n("input_tokens"), n("output_tokens"),
+                             n("cache_read_input_tokens"),
+                             n("cache_creation_input_tokens")))
+    except OSError:
+        return [], [], []
+    project = project_name_from_cwd(cwd, fp)
+    rows = [(ts, model, project, i, o, cr, cw) for (ts, model, i, o, cr, cw) in rows]
+    return rows, acts, files
+
+
+def scan_events(since_ts: float, root: Path | None = None,
+                detail_since: float | None = None) -> tuple[list, list, list]:
+    """The three event streams (token rows, activity events, mutated files).
+
+    Token `rows` are returned at/after `since_ts`; the activity/file streams are
+    returned at/after `detail_since` (defaults to `since_ts`) — the aggregate
+    needs token rows for the whole lifetime but only needs activity/file detail
+    for the current month, so passing a later `detail_since` keeps those streams
+    small. Only files modified at/after `since_ts` are read (an older file can't
+    hold an in-window turn), reusing the (size, mtime) per-file cache so one disk
+    read feeds every aggregate. Does disk I/O — call it off the UI thread. Pass
+    `since_ts=0` for a lifetime scan.
+    """
+    if root is None:
+        root = Path.home() / ".claude" / "projects"
+    detail = since_ts if detail_since is None else detail_since
+    out_rows: list = []
+    out_acts: list = []
+    out_files: list = []
+    seen: set[str] = set()
     for fp in root.rglob("*.jsonl"):
         try:
             st = fp.stat()
         except OSError:
             continue
-        if st.st_mtime < cut7:
+        if st.st_mtime < since_ts:
             continue
         key = str(fp)
         seen.add(key)
-        cached = _TOKEN_EVENT_CACHE.get(key)
+        cached = _MODEL_EVENT_CACHE.get(key)
         if cached and cached[0] == st.st_size and cached[1] == st.st_mtime:
-            events = cached[2]
+            rows, acts, files = cached[2], cached[3], cached[4]
         else:
-            events = _file_token_events(fp)
-            _TOKEN_EVENT_CACHE[key] = (st.st_size, st.st_mtime, events)
-        all_events.extend(events)
+            rows, acts, files = _file_model_events(fp)
+            _MODEL_EVENT_CACHE[key] = (st.st_size, st.st_mtime, rows, acts, files)
+        out_rows.extend(e for e in rows if e[0] >= since_ts)
+        out_acts.extend(a for a in acts if a[0] >= detail)
+        out_files.extend(f for f in files if f[0] >= detail)
+    for key in [k for k in _MODEL_EVENT_CACHE if k not in seen]:
+        del _MODEL_EVENT_CACHE[key]
+    return out_rows, out_acts, out_files
 
-    # Drop cache entries for files that aged out of the 7d window / rotated away.
-    for key in [k for k in _TOKEN_EVENT_CACHE if k not in seen]:
-        del _TOKEN_EVENT_CACHE[key]
 
-    return sum_token_windows(all_events, now)
+def iter_model_events(since_ts: float, root: Path | None = None) -> list:
+    """Every (ts, model, project, input, output, cache_read, cache_write)
+    assistant turn at/after `since_ts`, across transcripts. Thin wrapper over
+    `scan_events` (token rows only)."""
+    return scan_events(since_ts, root)[0]
+
+
+def account_tokens_by_model(since_ts: float, root: Path | None = None) -> dict:
+    """Per-model token totals (input, output, cache_read, cache_write) for turns
+    at/after `since_ts`. Returns {model_id: {...}}."""
+    out: dict[str, dict[str, int]] = {}
+    for _ts, model, _project, i, o, cr, cw in iter_model_events(since_ts, root):
+        acc = out.setdefault(
+            model, {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0})
+        acc["input"] += i
+        acc["output"] += o
+        acc["cache_read"] += cr
+        acc["cache_write"] += cw
+    return out
 
 
 def select_active(

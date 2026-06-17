@@ -24,13 +24,16 @@ from PySide6.QtCore import (
     QRegularExpression,
     QSize,
     Qt,
+    QThread,
     QTimer,
+    QUrl,
     Signal,
 )
 from PySide6.QtGui import (
     QAction,
     QColor,
     QCursor,
+    QDesktopServices,
     QGuiApplication,
     QIcon,
     QPainter,
@@ -39,8 +42,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
@@ -52,6 +55,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QStackedWidget,
     QSystemTrayIcon,
     QToolButton,
     QVBoxLayout,
@@ -65,13 +70,19 @@ import winutil
 from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
+import stats
+from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, WeekBars
+from usage_history import UsageHistory
 from reset_notify import ResetDecision, ResetNotifier
+import update_check
+from update_check import UpdateChecker
 from session_shelf import (
-    CompactView, SessionShelf, UsageBar, apply_overage_bar, square_caret_icon,
+    CompactView, SessionShelf, UsageBar, apply_overage_bar,
 )
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
     ACTIVITY_ANIMS,
+    ACTIVITY_COLORS,
     ACTIVITY_LABELS,
     Activity as TranscriptActivity,
     AgentState as TranscriptAgentState,
@@ -139,10 +150,10 @@ QLabel#titleAppName {
 QToolButton#titleBtn, QToolButton#closeBtn, QToolButton#settingsBtn {
     background: transparent; color: #CE7D6B; border: 0;
     min-width: 38px; min-height: 30px;
-    font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets";
+    font-family: "Font Awesome 6 Free"; font-weight: 900;
 }
-QToolButton#titleBtn, QToolButton#closeBtn { font-size: 11px; }
-QToolButton#settingsBtn { font-size: 16px; }
+QToolButton#titleBtn, QToolButton#closeBtn { font-size: 13px; }
+QToolButton#settingsBtn { font-size: 15px; }
 QToolButton#titleBtn:hover, QToolButton#settingsBtn:hover { background-color: #1f2937; color: #CE7D6B; }
 QToolButton#closeBtn:hover { background-color: #c13434; color: #ffffff; }
 
@@ -165,8 +176,25 @@ QPushButton:disabled { background-color: #161b22; color: #4b5563; border-color: 
 
 QWidget#settingsPanel {
     background-color: #0a0d12;
-    border-left: 1px solid #1f2937;
 }
+/* Left tab rail in the settings page (sits right of the app nav rail). */
+QWidget#settingsNav {
+    background-color: #0e1116;
+    border-right: 1px solid #1f2937;
+}
+/* QPushButton (not QToolButton) so QSS text-align actually left-aligns the
+   glyph+label. Segoe UI is primary so the Latin label stays crisp — FA Free
+   ships its own (ugly) Latin, so listing it first would hijack the words. The
+   leading FA glyph isn't in Segoe UI, so Qt falls back to Font Awesome for it.
+   FA is registered at startup in main.py via QFontDatabase. */
+QPushButton#navBtn {
+    background: transparent; color: #9ca3af; border: 0;
+    border-radius: 6px; padding: 9px 14px;
+    text-align: left; font-size: 13px; font-weight: 600;
+    font-family: "Segoe UI", "Font Awesome 6 Free";
+}
+QPushButton#navBtn:hover { background-color: #1f2937; color: #e6edf3; }
+QPushButton#navBtn:checked { background-color: #1f2937; color: #CE7D6B; }
 QScrollArea#settingsScroll, QWidget#settingsBody { background: transparent; border: none; }
 QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 0; }
 QScrollBar::handle:vertical { background: #374151; border-radius: 4px; min-height: 24px; }
@@ -187,6 +215,18 @@ QLabel#pathDisplay {
 QLabel#credStatus { font-size: 10px; color: #6b7280; }
 QLabel#sectionHint { font-size: 10px; color: #6b7280; }
 QLabel#pollNote { font-size: 10px; color: #f59e0b; font-weight: 600; }
+
+/* Stats page cards */
+QFrame#statCard {
+    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 8px;
+}
+QLabel#statLabel { font-size: 10px; color: #6b7280; letter-spacing: 2px; font-weight: 600; }
+QLabel#statBig { font-size: 32px; font-weight: 700; color: #e6edf3; }
+QLabel#statMid { font-size: 18px; font-weight: 700; color: #e6edf3; }
+QLabel#statPlan { font-size: 12px; color: #CE7D6B; font-weight: 600; letter-spacing: 1px; }
+QLabel#statDelta { font-size: 12px; font-weight: 700; }
+QLabel#statCount { font-size: 11px; color: #6b7280; font-weight: 600; }
+QFrame#statDivider { background: #1f2937; max-height: 1px; min-height: 1px; border: 0; }
 QPushButton#resetLink {
     background: transparent; color: #9ca3af; border: 0; padding: 2px 4px;
     text-decoration: underline; font-size: 10px;
@@ -202,7 +242,46 @@ QCheckBox::indicator:checked {
     background-color: #CE7D6B; border-color: #CE7D6B;
     image: none;
 }
-QWidget#scrim { background-color: rgba(0, 0, 0, 60); }
+
+/* Slim left nav rail (overlay). Same icon+label language as the settings tabs:
+   Segoe UI primary so labels stay crisp; the leading FA glyph falls back to FA.
+   Labels are clipped while the rail is collapsed and revealed as it expands. */
+QWidget#navRail {
+    background-color: #0e1116;
+    border-right: 1px solid #1f2937;
+}
+QPushButton#railBtn {
+    background: transparent; color: #9ca3af; border: 0;
+    border-radius: 6px; padding: 9px 0px 9px 8px;  /* no right pad: icon never clips,
+                                                       and stays put as the rail widens */
+    text-align: left; font-size: 15px; font-weight: 600;
+    font-family: "Segoe UI", "Font Awesome 6 Free";
+}
+QPushButton#railBtn:hover { background-color: #1f2937; color: #e6edf3; }
+QPushButton#railBtn:checked { background-color: #1f2937; color: #CE7D6B; }
+
+/* Push-notification channel cards (Settings -> Notifications). */
+QWidget#pushCard {
+    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 6px;
+}
+QLabel#pushSummary { font-size: 12px; }
+QToolButton#pushEditBtn {
+    background: transparent; color: #9ca3af; border: 0;
+    padding: 2px 6px; border-radius: 4px; font-size: 11px;
+}
+QToolButton#pushEditBtn:hover { color: #CE7D6B; background-color: #1f2937; }
+QToolButton#pushRemoveBtn {
+    background: transparent; color: #6b7280; border: 0;
+    padding: 2px 7px; border-radius: 4px; font-size: 12px;
+}
+QToolButton#pushRemoveBtn:hover { color: #ffffff; background-color: #c13434; }
+QToolButton#addChannelBtn {
+    background: transparent; color: #CE7D6B; border: 1px dashed #374151;
+    padding: 5px 12px; border-radius: 6px; font-size: 11px;
+}
+QToolButton#addChannelBtn:hover { background-color: #1f2937; border-color: #CE7D6B; }
+QToolButton#addChannelBtn:disabled { color: #4b5563; border-color: #21262d; }
+QToolButton#addChannelBtn::menu-indicator { image: none; width: 0; }
 
 QWidget#miniRoot {
     background-color: #0e1116;
@@ -256,29 +335,70 @@ def _tray_alert_pixmap() -> QPixmap:
     return pm
 
 
+PUSH_CHANNEL_NAMES = {
+    "ntfy": "ntfy", "telegram": "Telegram", "discord": "Discord",
+    "slack": "Slack", "pushover": "Pushover", "gotify": "Gotify",
+    "webhook": "Webhook",
+}
+
+
+def _active_push_channels() -> list[str]:
+    """Added channels that actually have the value(s) needed to send."""
+    return [c for c in app_settings.get_reset_notify_push_channels()
+            if app_settings.push_channel_configured(c)]
+
+
 def _push_configured() -> bool:
-    """True if the selected push provider has the credentials it needs."""
-    if app_settings.get_reset_notify_push_provider() == "telegram":
-        return bool(
-            app_settings.get_reset_notify_push_tg_token()
-            and app_settings.get_reset_notify_push_tg_chat()
-        )
-    return bool(app_settings.get_reset_notify_push_topic())
+    """True if at least one added push channel is ready to send."""
+    return bool(_active_push_channels())
+
+
+def _send_one_channel(provider: str, title: str, body: str) -> tuple[bool, str]:
+    if provider == "ntfy":
+        return remote_notify.send_ntfy(
+            app_settings.get_reset_notify_push_topic(), title, body)
+    if provider == "telegram":
+        return remote_notify.send_telegram(
+            app_settings.get_reset_notify_push_tg_token(),
+            app_settings.get_reset_notify_push_tg_chat(), title, body)
+    if provider == "discord":
+        return remote_notify.send_discord(
+            app_settings.get_reset_notify_push_discord(), title, body)
+    if provider == "slack":
+        return remote_notify.send_slack(
+            app_settings.get_reset_notify_push_slack(), title, body)
+    if provider == "webhook":
+        return remote_notify.send_webhook(
+            app_settings.get_reset_notify_push_webhook(), title, body)
+    if provider == "pushover":
+        return remote_notify.send_pushover(
+            app_settings.get_reset_notify_push_po_token(),
+            app_settings.get_reset_notify_push_po_user(), title, body)
+    if provider == "gotify":
+        return remote_notify.send_gotify(
+            app_settings.get_reset_notify_push_gotify_url(),
+            app_settings.get_reset_notify_push_gotify_token(), title, body)
+    return False, f"unknown channel {provider}"
 
 
 def _dispatch_push(title: str, body: str) -> tuple[bool, str]:
-    """Send a push via the configured provider. Shared by the reset
-    notification and the Settings test button so both exercise one code path."""
-    if app_settings.get_reset_notify_push_provider() == "telegram":
-        return remote_notify.send_telegram(
-            app_settings.get_reset_notify_push_tg_token(),
-            app_settings.get_reset_notify_push_tg_chat(),
-            title,
-            body,
-        )
-    return remote_notify.send_ntfy(
-        app_settings.get_reset_notify_push_topic(), title, body
-    )
+    """Send the push to EVERY added+configured channel. Shared by the reset
+    notification and the Settings test button so both exercise one code path.
+    Returns (all_ok, summary) — partial failures are reported, never raised."""
+    channels = _active_push_channels()
+    if not channels:
+        return False, "no push channels configured"
+    sent, failed = [], []
+    for c in channels:
+        ok, msg = _send_one_channel(c, title, body)
+        (sent if ok else failed).append((c, msg))
+    names = lambda items: ", ".join(PUSH_CHANNEL_NAMES.get(c, c) for c, _ in items)
+    if not failed:
+        return True, f"sent to {names(sent)}"
+    detail = "; ".join(f"{PUSH_CHANNEL_NAMES.get(c, c)}: {m}" for c, m in failed)
+    if sent:
+        return False, f"sent to {names(sent)}; failed — {detail}"
+    return False, f"failed — {detail}"
 
 
 class MiniWidget(QWidget):
@@ -577,32 +697,13 @@ class ResetToast(QWidget):
             super().mousePressEvent(e)
 
 
-class Scrim(QWidget):
-    """Click-to-dismiss overlay shown behind the settings panel."""
-
-    clicked = Signal()
-
-    def __init__(self, parent: QWidget) -> None:
-        super().__init__(parent)
-        self.setObjectName("scrim")
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.hide()
-
-    def mousePressEvent(self, e) -> None:
-        if e.button() == Qt.LeftButton:
-            self.clicked.emit()
-            e.accept()
-        else:
-            super().mousePressEvent(e)
-
-
 class TitleBar(QWidget):
-    """Custom frameless title bar: icon, drag area, settings + window buttons."""
+    """Custom frameless title bar: icon, drag area, view + window buttons."""
 
     HEIGHT = 48
     ICON_SIZE = 36
 
-    def __init__(self, window: QMainWindow, on_settings, on_toggle, on_mini) -> None:
+    def __init__(self, window: QMainWindow, on_toggle, on_mini) -> None:
         super().__init__(window)
         self.setObjectName("titleBar")
         # Allow vertical animation: min=0, max=HEIGHT. Auto-hide animates
@@ -617,58 +718,32 @@ class TitleBar(QWidget):
         row.setContentsMargins(8, 0, 0, 0)
         row.setSpacing(8)
 
-        icon_label = QLabel()
-        icon_path = assets_root() / "icon.png"
-        if icon_path.exists():
-            pm = QPixmap(str(icon_path)).scaled(
-                self.ICON_SIZE, self.ICON_SIZE,
-                Qt.KeepAspectRatio, Qt.FastTransformation,
-            )
-            icon_label.setPixmap(pm)
-        icon_label.setFixedSize(self.ICON_SIZE + 2, self.ICON_SIZE + 2)
-        icon_label.setAlignment(Qt.AlignCenter)
-        row.addWidget(icon_label)
-
+        # The app icon now lives at the top of the nav rail (so it survives the
+        # auto-hide title bar), not here. The title bar starts with the wordmark.
         name = QLabel("CLAWDMETER", objectName="titleAppName")
         row.addWidget(name)
         row.addStretch(1)
 
-        # Glyphs from Segoe Fluent Icons / Segoe MDL2 Assets — the same
-        # codepoints Windows itself uses for window controls.
-        self.settings_btn = self._tool_btn("", "Settings")   # gear
-        self.settings_btn.setObjectName("settingsBtn")
-        self.settings_btn.clicked.connect(on_settings)
-        row.addWidget(self.settings_btn)
-
-        # Full<->Compact toggle: a square-caret that points DOWN in full (click
-        # to collapse to compact) and UP in compact (click to expand to full).
-        self.caret_btn = QToolButton()
-        self.caret_btn.setObjectName("titleBtn")
-        self.caret_btn.setToolTip("Compact view")
-        self.caret_btn.setIconSize(QSize(16, 16))
-        self.caret_btn.setCursor(Qt.PointingHandCursor)
-        self.caret_btn.setFocusPolicy(Qt.NoFocus)
+        # Font Awesome glyphs for the view toggles + window controls. (Settings
+        # now lives in the nav rail, so there's no gear here.)
+        # Full<->Compact toggle: angles that point DOWN in full (click to collapse
+        # to compact) and UP in compact (click to expand to full).
+        self.caret_btn = self._tool_btn("", "Compact view")
         self.caret_btn.clicked.connect(on_toggle)
         row.addWidget(self.caret_btn)
 
         # Mini button (always available): Windows' restore-to-center glyph.
-        self.mini_btn = self._tool_btn("", "Mini view")  # BackToWindow
-        self.mini_btn.setText("")   # BackToWindow / arrows-to-center
-        self.mini_btn.setText(chr(0xE73F))   # BackToWindow / arrows-to-center
+        self.mini_btn = self._tool_btn(chr(0xF422), "Mini view")  # compress-to-center
         self.mini_btn.clicked.connect(on_mini)
         row.addWidget(self.mini_btn)
 
         self.set_active_mode("full")
 
-        self.min_btn = self._tool_btn("", "Minimize")        # ChromeMinimize
+        self.min_btn = self._tool_btn(chr(0xF2D1), "Minimize")        # ChromeMinimize
         self.min_btn.clicked.connect(self._win.showMinimized)
         row.addWidget(self.min_btn)
 
-        self.max_btn = self._tool_btn("", "Maximize")        # ChromeMaximize
-        self.max_btn.clicked.connect(self._toggle_max)
-        row.addWidget(self.max_btn)
-
-        self.close_btn = self._tool_btn("", "Close")         # ChromeClose
+        self.close_btn = self._tool_btn(chr(0xF00D), "Close")         # ChromeClose
         self.close_btn.setObjectName("closeBtn")
         self.close_btn.clicked.connect(self._win.close)
         row.addWidget(self.close_btn)
@@ -686,16 +761,8 @@ class TitleBar(QWidget):
         """Point the caret toward what the toggle does next: DOWN in full (click
         -> compact), UP in compact (click -> full)."""
         up = mode == "compact"
-        self.caret_btn.setIcon(square_caret_icon(up=up))
+        self.caret_btn.setText(chr(0xF102) if up else chr(0xF103))  # angles up / down
         self.caret_btn.setToolTip("Full view" if up else "Compact view")
-
-    def _toggle_max(self) -> None:
-        if self._win.isMaximized():
-            self._win.showNormal()
-            self.max_btn.setText("")  # ChromeMaximize
-        else:
-            self._win.showMaximized()
-            self.max_btn.setText("")  # ChromeRestore
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
@@ -708,7 +775,7 @@ class TitleBar(QWidget):
         # manual self._win.move() approach made Qt recompute the window geometry
         # on each step, which ballooned the frameless window when it was dragged
         # onto a higher-DPI monitor. The native loop is DPI-aware and avoids it.
-        # Under the threshold we do nothing so double-click-to-maximize still
+        # Under the threshold we do nothing so the double-click-to-reset still
         # registers.
         if not (e.buttons() & Qt.LeftButton) or self._press_pos is None:
             return
@@ -717,10 +784,9 @@ class TitleBar(QWidget):
             return
         self._press_pos = None
         if self._win.isMaximized():
-            # Restore before the handoff so the window follows the cursor at
-            # its normal size, like Windows' own maximized title-bar drag.
+            # If the OS maximized us (e.g. Win+Up), restore before the handoff so
+            # the window follows the cursor at its normal size.
             self._win.showNormal()
-            self.max_btn.setText("")  # ChromeMaximize
         winutil.start_native_move(int(self._win.winId()))
         e.accept()
 
@@ -729,76 +795,275 @@ class TitleBar(QWidget):
 
     def mouseDoubleClickEvent(self, e) -> None:
         # Double-click snaps the window back to the snug auto-fit height (undoes
-        # a manual height resize). Maximize stays on the title-bar [ ] button.
+        # a manual height resize).
         if e.button() == Qt.LeftButton:
             self._win.reset_to_fit()
             e.accept()
 
 
-class SettingsPanel(QWidget):
-    """Right-side slide-in panel. Lives as a child of `parent` (the content
-    area). Call open()/close() to animate. Position is set externally on
-    parent resize."""
+# Per-channel editor fields: (getter, setter, placeholder, is_secret). Telegram
+# needs two; ntfy/Discord one each.
+_PUSH_FIELD_SPECS = {
+    "ntfy": [(app_settings.get_reset_notify_push_topic,
+              app_settings.set_reset_notify_push_topic,
+              "ntfy topic (e.g. clawd-nick-7f3a) or full URL", False)],
+    "telegram": [
+        (app_settings.get_reset_notify_push_tg_token,
+         app_settings.set_reset_notify_push_tg_token,
+         "Telegram bot token (from @BotFather)", True),
+        (app_settings.get_reset_notify_push_tg_chat,
+         app_settings.set_reset_notify_push_tg_chat,
+         "Telegram chat ID (e.g. 123456789)", False)],
+    "discord": [(app_settings.get_reset_notify_push_discord,
+                 app_settings.set_reset_notify_push_discord,
+                 "Discord webhook URL", True)],
+    "slack": [(app_settings.get_reset_notify_push_slack,
+               app_settings.set_reset_notify_push_slack,
+               "Slack incoming webhook URL", True)],
+    "webhook": [(app_settings.get_reset_notify_push_webhook,
+                 app_settings.set_reset_notify_push_webhook,
+                 "Webhook URL (receives a JSON POST)", True)],
+    "pushover": [
+        (app_settings.get_reset_notify_push_po_token,
+         app_settings.set_reset_notify_push_po_token,
+         "Pushover application API token", True),
+        (app_settings.get_reset_notify_push_po_user,
+         app_settings.set_reset_notify_push_po_user,
+         "Pushover user key", True)],
+    "gotify": [
+        (app_settings.get_reset_notify_push_gotify_url,
+         app_settings.set_reset_notify_push_gotify_url,
+         "Gotify server URL (e.g. https://gotify.example.com)", False),
+        (app_settings.get_reset_notify_push_gotify_token,
+         app_settings.set_reset_notify_push_gotify_token,
+         "Gotify app token", True)],
+}
+_PUSH_HINTS = {
+    "ntfy": "Subscribe to the same topic in the ntfy app (Android/iOS). Pick a "
+            "long, hard-to-guess topic — anyone who knows it can read your alerts.",
+    "telegram": "Message @BotFather to create a bot and copy its token, then DM "
+                "the bot and read your chat ID from "
+                "api.telegram.org/bot<token>/getUpdates. Keep the token private.",
+    "discord": "In Discord: Channel Settings → Integrations → Webhooks → New "
+               "Webhook → Copy URL. Anyone with the URL can post there, so keep "
+               "it private.",
+    "slack": "In Slack: create an Incoming Webhook for a channel "
+             "(api.slack.com/messaging/webhooks) and paste its URL. Keep it private.",
+    "webhook": "POSTs JSON {title, body, app} to any URL — wire it to Zapier, "
+               "Make, IFTTT, n8n, Home Assistant, or your own endpoint.",
+    "pushover": "Create an application at pushover.net for the API token; your "
+                "user key is on your Pushover dashboard. Get the app on iOS/Android.",
+    "gotify": "Self-hosted Gotify: your server URL plus an application token "
+              "from the Gotify apps page.",
+}
 
-    WIDTH = 280
-    ANIM_MS = 220
+
+def _push_channel_summary(provider: str) -> str:
+    """Short glanceable state for a channel row (the non-secret topic for ntfy,
+    a 'set'/'not set' for the secret channels)."""
+    def both(a: str, b: str, ok: str) -> str:
+        if a and b:
+            return ok
+        return "incomplete" if (a or b) else "not set"
+
+    if provider == "ntfy":
+        return app_settings.get_reset_notify_push_topic() or "not set"
+    if provider == "telegram":
+        return both(app_settings.get_reset_notify_push_tg_token(),
+                    app_settings.get_reset_notify_push_tg_chat(), "bot + chat set")
+    if provider == "discord":
+        return "webhook set" if app_settings.get_reset_notify_push_discord() else "not set"
+    if provider == "slack":
+        return "webhook set" if app_settings.get_reset_notify_push_slack() else "not set"
+    if provider == "webhook":
+        return "URL set" if app_settings.get_reset_notify_push_webhook() else "not set"
+    if provider == "pushover":
+        return both(app_settings.get_reset_notify_push_po_token(),
+                    app_settings.get_reset_notify_push_po_user(), "token + user key set")
+    if provider == "gotify":
+        return both(app_settings.get_reset_notify_push_gotify_url(),
+                    app_settings.get_reset_notify_push_gotify_token(), "server + token set")
+    return ""
+
+
+class _PushChannelRow(QWidget):
+    """One added push channel as a small card: a glanceable status line (a
+    coral/dim dot + name + muted summary) with flat Edit/✕ actions, and a
+    collapsible editor (the channel's field(s) + hint) revealed by Edit."""
+
+    removed = Signal()
+
+    def __init__(self, provider: str, name: str, parent=None) -> None:
+        super().__init__(parent)
+        self._provider = provider
+        self._name = name
+        self.setObjectName("pushCard")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(10, 7, 7, 7)
+        col.setSpacing(5)
+
+        head = QHBoxLayout()
+        head.setSpacing(4)
+        self._summary = QLabel(objectName="pushSummary")
+        self._summary.setTextFormat(Qt.RichText)
+        head.addWidget(self._summary)
+        head.addStretch(1)
+        self._edit_btn = QToolButton(objectName="pushEditBtn")
+        self._edit_btn.setText("Edit")
+        self._edit_btn.setCursor(Qt.PointingHandCursor)
+        self._edit_btn.clicked.connect(self._toggle_edit)
+        head.addWidget(self._edit_btn)
+        rm = QToolButton(objectName="pushRemoveBtn")
+        rm.setText("✕")
+        rm.setToolTip(f"Remove {name}")
+        rm.setCursor(Qt.PointingHandCursor)
+        rm.clicked.connect(self.removed.emit)
+        head.addWidget(rm)
+        col.addLayout(head)
+
+        self._editor = QWidget()
+        ed = QVBoxLayout(self._editor)
+        ed.setContentsMargins(2, 2, 0, 0)
+        ed.setSpacing(4)
+        for getter, setter, placeholder, secret in _PUSH_FIELD_SPECS[provider]:
+            f = QLineEdit()
+            f.setPlaceholderText(placeholder)
+            if secret:
+                f.setEchoMode(QLineEdit.Password)
+            f.setText(getter())
+            f.editingFinished.connect(
+                lambda field=f, save=setter: self._on_field(field, save))
+            ed.addWidget(f)
+        hint = _PUSH_HINTS.get(provider)
+        if hint:
+            h = QLabel(hint, objectName="sectionHint")
+            h.setWordWrap(True)
+            ed.addWidget(h)
+        self._first_field = self._editor.findChild(QLineEdit)
+        col.addWidget(self._editor)
+        self._editor.setVisible(False)
+        self._refresh()
+
+    def _on_field(self, field: QLineEdit, save) -> None:
+        save(field.text())
+        self._refresh()
+
+    def _toggle_edit(self) -> None:
+        self.set_editing(not self._editor.isVisible())
+
+    def set_editing(self, on: bool) -> None:
+        self._editor.setVisible(on)
+        self._edit_btn.setText("Done" if on else "Edit")
+        if on and self._first_field is not None:
+            self._first_field.setFocus()
+
+    def _refresh(self) -> None:
+        configured = app_settings.push_channel_configured(self._provider)
+        dot = "#CE7D6B" if configured else "#4b5563"
+        summary = _push_channel_summary(self._provider)
+        summary = (summary.replace("&", "&amp;").replace("<", "&lt;")
+                   .replace(">", "&gt;"))  # the ntfy topic is user-supplied
+        self._summary.setText(
+            f"<span style='color:{dot}'>●</span>&nbsp;&nbsp;"
+            f"<span style='color:#e6edf3'>{self._name}</span>&nbsp;&nbsp;"
+            f"<span style='color:#6b7280'>· {summary}</span>")
+
+
+class SettingsPanel(QWidget):
+    """The Settings page — a destination in the app nav rail (not an overlay).
+    Holds a left tab rail (General/Display/Connection/Notifications/About) plus
+    the matching forms. Lives as a page in the content stack; you leave it by
+    clicking another rail item."""
 
     # Emitted from the push-test worker thread; delivered on the UI thread.
     _push_test_result = Signal(bool, str)
 
-    def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested,
+    def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed,
                  on_refresh_token=None, on_auto_refresh_changed=None,
                  on_poll_interval_changed=None, on_sessions_view_changed=None,
-                 on_token_view_changed=None) -> None:
+                 on_token_view_changed=None, on_check_updates=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self._open = False
         self._on_aot_changed = on_always_on_top_changed
         self._on_auto_hide_changed = on_auto_hide_changed
-        self._on_close_requested = on_close_requested
         self._on_refresh_token = on_refresh_token
         self._on_auto_refresh_changed = on_auto_refresh_changed
         self._on_poll_interval_changed = on_poll_interval_changed
         self._on_sessions_view_changed = on_sessions_view_changed
         self._on_token_view_changed = on_token_view_changed
-        self.hide()
+        self._on_check_updates = on_check_updates
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        # Fixed header (stays put while the body scrolls).
+        # Page header — just the title now; you leave Settings via the nav rail.
         header_w = QWidget()
         header = QHBoxLayout(header_w)
         header.setContentsMargins(20, 18, 20, 8)
-        title = QLabel("SETTINGS", objectName="settingsTitle")
-        close = QToolButton()
-        close.setObjectName("titleBtn")
-        close.setText("✕")
-        close.setCursor(Qt.PointingHandCursor)
-        close.setFocusPolicy(Qt.NoFocus)
-        close.clicked.connect(self._on_close_requested)
-        header.addWidget(title)
+        header.addWidget(QLabel("SETTINGS", objectName="settingsTitle"))
         header.addStretch(1)
-        header.addWidget(close)
         outer.addWidget(header_w)
 
-        # Scrollable body — settings grow without clipping or cramping.
-        scroll = QScrollArea()
-        scroll.setObjectName("settingsScroll")
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.viewport().setStyleSheet("background: transparent;")
-        outer.addWidget(scroll, 1)
+        # Body: a left tab rail + one stacked page per tab. Each page scrolls on
+        # its own so a long tab (Notifications) never drags the shorter ones, and
+        # new settings slot into the tab that owns their concern.
+        content_row = QHBoxLayout()
+        content_row.setContentsMargins(0, 0, 0, 0)
+        content_row.setSpacing(0)
+        outer.addLayout(content_row, 1)
 
-        body = QWidget()
-        body.setObjectName("settingsBody")
-        scroll.setWidget(body)
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(20, 6, 20, 18)
-        layout.setSpacing(12)
+        nav_w = QWidget(objectName="settingsNav")
+        nav_w.setFixedWidth(148)
+        nav = QVBoxLayout(nav_w)
+        nav.setContentsMargins(8, 8, 8, 8)
+        nav.setSpacing(4)
+        content_row.addWidget(nav_w)
+
+        self._stack = QStackedWidget()
+        content_row.addWidget(self._stack, 1)
+
+        self._nav_group = QButtonGroup(self)
+        self._nav_group.setExclusive(True)
+
+        def _make_tab(glyph: str, label: str) -> QVBoxLayout:
+            btn = QPushButton(f"{glyph}   {label}", objectName="navBtn")
+            btn.setCheckable(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setFocusPolicy(Qt.NoFocus)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            nav.addWidget(btn)
+            page = QScrollArea()
+            page.setObjectName("settingsScroll")
+            page.setWidgetResizable(True)
+            page.setFrameShape(QFrame.NoFrame)
+            page.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            page.viewport().setStyleSheet("background: transparent;")
+            page_body = QWidget(objectName="settingsBody")
+            page.setWidget(page_body)
+            lay = QVBoxLayout(page_body)
+            lay.setContentsMargins(20, 8, 20, 18)
+            lay.setSpacing(12)
+            self._nav_group.addButton(btn, self._stack.addWidget(page))
+            return lay
+
+        # Font Awesome 6 Free (Solid) glyphs: gear, display, circle-nodes, bell,
+        # info. Rendered as text so they recolor with the QSS accent on
+        # hover/active, exactly as the Segoe glyphs did.
+        gen_layout = _make_tab("\uF013", "General")
+        disp_layout = _make_tab("\uE163", "Display")
+        conn_layout = _make_tab("\uE4E2", "Connection")
+        notif_layout = _make_tab("\uF0F3", "Notifications")
+        about_layout = _make_tab("\uF129", "About")
+        nav.addStretch(1)
+        self._nav_group.idClicked.connect(self._stack.setCurrentIndex)
+        self._nav_group.button(0).setChecked(True)
+
+        # `layout` is a moving cursor: each section appends to whichever tab page
+        # it currently points at, reassigned at the section boundaries below.
+        layout = conn_layout
 
         layout.addWidget(QLabel("CREDENTIALS", objectName="sectionLabel"))
         self.cred_btn = QPushButton("Use alternative credentials")
@@ -832,7 +1097,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.refresh_token_btn)
         self.refresh_token_status()
 
-        layout.addSpacing(10)
+        layout = gen_layout
         layout.addWidget(QLabel("WINDOW", objectName="sectionLabel"))
         self.aot_check = QCheckBox("Always on top")
         self.aot_check.setChecked(app_settings.get_always_on_top())
@@ -850,6 +1115,24 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.quit_on_close_check)
 
         layout.addSpacing(10)
+        layout.addWidget(QLabel("UPDATES", objectName="sectionLabel"))
+        updates_hint = QLabel(
+            "Clawdmeter ships as a single .exe with no auto-installer. When a "
+            "newer release is published on GitHub, the tray menu shows an "
+            "“Update available” item — click it to open the download page.",
+            objectName="sectionHint",
+        )
+        updates_hint.setWordWrap(True)
+        layout.addWidget(updates_hint)
+        self.auto_check_updates_check = QCheckBox("Automatically check for updates")
+        self.auto_check_updates_check.setChecked(app_settings.get_auto_check_updates())
+        self.auto_check_updates_check.toggled.connect(self._on_auto_check_updates_toggled)
+        layout.addWidget(self.auto_check_updates_check)
+        self.check_updates_btn = QPushButton("Check for updates now")
+        self.check_updates_btn.clicked.connect(self._on_check_updates_clicked)
+        layout.addWidget(self.check_updates_btn)
+
+        layout = disp_layout
         layout.addWidget(QLabel("SESSIONS", objectName="sectionLabel"))
         sessions_hint = QLabel(
             "Show every active Claude Code session as its own mascot, and the "
@@ -883,6 +1166,7 @@ class SettingsPanel(QWidget):
         self.token_usage_check.toggled.connect(self._on_token_usage_toggled)
         layout.addWidget(self.token_usage_check)
 
+        layout = conn_layout
         layout.addSpacing(10)
         layout.addWidget(QLabel("USAGE POLLING", objectName="sectionLabel"))
         poll_hint = QLabel(
@@ -937,7 +1221,7 @@ class SettingsPanel(QWidget):
         self._poll_note_hold.timeout.connect(self._fade_poll_note)
         layout.addWidget(self.poll_interval_note)
 
-        layout.addSpacing(10)
+        layout = notif_layout
         layout.addWidget(QLabel("NOTIFICATIONS", objectName="sectionLabel"))
         notify_hint = QLabel(
             "Alert me when a usage limit resets and I can resume — only when I "
@@ -951,85 +1235,69 @@ class SettingsPanel(QWidget):
         self.notify_check.toggled.connect(self._on_notify_toggled)
         layout.addWidget(self.notify_check)
 
-        self.notify_sound_check = QCheckBox("    Play a sound")
+        # Windows channel: the desktop toast + tray flash (indented under the
+        # master), with Play-a-sound / Pop-to-front nested in an indented box so
+        # they hide together when the channel — or the master — is off.
+        self.notify_toast_check = QCheckBox("Show a Windows notification")
+        self.notify_toast_check.setStyleSheet("margin-left: 22px;")
+        self.notify_toast_check.setChecked(app_settings.get_reset_notify_toast())
+        self.notify_toast_check.toggled.connect(self._on_notify_toast_toggled)
+        layout.addWidget(self.notify_toast_check)
+
+        self.notify_toast_box = QWidget()
+        toast_box = QVBoxLayout(self.notify_toast_box)
+        toast_box.setContentsMargins(44, 0, 0, 0)
+        toast_box.setSpacing(6)
+        self.notify_sound_check = QCheckBox("Play a sound")
         self.notify_sound_check.setChecked(app_settings.get_reset_notify_sound())
         self.notify_sound_check.toggled.connect(self._on_notify_sound_toggled)
-        layout.addWidget(self.notify_sound_check)
-
-        self.notify_popup_check = QCheckBox("    Pop the window to front")
+        toast_box.addWidget(self.notify_sound_check)
+        self.notify_popup_check = QCheckBox("Pop the window to front")
         self.notify_popup_check.setChecked(app_settings.get_reset_notify_popup())
         self.notify_popup_check.toggled.connect(self._on_notify_popup_toggled)
-        layout.addWidget(self.notify_popup_check)
+        toast_box.addWidget(self.notify_popup_check)
+        layout.addWidget(self.notify_toast_box)
 
-        self.notify_push_check = QCheckBox("    Send a push to my phone")
+        self.notify_push_check = QCheckBox("Send a push notification")
+        self.notify_push_check.setStyleSheet("margin-left: 22px;")
         self.notify_push_check.setChecked(app_settings.get_reset_notify_push())
         self.notify_push_check.toggled.connect(self._on_notify_push_toggled)
         layout.addWidget(self.notify_push_check)
 
-        push_provider_row = QHBoxLayout()
-        push_provider_row.addWidget(QLabel("    via"))
-        self.notify_push_provider = QComboBox()
-        self.notify_push_provider.addItem("ntfy", "ntfy")
-        self.notify_push_provider.addItem("Telegram", "telegram")
-        idx = self.notify_push_provider.findData(app_settings.get_reset_notify_push_provider())
-        self.notify_push_provider.setCurrentIndex(max(0, idx))
-        self.notify_push_provider.currentIndexChanged.connect(
-            self._on_notify_push_provider_changed
-        )
-        push_provider_row.addWidget(self.notify_push_provider, 1)
-        layout.addLayout(push_provider_row)
+        # Push sub-box: a list of the channels you've ADDED (each a summary row
+        # with edit/remove), an "Add a channel" menu, and one test button that
+        # fires every configured channel. Hides as a unit when push is off.
+        self.notify_push_box = QWidget()
+        push_box = QVBoxLayout(self.notify_push_box)
+        push_box.setContentsMargins(44, 0, 0, 0)
+        push_box.setSpacing(6)
 
-        # ntfy fields
-        self.notify_push_topic = QLineEdit()
-        self.notify_push_topic.setPlaceholderText(
-            "ntfy topic (e.g. clawd-nick-7f3a) or full URL"
-        )
-        self.notify_push_topic.setText(app_settings.get_reset_notify_push_topic())
-        self.notify_push_topic.editingFinished.connect(self._on_notify_push_topic_changed)
-        layout.addWidget(self.notify_push_topic)
-        self.notify_push_ntfy_hint = QLabel(
-            "Subscribe to the same topic in the ntfy app (Android/iOS). Pick a "
-            "long, hard-to-guess topic — anyone who knows it can read your alerts.",
-            objectName="sectionHint",
-        )
-        self.notify_push_ntfy_hint.setWordWrap(True)
-        layout.addWidget(self.notify_push_ntfy_hint)
+        self.notify_push_list = QVBoxLayout()
+        self.notify_push_list.setSpacing(6)
+        push_box.addLayout(self.notify_push_list)
 
-        # Telegram fields
-        self.notify_push_tg_token = QLineEdit()
-        self.notify_push_tg_token.setPlaceholderText("Telegram bot token (from @BotFather)")
-        self.notify_push_tg_token.setEchoMode(QLineEdit.Password)
-        self.notify_push_tg_token.setText(app_settings.get_reset_notify_push_tg_token())
-        self.notify_push_tg_token.editingFinished.connect(
-            self._on_notify_push_tg_token_changed
-        )
-        layout.addWidget(self.notify_push_tg_token)
-        self.notify_push_tg_chat = QLineEdit()
-        self.notify_push_tg_chat.setPlaceholderText("Telegram chat ID (e.g. 123456789)")
-        self.notify_push_tg_chat.setText(app_settings.get_reset_notify_push_tg_chat())
-        self.notify_push_tg_chat.editingFinished.connect(
-            self._on_notify_push_tg_chat_changed
-        )
-        layout.addWidget(self.notify_push_tg_chat)
-        self.notify_push_tg_hint = QLabel(
-            "Message @BotFather to create a bot and copy its token, then DM your "
-            "bot and read your chat ID from "
-            "api.telegram.org/bot<token>/getUpdates. Keep the token private.",
-            objectName="sectionHint",
-        )
-        self.notify_push_tg_hint.setWordWrap(True)
-        layout.addWidget(self.notify_push_tg_hint)
+        self.notify_push_add_btn = QToolButton(objectName="addChannelBtn")
+        self.notify_push_add_btn.setText("+ Add a channel  ▾")
+        self.notify_push_add_btn.setCursor(Qt.PointingHandCursor)
+        self.notify_push_add_btn.setPopupMode(QToolButton.InstantPopup)
+        self.notify_push_add_menu = QMenu(self.notify_push_add_btn)
+        self.notify_push_add_btn.setMenu(self.notify_push_add_menu)
+        push_box.addWidget(self.notify_push_add_btn, alignment=Qt.AlignLeft)
 
         self.notify_push_test_btn = QPushButton("Send test notification")
         self.notify_push_test_btn.clicked.connect(self._on_test_push_clicked)
-        layout.addWidget(self.notify_push_test_btn)
+        push_box.addWidget(self.notify_push_test_btn)
         self.notify_push_test_status = QLabel("", objectName="sectionHint")
         self.notify_push_test_status.setWordWrap(True)
-        layout.addWidget(self.notify_push_test_status)
+        push_box.addWidget(self.notify_push_test_status)
+        layout.addWidget(self.notify_push_box)
         self._push_test_result.connect(self._on_test_push_result)
+        self._push_rows: dict[str, _PushChannelRow] = {}
+        self._rebuild_push_channels()
 
         self._sync_notify_subtoggles()
 
+        layout = gen_layout
         layout.addSpacing(10)
         layout.addWidget(QLabel("START MENU", objectName="sectionLabel"))
         hint = QLabel(
@@ -1043,7 +1311,7 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.start_btn)
         self._refresh_start_menu_btn()
 
-        layout.addSpacing(10)
+        layout = about_layout
         layout.addWidget(QLabel("ABOUT", objectName="sectionLabel"))
         about = QLabel(
             f"Clawdmeter-Windows  v{app_settings.APP_VERSION}\n"
@@ -1051,18 +1319,16 @@ class SettingsPanel(QWidget):
             "github.com/weltern/Clawdmeter-Windows\n\n"
             "MIT licensed · the Clawd mascot is © Anthropic PBC and is "
             "not covered by the MIT license · unofficial, not affiliated "
-            "with Anthropic.",
+            "with Anthropic.\n\n"
+            "Icons by Font Awesome Free (fontawesome.com) · SIL OFL 1.1.",
             objectName="sectionHint",
         )
         about.setWordWrap(True)
         about.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(about)
 
-        layout.addStretch(1)
-
-        self._anim = QPropertyAnimation(self, b"geometry", self)
-        self._anim.setDuration(self.ANIM_MS)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        for _page_layout in (gen_layout, disp_layout, conn_layout, notif_layout, about_layout):
+            _page_layout.addStretch(1)
 
     def _refresh_cred_status(self) -> None:
         override = app_settings.get_credentials_override()
@@ -1174,6 +1440,14 @@ class SettingsPanel(QWidget):
     def _on_quit_on_close_toggled(self, checked: bool) -> None:
         app_settings.set_quit_on_close(checked)
 
+    def _on_auto_check_updates_toggled(self, checked: bool) -> None:
+        # The running checker reads this each cycle, so no live callback needed.
+        app_settings.set_auto_check_updates(checked)
+
+    def _on_check_updates_clicked(self) -> None:
+        if self._on_check_updates:
+            self._on_check_updates()
+
     def _on_multi_sessions_toggled(self, checked: bool) -> None:
         app_settings.set_show_multiple_sessions(checked)
         if self._on_sessions_view_changed:
@@ -1193,6 +1467,10 @@ class SettingsPanel(QWidget):
         app_settings.set_reset_notify(checked)
         self._sync_notify_subtoggles()
 
+    def _on_notify_toast_toggled(self, checked: bool) -> None:
+        app_settings.set_reset_notify_toast(checked)
+        self._sync_notify_subtoggles()
+
     def _on_notify_sound_toggled(self, checked: bool) -> None:
         app_settings.set_reset_notify_sound(checked)
 
@@ -1203,18 +1481,42 @@ class SettingsPanel(QWidget):
         app_settings.set_reset_notify_push(checked)
         self._sync_notify_subtoggles()
 
-    def _on_notify_push_provider_changed(self) -> None:
-        app_settings.set_reset_notify_push_provider(self.notify_push_provider.currentData())
-        self._sync_notify_subtoggles()
+    def _rebuild_push_channels(self) -> None:
+        """Re-render the added-channel rows from settings and refresh the
+        Add-a-channel menu (which only offers channels not yet added)."""
+        for row in self._push_rows.values():
+            self.notify_push_list.removeWidget(row)
+            row.deleteLater()
+        self._push_rows = {}
+        for provider in app_settings.get_reset_notify_push_channels():
+            row = _PushChannelRow(provider, PUSH_CHANNEL_NAMES.get(provider, provider))
+            row.removed.connect(lambda p=provider: self._remove_push_channel(p))
+            self.notify_push_list.addWidget(row)
+            self._push_rows[provider] = row
+        self._refresh_push_add_menu()
 
-    def _on_notify_push_topic_changed(self) -> None:
-        app_settings.set_reset_notify_push_topic(self.notify_push_topic.text())
+    def _refresh_push_add_menu(self) -> None:
+        self.notify_push_add_menu.clear()
+        remaining = [p for p in app_settings.PUSH_PROVIDERS if p not in self._push_rows]
+        for p in remaining:
+            act = self.notify_push_add_menu.addAction(PUSH_CHANNEL_NAMES.get(p, p))
+            act.triggered.connect(lambda _checked=False, prov=p: self._add_push_channel(prov))
+        self.notify_push_add_btn.setEnabled(bool(remaining))
 
-    def _on_notify_push_tg_token_changed(self) -> None:
-        app_settings.set_reset_notify_push_tg_token(self.notify_push_tg_token.text())
+    def _add_push_channel(self, provider: str) -> None:
+        chans = app_settings.get_reset_notify_push_channels()
+        if provider not in chans:
+            chans.append(provider)
+            app_settings.set_reset_notify_push_channels(chans)
+        self._rebuild_push_channels()
+        row = self._push_rows.get(provider)
+        if row is not None:
+            row.set_editing(True)  # open the new row so the field is ready to fill
 
-    def _on_notify_push_tg_chat_changed(self) -> None:
-        app_settings.set_reset_notify_push_tg_chat(self.notify_push_tg_chat.text())
+    def _remove_push_channel(self, provider: str) -> None:
+        chans = [c for c in app_settings.get_reset_notify_push_channels() if c != provider]
+        app_settings.set_reset_notify_push_channels(chans)
+        self._rebuild_push_channels()
 
     def _on_test_push_clicked(self) -> None:
         """Send a one-off push with the current settings so the user can verify
@@ -1232,33 +1534,29 @@ class SettingsPanel(QWidget):
         threading.Thread(target=worker, name="push-test", daemon=True).start()
 
     def _on_test_push_result(self, ok: bool, msg: str) -> None:
-        self._sync_notify_subtoggles()  # re-enables the button (clears status)
+        self.notify_push_test_btn.setEnabled(True)  # re-enable after the send
+        # msg = "sent to ntfy, Discord" on success; capitalise + add a nudge.
+        nice = (msg[:1].upper() + msg[1:]) if msg else "Sent"
         self.notify_push_test_status.setText(
-            "Sent — check your phone." if ok else f"Failed: {msg}"
+            f"{nice} — check your notifications." if ok else f"Failed: {msg}"
         )
 
     def _sync_notify_subtoggles(self) -> None:
-        """Grey out the per-method sub-toggles when the master switch is off, and
-        show only the selected push provider's credential fields."""
+        """Show/hide the notification sub-options to match the hierarchy: the
+        master off hides both channels; each channel's sub-box (Windows
+        sound/pop, or the push channel list) hides when that channel is off."""
         on = self.notify_check.isChecked()
-        self.notify_sound_check.setEnabled(on)
-        self.notify_popup_check.setEnabled(on)
-        self.notify_push_check.setEnabled(on)
+        # Both channel toggles hide entirely when the master is off.
+        self.notify_toast_check.setVisible(on)
+        self.notify_push_check.setVisible(on)
 
+        # Windows channel sub-box (sound + pop): only when master + Windows on.
+        toast_on = on and self.notify_toast_check.isChecked()
+        self.notify_toast_box.setVisible(toast_on)
+
+        # Push channel sub-box (the added-channel list): only when master + push on.
         push_on = on and self.notify_push_check.isChecked()
-        self.notify_push_provider.setEnabled(push_on)
-        is_ntfy = self.notify_push_provider.currentData() == "ntfy"
-
-        # Only the chosen provider's fields are shown; both enable with push.
-        self.notify_push_topic.setVisible(is_ntfy)
-        self.notify_push_ntfy_hint.setVisible(is_ntfy)
-        self.notify_push_tg_token.setVisible(not is_ntfy)
-        self.notify_push_tg_chat.setVisible(not is_ntfy)
-        self.notify_push_tg_hint.setVisible(not is_ntfy)
-        self.notify_push_topic.setEnabled(push_on)
-        self.notify_push_tg_token.setEnabled(push_on)
-        self.notify_push_tg_chat.setEnabled(push_on)
-        self.notify_push_test_btn.setEnabled(push_on)
+        self.notify_push_box.setVisible(push_on)
         if not push_on:
             self.notify_push_test_status.clear()
 
@@ -1286,59 +1584,6 @@ class SettingsPanel(QWidget):
                 QMessageBox.warning(self, "Clawdmeter", f"Failed to create shortcut:\n{msg}")
         self._refresh_start_menu_btn()
 
-    def is_open(self) -> bool:
-        return self._open
-
-    def place_closed(self) -> None:
-        """Snap to off-screen-right at current parent size (no animation)."""
-        p = self.parentWidget()
-        if not p:
-            return
-        self.setGeometry(p.width(), 0, self.WIDTH, p.height())
-        self._open = False
-
-    def reposition(self) -> None:
-        """Called on parent resize. Keeps panel anchored correctly."""
-        p = self.parentWidget()
-        if not p:
-            return
-        if self._open:
-            self.setGeometry(p.width() - self.WIDTH, 0, self.WIDTH, p.height())
-        else:
-            self.setGeometry(p.width(), 0, self.WIDTH, p.height())
-
-    def open_panel(self) -> None:
-        if self._open:
-            return
-        p = self.parentWidget()
-        if not p:
-            return
-        self.refresh_token_status()
-        self.show()
-        self.raise_()
-        start = QRect(p.width(), 0, self.WIDTH, p.height())
-        end = QRect(p.width() - self.WIDTH, 0, self.WIDTH, p.height())
-        self.setGeometry(start)
-        self._anim.stop()
-        self._anim.setStartValue(start)
-        self._anim.setEndValue(end)
-        self._anim.start()
-        self._open = True
-
-    def close_panel(self) -> None:
-        if not self._open:
-            return
-        p = self.parentWidget()
-        if not p:
-            return
-        start = self.geometry()
-        end = QRect(p.width(), 0, self.WIDTH, p.height())
-        self._anim.stop()
-        self._anim.setStartValue(start)
-        self._anim.setEndValue(end)
-        self._anim.start()
-        self._open = False
-
     def _choose_credentials(self) -> None:
         start = str(credentials_path())
         path, _ = QFileDialog.getOpenFileName(self, "Locate .credentials.json", start, "JSON (*.json)")
@@ -1354,6 +1599,144 @@ class SettingsPanel(QWidget):
         self._refresh_cred_status()
 
 
+class NavRail(QWidget):
+    """Slim vertical icon rail down the content area's left edge — icon-only, with
+    names shown via tooltips. The mascot sits at the top; the active page is
+    accent-highlighted. Full-height (parented to root) so it survives the
+    auto-hide title bar. Lives only on the full window."""
+
+    COLLAPSED = 46   # the rail's fixed width
+
+    def __init__(self, parent: QWidget, on_select) -> None:
+        super().__init__(parent)
+        self.setObjectName("navRail")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self._on_select = on_select
+
+        col = QVBoxLayout(self)
+        col.setContentsMargins(6, 6, 6, 10)
+        col.setSpacing(4)
+
+        # Mascot at the rail's top-left — where the title-bar icon used to sit,
+        # but on the rail so it survives the auto-hide title bar.
+        icon_lbl = QLabel()
+        ip = assets_root() / "icon.png"
+        if ip.exists():
+            icon_lbl.setPixmap(QPixmap(str(ip)).scaled(
+                34, 34, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        icon_lbl.setFixedSize(34, 34)
+        col.addWidget(icon_lbl, 0, Qt.AlignLeft)
+        col.addSpacing(12)
+
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+
+        self.dash_btn = self._item(chr(0xF015), "Dashboard", page=0)   # house
+        self.stats_btn = self._item(chr(0xF201), "Stats", page=1)      # chart-line
+        col.addWidget(self.dash_btn)
+        col.addWidget(self.stats_btn)
+        col.addStretch(1)
+        self.settings_btn = self._item(chr(0xF013), "Settings", page=2)  # gear
+        col.addWidget(self.settings_btn)
+
+        self.dash_btn.setChecked(True)
+        self._group.idClicked.connect(self._on_select)
+
+    def _item(self, glyph: str, label: str, page) -> QPushButton:
+        # Icon only; the destination name lives on the tooltip.
+        b = QPushButton(glyph, objectName="railBtn")
+        b.setCursor(Qt.PointingHandCursor)
+        b.setFocusPolicy(Qt.NoFocus)
+        b.setToolTip(label)
+        b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        if page is not None:
+            b.setCheckable(True)
+            self._group.addButton(b, page)
+        return b
+
+    def reposition(self) -> None:
+        """Anchor to the parent's left edge, full height."""
+        p = self.parentWidget()
+        if not p:
+            return
+        self.setGeometry(0, 0, self.COLLAPSED, p.height())
+
+
+_PLAN_LABELS = {
+    "default_claude_max_20x": "Max 20×",
+    "default_claude_max_5x": "Max 5×",
+    "default_claude_pro": "Pro",
+    "default_claude_free": "Free",
+}
+
+
+def plan_label(tier: str | None) -> str:
+    """Human label for an organization.rate_limit_tier (e.g. 'Max 5×')."""
+    if not tier:
+        return "Claude"
+    return _PLAN_LABELS.get(
+        tier, tier.replace("default_claude_", "").replace("_", " ").title())
+
+
+def _fmt_count(n: int) -> str:
+    """Compact token/count label: 3_470_000_000 -> '3.5B'."""
+    if n >= 1_000_000_000:
+        return f"{n / 1e9:.1f}B"
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1e3:.0f}K"
+    return str(int(n))
+
+
+def _fmt_dur(secs: float) -> str:
+    """Compact duration label: 9120 -> '2.5h', 1500 -> '25m', 42 -> '42s'."""
+    secs = max(0, int(secs))
+    if secs >= 3600:
+        return f"{secs / 3600:.1f}h"
+    if secs >= 60:
+        return f"{secs // 60}m"
+    return f"{secs}s"
+
+
+# Per-language bar colours for the code-by-language breakdown — brand-ish hues
+# tuned for contrast on the dark card. Languages without an entry use the
+# neutral default; "Other" is the muted grey.
+LANGUAGE_COLORS = {
+    "Python": "#4FB0E0", "C#": "#A77BE0", "Java": "#E0894B", "Kotlin": "#C792EA",
+    "Scala": "#E06A5A", "Groovy": "#A7C0E0", "C/C++": "#F26D9E", "Go": "#39C5CF",
+    "Rust": "#E0A584", "Swift": "#F0683B", "Dart": "#3AC2B8", "Ruby": "#E0556A",
+    "PHP": "#8A93D0", "JavaScript": "#E6D24A", "TypeScript": "#3D8FE0",
+    "Vue": "#54C99A", "Svelte": "#FF5A2B", "HTML": "#E0764A", "CSS": "#B07BD8",
+    "Lua": "#6E8AEF", "R": "#6FB7F0", "Shell": "#8FD96B", "PowerShell": "#3B6FB8",
+    "Perl": "#C7A04F", "Haskell": "#A77BD0", "Elixir": "#9B7BC0", "Erlang": "#D05A6A",
+    "Clojure": "#6FD08A", "F#": "#5AB0C7", "Visual Basic": "#7F9AD0", "Julia": "#B07BD0",
+    "Zig": "#E0A04F", "Nim": "#E0D24A", "OCaml": "#E0964F", "Solidity": "#9AA0A6",
+    "SQL": "#D9A441", "GraphQL": "#E060A0", "Markdown": "#9CA3AF", "JSON": "#C9A85A",
+    "YAML": "#D85C5C", "TOML": "#C58A5A", "XML": "#7FA6CF", "Protobuf": "#7FB0B0",
+    "Other": "#6b7280",
+}
+_LANG_DEFAULT = "#8a93a3"
+
+
+class _StatsWorker(QThread):
+    """Computes the full Stats aggregate off the UI thread (a lifetime transcript
+    scan + valuation, cached per file). Emits the aggregate dict when done."""
+
+    ready = Signal(object)
+
+    def run(self) -> None:
+        try:
+            agg = stats.compute_aggregate(time.time())
+        except Exception:
+            # Keep a scan crash off the UI, but leave a trace (a blank Stats tab
+            # with no diagnostics is worse than a stderr traceback in dev).
+            import traceback
+            traceback.print_exc()
+            return
+        self.ready.emit(agg)
+
+
 class Dashboard(QMainWindow):
     def __init__(self, mock: bool = False) -> None:
         super().__init__()
@@ -1367,8 +1750,10 @@ class Dashboard(QMainWindow):
         # Width: ~3 shelf tiles (130px sprites + margins/spacing) fit without
         # scrolling; overflow scrolls horizontally inside the shelf's QScrollArea,
         # so the window never balloons sideways.
-        self.setMinimumSize(520, self._min_window_h)
-        self.resize(520, 520)
+        # +NavRail.COLLAPSED so the shelf keeps room for ~3 tiles now that the
+        # rail reserves the content's left edge (otherwise 3 sessions scroll).
+        self.setMinimumSize(520 + NavRail.COLLAPSED, self._min_window_h)
+        self.resize(520 + NavRail.COLLAPSED, 520)
         self.setStyleSheet(STYLESHEET)
 
         icon_path = assets_root() / "icon.png"
@@ -1378,18 +1763,32 @@ class Dashboard(QMainWindow):
         root = QWidget(objectName="root")
         self.setCentralWidget(root)
         self._root = root
-        self._outer = QVBoxLayout(root)
-        self._outer.setContentsMargins(0, 0, 0, 0)
+        # Full-height nav rail down the left (overlay, created after content); the
+        # rest of the UI sits in a right column whose left edge is reserved for the
+        # collapsed rail. Keeping the rail outside the title bar means it — and the
+        # mascot pinned at its top — survive the auto-hide title bar.
+        self._outer = QHBoxLayout(root)
+        self._outer.setContentsMargins(NavRail.COLLAPSED, 0, 0, 0)
         self._outer.setSpacing(0)
 
-        self.title_bar = TitleBar(self, on_settings=self._toggle_settings,
-                                  on_toggle=self._toggle_full_compact,
+        right_col = QWidget()
+        self._outer.addWidget(right_col, 1)
+        right_layout = QVBoxLayout(right_col)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        self.title_bar = TitleBar(self, on_toggle=self._toggle_full_compact,
                                   on_mini=lambda: self._set_view_mode("mini"))
-        self._outer.addWidget(self.title_bar)
+        right_layout.addWidget(self.title_bar)
 
         content = QWidget()
-        self._outer.addWidget(content, 1)
-        layout = QVBoxLayout(content)
+        right_layout.addWidget(content, 1)
+
+        # The mascot + bars now live on a "Dashboard page"; it and the Stats page
+        # sit in a stack the nav rail switches between. `layout` still refers to
+        # the dashboard page below, so the existing content code is unchanged.
+        self.dashboard_page = QWidget()
+        layout = QVBoxLayout(self.dashboard_page)
         layout.setContentsMargins(24, 14, 24, 11)
         layout.setSpacing(12)
 
@@ -1442,25 +1841,41 @@ class Dashboard(QMainWindow):
         layout.addWidget(self.status_container)
         layout.addStretch(1)
 
-        # Settings panel is parented to the central widget so it overlays
-        # everything below the title bar and resizes with the window. The
-        # scrim sits between content and panel: clicks on it close the panel.
+        # Page stack (Dashboard + Stats) inside the content area. content_box
+        # reserves the collapsed rail's width on the left so content never sits
+        # under it; the rail itself is an overlay added after the settings panel.
+        self.stats_page = self._build_stats_page()
+        self._pages = QStackedWidget()
+        self._pages.addWidget(self.dashboard_page)   # index 0
+        self._pages.addWidget(self.stats_page)       # index 1
+        content_box = QVBoxLayout(content)
+        content_box.setContentsMargins(0, 0, 0, 0)  # rail width reserved at root
+        content_box.setSpacing(0)
+        content_box.addWidget(self._pages)
+
+        # Settings is the third page in the content stack — a nav-rail
+        # destination, not an overlay. You leave it by clicking another rail item.
         self._content = content
-        self.scrim = Scrim(content)
-        self.scrim.clicked.connect(self._close_settings)
         self.settings_panel = SettingsPanel(
             content,
             on_always_on_top_changed=self._set_always_on_top,
             on_auto_hide_changed=self._apply_auto_hide,
-            on_close_requested=self._close_settings,
             on_refresh_token=self._request_token_refresh,
             on_auto_refresh_changed=self._set_auto_refresh,
             on_poll_interval_changed=self._set_poll_interval,
             on_sessions_view_changed=self._apply_session_view,
             on_token_view_changed=self._apply_token_view,
+            on_check_updates=self._check_for_updates_now,
         )
-        self.settings_panel.place_closed()
-        content.installEventFilter(self)
+        self._pages.addWidget(self.settings_panel)   # index 2 (Settings)
+
+        # Full-height slim icon nav rail down root's left edge. Parented to root
+        # (not content) so it spans the whole left side and the mascot at its top
+        # stays put when the title bar auto-hides.
+        self.nav_rail = NavRail(root, on_select=self._show_page)
+        self.nav_rail.reposition()
+        self.nav_rail.raise_()
+        root.installEventFilter(self)
 
         # Apply persisted always-on-top before the first show().
         if app_settings.get_always_on_top():
@@ -1540,11 +1955,24 @@ class Dashboard(QMainWindow):
             act.triggered.connect(lambda _=False, m=mode: self._set_view_mode(m))
             tray_menu.addAction(act)
         tray_menu.addSeparator()
+        # Hidden until a newer release is found; clicking opens the download page.
+        self._update_action = QAction("Update available", self)
+        self._update_action.setVisible(False)
+        self._update_action.triggered.connect(self._open_update_page)
+        tray_menu.addAction(self._update_action)
+        self._check_updates_action = QAction("Check for updates", self)
+        self._check_updates_action.triggered.connect(self._check_for_updates_now)
+        tray_menu.addAction(self._check_updates_action)
+        tray_menu.addSeparator()
         quit_action = QAction("Quit", self)
         quit_action.triggered.connect(self._real_quit)
         tray_menu.addAction(quit_action)
         self._tray.setContextMenu(tray_menu)
         self._tray.activated.connect(self._on_tray_activated)
+        # Clicking the "update available" balloon should open the release page;
+        # messageClicked is global, so the handler checks for a pending update.
+        self._tray.messageClicked.connect(self._on_tray_message_clicked)
+        self._update_info = None
         self._tray.setToolTip("Clawdmeter - starting…")
         self._tray.show()
 
@@ -1584,38 +2012,400 @@ class Dashboard(QMainWindow):
         self._countdown.timeout.connect(self._tick_countdown)
         self._countdown.start()
 
+        # Persisted usage history for Stats trends. Disk off in mock so synthetic
+        # samples never land in the real on-disk history.
+        self.usage_history = UsageHistory(persist=not mock)
+
         if mock:
             self._start_mock()
         else:
             self._start_poller()
+            self._start_update_checker()
             # Now that self.mini / self.sprite / self.shelf exist, the
             # watcher's initial synchronous poll can safely drive the shelf.
             self._transcript.start()
 
 
     def eventFilter(self, obj, ev):
-        if obj is self._content and ev.type() == ev.Type.Resize:
-            self.settings_panel.reposition()
-            if self.scrim.isVisible():
-                self.scrim.setGeometry(0, 0, self._content.width(), self._content.height())
+        if ev.type() == ev.Type.Resize and obj is self._root:
+            self.nav_rail.reposition()   # rail spans full root height
         return super().eventFilter(obj, ev)
 
-    def _toggle_settings(self) -> None:
-        if self.settings_panel.is_open():
-            self._close_settings()
+    def _show_page(self, idx: int) -> None:
+        """Switch the content stack to a nav-rail destination (0=Dashboard,
+        1=Stats, 2=Settings)."""
+        self._pages.setCurrentIndex(idx)
+        if idx == 0:
+            # Returning to the Dashboard: re-snap to its (possibly changed)
+            # content height, which was left alone while away.
+            self._fit_window_height()
+
+    def _build_stats_page(self) -> QWidget:
+        """Stats page: ROI + extra-usage spend, a per-day value strip, a 7x24
+        activity heatmap, and a 'this month' recap. Scrolls when tall."""
+        scroll = QScrollArea(objectName="settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.viewport().setStyleSheet("background: transparent;")
+        body = QWidget(objectName="settingsBody")
+        scroll.setWidget(body)
+        v = QVBoxLayout(body)
+        v.setContentsMargins(24, 18, 24, 18)
+        v.setSpacing(14)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.addWidget(QLabel("STATS", objectName="settingsTitle"))
+        header.addStretch(1)
+        self.stat_plan = QLabel("", objectName="statPlan")
+        header.addWidget(self.stat_plan, 0, Qt.AlignVCenter)
+        v.addLayout(header)
+
+        def num_card(label: str):
+            f = QFrame(objectName="statCard")
+            cl = QVBoxLayout(f)
+            cl.setContentsMargins(16, 14, 16, 16)
+            cl.setSpacing(3)
+            cl.addWidget(QLabel(label, objectName="statLabel"))
+            big = QLabel("—", objectName="statBig")
+            cl.addWidget(big)
+            sub = QLabel("", objectName="sectionHint")
+            sub.setWordWrap(True)
+            cl.addWidget(sub)
+            v.addWidget(f)
+            return big, sub
+
+        def viz_card(label: str, widget: QWidget, delta: QLabel | None = None) -> None:
+            f = QFrame(objectName="statCard")
+            cl = QVBoxLayout(f)
+            cl.setContentsMargins(16, 14, 16, 14)
+            cl.setSpacing(8)
+            head = QHBoxLayout()
+            head.setContentsMargins(0, 0, 0, 0)
+            head.addWidget(QLabel(label, objectName="statLabel"))
+            if delta is not None:
+                head.addStretch(1)
+                head.addWidget(delta, 0, Qt.AlignVCenter)
+            cl.addLayout(head)
+            cl.addWidget(widget)
+            v.addWidget(f)
+
+        def num_pair(label_a: str, label_b: str):
+            row = QHBoxLayout()
+            row.setSpacing(14)
+            outs = []
+            for lab in (label_a, label_b):
+                f = QFrame(objectName="statCard")
+                cl = QVBoxLayout(f)
+                cl.setContentsMargins(16, 14, 16, 16)
+                cl.setSpacing(3)
+                cl.addWidget(QLabel(lab, objectName="statLabel"))
+                big = QLabel("—", objectName="statBig")
+                cl.addWidget(big)
+                sub = QLabel("", objectName="sectionHint")
+                sub.setWordWrap(True)
+                cl.addWidget(sub)
+                row.addWidget(f, 1)
+                outs.append((big, sub))
+            v.addLayout(row)
+            return outs
+
+        # ROI card — API value this month, with lifetime value + break-even day
+        # grouped underneath (the "what is my plan worth" block).
+        roi = QFrame(objectName="statCard")
+        rl = QVBoxLayout(roi)
+        rl.setContentsMargins(16, 14, 16, 16)
+        rl.setSpacing(3)
+        rl.addWidget(QLabel("API VALUE THIS MONTH", objectName="statLabel"))
+        self.stat_value = QLabel("—", objectName="statBig")
+        rl.addWidget(self.stat_value)
+        self.stat_value_sub = QLabel("", objectName="sectionHint")
+        self.stat_value_sub.setWordWrap(True)
+        rl.addWidget(self.stat_value_sub)
+        divider = QFrame(objectName="statDivider")
+        rl.addSpacing(6)
+        rl.addWidget(divider)
+        rl.addSpacing(8)
+        extra = QHBoxLayout()
+        extra.setContentsMargins(0, 0, 0, 0)
+        extra.setSpacing(16)
+
+        def mini(label: str):
+            box = QVBoxLayout()
+            box.setSpacing(1)
+            val = QLabel("—", objectName="statMid")
+            box.addWidget(val)
+            box.addWidget(QLabel(label, objectName="statLabel"))
+            holder = QWidget()
+            holder.setLayout(box)
+            extra.addWidget(holder, 1)
+            return val
+
+        self.stat_lifetime = mini("LIFETIME VALUE")
+        self.stat_breakeven = mini("BROKE EVEN")
+        rl.addLayout(extra)
+        v.addWidget(roi)
+
+        self.stat_spend, self.stat_spend_sub = num_card("EXTRA USAGE THIS MONTH")
+        self.stat_cache, self.stat_cache_sub = num_card("CACHE SAVINGS THIS MONTH")
+        self.stat_burn, self.stat_burn_sub = num_card("TIME TO 7-DAY CAP")
+
+        (self.stat_streak, self.stat_streak_sub), \
+            (self.stat_sessions, self.stat_sessions_sub) = \
+            num_pair("CURRENT STREAK", "SESSIONS THIS MONTH")
+
+        self.stat_models = ModelBreakdown()
+        viz_card("VALUE BY MODEL", self.stat_models)
+
+        self.stat_projects = ModelBreakdown()
+        viz_card("VALUE BY PROJECT", self.stat_projects)
+
+        self.stat_lang = CategoryBars(empty_text="No files edited yet")
+        self.stat_lang_count = QLabel("", objectName="statCount")
+        viz_card("CODE BY LANGUAGE", self.stat_lang, delta=self.stat_lang_count)
+
+        self.stat_activity = CategoryBars(empty_text="No tool activity yet")
+        viz_card("ACTIVITY MIX", self.stat_activity)
+
+        self.stat_week = WeekBars()
+        self.stat_week_delta = QLabel("", objectName="statDelta")
+        viz_card("THIS WEEK VS LAST", self.stat_week, delta=self.stat_week_delta)
+
+        self.stat_bars = DailyBars()
+        viz_card("VALUE PER DAY", self.stat_bars)
+
+        self.stat_heat = Heatmap()
+        viz_card("WHEN YOU WORK  ·  LOCAL TIME", self.stat_heat)
+
+        wrap = QFrame(objectName="statCard")
+        wl = QVBoxLayout(wrap)
+        wl.setContentsMargins(16, 14, 16, 16)
+        wl.setSpacing(4)
+        wl.addWidget(QLabel("THIS MONTH", objectName="statLabel"))
+        self.stat_wrap = QLabel("—", objectName="sectionHint")
+        self.stat_wrap.setWordWrap(True)
+        wl.addWidget(self.stat_wrap)
+        v.addWidget(wrap)
+
+        v.addStretch(1)
+        return scroll
+
+    def _on_aggregate(self, agg: dict) -> None:
+        """Update the Stats trend visuals + recap from a computed aggregate, and
+        feed the ROI card's dollar value."""
+        self._agg = agg
+        self._render_roi()
+
+        cr = agg.get("cache_read_tokens", 0)
+        rate = agg.get("cache_hit_rate", 0.0) * 100
+        self.stat_cache.setText(f"${agg.get('cache_savings_usd', 0):,.2f}")
+        self.stat_cache_sub.setText(
+            f"{rate:.0f}% cache hit rate · vs full input price on "
+            f"{_fmt_count(cr)} reads")
+
+        self.stat_models.set_data(
+            [(stats.model_display(m).replace("Claude ", ""), v)
+             for m, v in agg.get("by_model_value", {}).items()])
+        self.stat_projects.set_data(list(agg.get("by_project_value", {}).items()))
+
+        # Code by language — distinct files edited, top languages + an Other
+        # bucket, drawn with the per-language palette.
+        langs = agg.get("language_counts") or {}
+        files_edited = agg.get("files_edited", 0)
+        total = files_edited or sum(langs.values()) or 1
+        named = sorted(((n, c) for n, c in langs.items() if n != "Other"),
+                       key=lambda kv: kv[1], reverse=True)
+        other = langs.get("Other", 0)
+        if other or len(named) > 8:
+            other += sum(c for _, c in named[7:])
+            named = named[:7]
+        lang_rows = [(n, c / total * 100.0, LANGUAGE_COLORS.get(n, _LANG_DEFAULT))
+                     for n, c in named]
+        if other:
+            lang_rows.append(("Other", other / total * 100.0, LANGUAGE_COLORS["Other"]))
+        self.stat_lang.set_data(lang_rows)
+        self.stat_lang_count.setText(
+            f"{files_edited:,} file{'' if files_edited == 1 else 's'}")
+
+        self.stat_bars.set_data(agg.get("value_by_day", []))
+        self.stat_heat.set_data(agg.get("heatmap"))
+
+        # Streak + sessions
+        cur = agg.get("current_streak", 0)
+        best = agg.get("best_streak", 0)
+        self.stat_streak.setText(str(cur))
+        self.stat_streak_sub.setText(
+            f"day{'' if cur == 1 else 's'} · best ever {best}")
+        sess = agg.get("sessions") or {}
+        self.stat_sessions.setText(f"{sess.get('count', 0):,}")
+        self.stat_sessions_sub.setText(
+            f"avg {_fmt_dur(sess.get('avg_secs', 0))} · "
+            f"longest {_fmt_dur(sess.get('longest_secs', 0))}")
+
+        # Activity breakdown — counts -> % rows with the mascot activity colours.
+        counts = agg.get("activity_counts") or {}
+        total = sum(counts.values())
+        rows = []
+        if total:
+            for key, n in counts.items():
+                try:
+                    act = TranscriptActivity(key)
+                except ValueError:
+                    continue
+                rows.append((ACTIVITY_LABELS.get(act, key.upper()),
+                             n / total * 100.0, ACTIVITY_COLORS.get(act, "#6b7280")))
+            rows.sort(key=lambda r: r[1], reverse=True)
+        self.stat_activity.set_data(rows)
+
+        # This week vs last week + delta badge
+        wt = agg.get("week_this_usd", 0.0)
+        wl = agg.get("week_last_usd", 0.0)
+        self.stat_week.set_data(wt, wl)
+        if wl > 0:
+            pct = (wt - wl) / wl * 100.0
+            up = pct >= 0
+            self.stat_week_delta.setText(f"{'+' if up else '−'}{abs(pct):.0f}%")
+            self.stat_week_delta.setStyleSheet(
+                f"color: {'#5FB3A1' if up else '#c13434'};")
+        elif wt > 0:
+            self.stat_week_delta.setText("new")
+            self.stat_week_delta.setStyleSheet("color: #5FB3A1;")
         else:
-            self._open_settings()
+            self.stat_week_delta.setText("")
 
-    def _open_settings(self) -> None:
-        self.scrim.setGeometry(0, 0, self._content.width(), self._content.height())
-        self.scrim.show()
-        self.scrim.raise_()
-        self.settings_panel.open_panel()
-        self.settings_panel.raise_()
+        # Recap
+        parts = []
+        tm = agg.get("top_model")
+        if tm and tm[1]:
+            parts.append(f"Top model — {stats.model_display(tm[0])} (${tm[1]:,.0f})")
+        bd = agg.get("busiest_day")
+        if bd and bd[1]:
+            parts.append(f"Busiest day — {bd[0]:%a %b %d} (${bd[1]:,.0f})")
+        rd = agg.get("record_day")
+        if rd and rd[1]:
+            parts.append(f"Biggest day ever — {rd[0]:%b %d, %Y} (${rd[1]:,.0f})")
+        parts.append(f"{agg.get('turns', 0):,} turns over "
+                     f"{agg.get('active_days', 0)} active days")
+        self.stat_wrap.setText("\n".join(parts))
 
-    def _close_settings(self) -> None:
-        self.settings_panel.close_panel()
-        self.scrim.hide()
+    def _refresh_stats(self) -> None:
+        """Recompute the Stats aggregate off the UI thread (held ref so it lives
+        until it finishes). Skips if a scan is still running so we never orphan a
+        live QThread or double-fire _on_aggregate with a staler result."""
+        worker = getattr(self, "_stats_worker", None)
+        if worker is not None and worker.isRunning():
+            return
+        self._stats_worker = _StatsWorker()
+        self._stats_worker.ready.connect(self._on_aggregate)
+        self._stats_worker.start()
+
+    def _mock_aggregate(self) -> dict:
+        """Synthetic Stats aggregate for --mock (no transcript scan)."""
+        from datetime import date, timedelta
+        today = date.today()
+        series = [(today - timedelta(days=n), round(80 + abs(8 - (n % 17)) * 35.0, 2))
+                  for n in range(16, -1, -1)]
+        heat = [[(2 if 9 <= h <= 19 else 0) * (r + 1) + ((h * (r + 2)) % 7)
+                 for h in range(24)] for r in range(7)]
+        return {
+            "value_total": 3380.0, "value_by_day": series, "heatmap": heat,
+            "by_model_value": {"claude-opus-4-8": 2500.0, "claude-sonnet-4-6": 880.0},
+            "top_model": ("claude-opus-4-8", 2500.0),
+            "busiest_day": (today - timedelta(days=3), 412.0),
+            "turns": 16704, "active_days": 12,
+            "cache_savings_usd": 16999.36,
+            "cache_read_tokens": 3_470_000_000, "input_tokens": 12_400_000,
+            "cache_hit_rate": 3_470_000_000 / (3_470_000_000 + 12_400_000),
+            "by_project_value": {"Clawdmeter-Windows": 1880.0, "ReadyUp-Dev": 960.0,
+                                 "Watchlist-Dev": 540.0},
+            "lifetime_value_usd": 48231.0,
+            "record_day": (today - timedelta(days=21), 612.0),
+            "current_streak": 12, "best_streak": 19,
+            "week_this_usd": 1180.0, "week_last_usd": 960.0,
+            "sessions": {"count": 147, "avg_secs": 38 * 60, "longest_secs": 2.4 * 3600},
+            "activity_counts": {"coding": 5200, "reading": 3100, "planning": 1400,
+                                "thinking": 900, "searching": 420, "integrating": 180},
+            "language_counts": {"Python": 96, "C#": 28, "Markdown": 14,
+                                "TypeScript": 8, "PowerShell": 4, "JSON": 3,
+                                "Other": 5},
+            "files_edited": 158,
+        }
+
+    def _update_stats(self, s: UsageSample) -> None:
+        """Per-poll Stats update: the extra-usage spend card (from K1) and the
+        ROI card's plan side. The ROI dollar value comes from the aggregate."""
+        if s.extra_usage_enabled or s.extra_usage_used_usd:
+            self.stat_spend.setText(f"${s.extra_usage_used_usd:,.2f}")
+            self.stat_spend_sub.setText(
+                f"of ${s.extra_usage_limit_usd:,.2f} cap"
+                if s.extra_usage_limit_usd else "pay-as-you-go · no monthly cap")
+        else:
+            self.stat_spend.setText("$0.00")
+            self.stat_spend_sub.setText("Pay-as-you-go off")
+        self._render_roi()
+        self._update_burn(s)
+
+    def _update_burn(self, s: UsageSample) -> None:
+        """Time-to-cap card from the recent 7-day utilisation slope (K2 ring)."""
+        if s.weekly_pct >= 100:
+            self.stat_burn.setText("over")
+            self.stat_burn_sub.setText("7-day window already in overage")
+            return
+        ring = getattr(self, "usage_history", None)
+        points = [(p["ts"], p["w"]) for p in ring.ring] if ring else []
+        now = time.time()
+        eta = stats.cap_eta(points, s.weekly_pct, now)
+        if eta is None:
+            span = (points[-1][0] - points[0][0]) if len(points) >= 2 else 0
+            if len(points) < 2 or span < 600:
+                self.stat_burn.setText("—")
+                self.stat_burn_sub.setText("gathering pace data")
+            else:
+                self.stat_burn.setText("steady")
+                self.stat_burn_sub.setText("not on pace to cap")
+            return
+        secs = eta - now
+        reset_secs = (s.weekly_reset_minutes or 0) * 60
+        if reset_secs and secs > reset_secs:
+            self.stat_burn.setText("clear")
+            self.stat_burn_sub.setText("resets before you'd cap · at current pace")
+            return
+        if secs >= 86400:
+            amt = f"~{secs / 86400:.1f} days"
+        elif secs >= 3600:
+            amt = f"~{secs / 3600:.0f} hours"
+        else:
+            amt = f"~{max(1, int(secs / 60))} min"
+        self.stat_burn.setText(amt)
+        self.stat_burn_sub.setText("until the 7-day cap · at current pace")
+
+    def _render_roi(self) -> None:
+        """ROI card from the latest aggregate (the dollar value) + the latest
+        sample (the plan tier). Either source updating refreshes the card."""
+        s = getattr(self, "_last_sample", None)
+        tier = s.plan_tier if s else None
+        price = stats.plan_monthly_usd(tier)
+        self.stat_plan.setText(
+            f"{plan_label(tier)} · ${price:,.0f}/mo" if price else plan_label(tier))
+        agg = getattr(self, "_agg", None)
+        if agg is None:                       # aggregate not computed yet
+            self.stat_value.setText("—")
+            self.stat_value_sub.setText("computing…")
+            self.stat_lifetime.setText("—")
+            self.stat_breakeven.setText("—")
+            return
+        val = agg["value_total"]
+        self.stat_value.setText(f"${val:,.2f}")
+        if price and val:
+            mult = val / price
+            mult_s = f"{mult:.0f}×" if mult >= 10 else f"{mult:.1f}×"
+            self.stat_value_sub.setText(f"{mult_s} your subscription this month")
+        else:
+            self.stat_value_sub.setText("of pay-as-you-go API value this month")
+
+        self.stat_lifetime.setText(f"${agg.get('lifetime_value_usd', 0):,.0f}")
+        be = stats.break_even_day(agg.get("value_by_day", []), price)
+        self.stat_breakeven.setText(f"{be:%b %d}" if be else ("—" if price else "n/a"))
 
     def _set_always_on_top(self, on: bool) -> None:
         """Zero-flicker topmost via SetWindowPos. Qt's setWindowFlag forces a
@@ -1688,17 +2478,6 @@ class Dashboard(QMainWindow):
         self._win_size_anim.setEndValue(QSize(self.width(), target_win_h))
         self._titlebar_anim_group.start()
 
-    def resizeEvent(self, event) -> None:
-        """Update the collapsed-height baseline when the user resizes manually.
-        We only do this when no animation is in flight so that animation ticks
-        don't poison the baseline."""
-        super().resizeEvent(event)
-        if (
-            self._auto_hide_enabled
-            and self._titlebar_anim_group.state() == QAbstractAnimation.Stopped
-        ):
-            self._collapsed_window_height = self.height() - self.title_bar.maximumHeight()
-
     def _reveal_titlebar(self) -> None:
         self._animate_titlebar_to(TitleBar.HEIGHT)
 
@@ -1744,6 +2523,70 @@ class Dashboard(QMainWindow):
         self._poller.sample.connect(self._on_sample)
         self._poller.refresh_status.connect(self._on_refresh_status)
         self._poller.start()
+        # Stats trend aggregate: compute now + every 10 min, off the UI thread.
+        self._refresh_stats()
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setInterval(600_000)
+        self._stats_timer.timeout.connect(self._refresh_stats)
+        self._stats_timer.start()
+
+    def _start_update_checker(self) -> None:
+        self._update_checker = UpdateChecker()
+        self._update_checker.update_available.connect(self._on_update_available)
+        self._update_checker.check_finished.connect(self._on_update_check_finished)
+        self._update_checker.start()
+
+    def _on_update_available(self, info) -> None:
+        """A newer release was found (background or manual check)."""
+        self._update_info = info
+        self._update_action.setText(f"Update available ({info.version}) — get it")
+        self._update_action.setVisible(True)
+        self._tray.setToolTip(f"Clawdmeter — update {info.version} available")
+        self._tray.showMessage(
+            "Clawdmeter update available",
+            f"Version {info.version} is out. Click here, or use the tray menu, "
+            "to open the download page.",
+            QSystemTrayIcon.MessageIcon.Information, 10000,
+        )
+        self._start_tray_flash()
+
+    def _on_update_check_finished(self, info) -> None:
+        """Feedback for a manual 'Check for updates' (info is None when current)."""
+        if info is None:
+            self._tray.showMessage(
+                "Clawdmeter",
+                f"You're on the latest version ({app_settings.APP_VERSION}).",
+                QSystemTrayIcon.MessageIcon.Information, 5000,
+            )
+
+    def _check_for_updates_now(self) -> None:
+        checker = getattr(self, "_update_checker", None)
+        if checker is None:
+            self._tray.showMessage(
+                "Clawdmeter", "Update check isn't available in mock mode.",
+                QSystemTrayIcon.MessageIcon.Information, 4000,
+            )
+            return
+        self._tray.showMessage(
+            "Clawdmeter", "Checking for updates…",
+            QSystemTrayIcon.MessageIcon.Information, 3000,
+        )
+        checker.request_check()
+
+    def _open_update_page(self) -> None:
+        info = getattr(self, "_update_info", None)
+        url = info.url if info else update_check.RELEASES_PAGE
+        # The URL comes from the GitHub API response; only open it if it's this
+        # repo on github.com, else fall back to the canonical releases page —
+        # so a compromised/unexpected response can't redirect the user anywhere.
+        if not url.startswith(f"https://github.com/{update_check.REPO}/"):
+            url = update_check.RELEASES_PAGE
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _on_tray_message_clicked(self) -> None:
+        # Only act if there's a pending update — other balloons are informational.
+        if getattr(self, "_update_info", None) is not None:
+            self._open_update_page()
 
     def _request_token_refresh(self) -> None:
         poller = getattr(self, "_poller", None)
@@ -1789,10 +2632,17 @@ class Dashboard(QMainWindow):
                 timestamp=time.time(),
                 tokens_5h=914_000,
                 tokens_7d=19_400_000,
+                plan_tier="default_claude_max_5x",
+                extra_usage_enabled=True,
+                extra_usage_used_usd=round(self._mock_pct * 0.3, 2),
+                model_windows={"Opus": 62, "Sonnet": 18},
             ))
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
         sample_tick()
+        self._on_aggregate(self._mock_aggregate())  # synthetic trends for --mock
+
+
 
         # Drive the shelf through a scripted roster that grows 1->4 sessions and
         # shrinks back, reordering and cycling activities along the way, so every
@@ -1938,6 +2788,7 @@ class Dashboard(QMainWindow):
         # without disturbing its baseline.
         decision = self._reset_notifier.observe(s)
         self._last_sample = s
+        self.usage_history.record(s)   # ring + throttled disk log (skips errors)
         if not s.ok:
             self._apply_status_badge(s.status)
             self._tray.setToolTip(f"Clawdmeter - {s.status}")
@@ -1957,6 +2808,7 @@ class Dashboard(QMainWindow):
         self._sync_mini(s)
         self._update_compact_usage(
             s, s.session_reset_minutes, s.weekly_reset_minutes)
+        self._update_stats(s)
 
         self._rate.observe(s.session_pct)
         # While the shelf is up it owns the mascots (per-session tiles + the
@@ -1982,14 +2834,16 @@ class Dashboard(QMainWindow):
         title = "Claude limit reset"
         body = f"{which} limit has reset — you can resume."
 
-        # Themed toast + tray flash always accompany the master toggle.
-        self._toast.show_message(title, body)
-        self._start_tray_flash()
-
-        if app_settings.get_reset_notify_sound():
-            QApplication.beep()
-        if app_settings.get_reset_notify_popup():
-            self._show_window()
+        # Windows channel: the themed toast + tray flash, with sound and
+        # window-pop as its sub-options. Off -> the push channel can still fire,
+        # so the user can choose to be notified only on their phone/Discord.
+        if app_settings.get_reset_notify_toast():
+            self._toast.show_message(title, body)
+            self._start_tray_flash()
+            if app_settings.get_reset_notify_sound():
+                QApplication.beep()
+            if app_settings.get_reset_notify_popup():
+                self._show_window()
         if app_settings.get_reset_notify_push():
             self._send_push(title, body)
 
@@ -2065,6 +2919,11 @@ class Dashboard(QMainWindow):
         nothing once the user has set their own height (auto-fit released)."""
         if not self._auto_fit_height:
             return
+        # Only the Dashboard hugs its content. On Stats/Settings the height stays
+        # put (those pages scroll) — otherwise a background shelf/badge change on
+        # the hidden Dashboard would resize the window out from under those pages.
+        if self._pages.currentIndex() != 0:
+            return
         if self.isMaximized() or self.isFullScreen():
             return
         if self._titlebar_anim_group.state() == QAbstractAnimation.Running:
@@ -2102,6 +2961,13 @@ class Dashboard(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        # Keep the auto-hide collapsed-height baseline in step with manual resizes
+        # (only when no title-bar animation is in flight, so animation ticks don't
+        # poison it). Must run regardless of _auto_fit_height — it matters most
+        # once the user has set their own height (auto-fit released).
+        if (self._auto_hide_enabled
+                and self._titlebar_anim_group.state() == QAbstractAnimation.Stopped):
+            self._collapsed_window_height = self.height() - self.title_bar.maximumHeight()
         old = event.oldSize()
         max_involved = self.isMaximized() or self._was_maximized
         self._was_maximized = self.isMaximized()
@@ -2327,8 +3193,6 @@ class Dashboard(QMainWindow):
         # Keep both switchers' active segment in sync with the real mode.
         self.title_bar.set_active_mode(mode)
         self.compact_view.set_active_mode(mode)
-        if self.settings_panel.is_open():
-            self._close_settings()
         self._stash_mini()
         self._stash_compact()
         if mode == "full":
@@ -2455,6 +3319,12 @@ class Dashboard(QMainWindow):
         if hasattr(self, "_poller"):
             self._poller.stop()
             self._poller.wait(2000)
+        if hasattr(self, "_update_checker"):
+            self._update_checker.stop()
+            self._update_checker.wait(2000)
+        worker = getattr(self, "_stats_worker", None)
+        if worker is not None:
+            worker.wait(2000)   # don't destroy a QThread mid-scan
         self._transcript.stop()
         self.sprite.stop()
         self.shelf.stop_all()

@@ -3,7 +3,7 @@
 Standalone Windows desktop dashboard for Claude Code usage.
 
 <p align="center">
-  <img src="assets/ClawdMeter-2.0-Hero.gif" width="420"
+  <img src="assets/ClawdMeter-Windows-v2.3.0.gif" width="560"
        alt="Clawdmeter-Windows — the Clawd mascot reacting live to Claude Code activity, with session and weekly usage">
 </p>
 
@@ -20,6 +20,12 @@ Standalone Windows desktop dashboard for Claude Code usage.
   running
 - Three **view modes** — the full dashboard, a slim compact list, and a tiny
   always-on-top mini readout
+- A **Stats page** — what your subscription is actually worth (value vs price,
+  lifetime value, cache savings) and how you use Claude (value by model and
+  project, code by language, activity mix, streaks, a daily-value strip and an
+  activity heatmap) — all computed locally from your transcripts
+- A slim **navigation rail** down the left edge to switch between the
+  **Dashboard**, the **Stats** page, and **Settings**
 - A system-tray icon whose fill arc tracks session % — **hover it for a quick
   session & weekly readout**
 
@@ -98,6 +104,42 @@ raw totals are kept out of it, so the number reflects real work):
 It's all behind one switch — **Settings → Token usage → Show token usage** (on
 by default). Turn it off and every token figure disappears.
 
+## Stats
+
+The **chart icon** in the left nav rail opens a Stats page that turns the usage
+you've already racked up into a picture of what your Claude Code subscription is
+actually worth. The dollar figures are **computed locally** — your transcripts
+priced against a bundled rate card — enriched with Anthropic's OAuth usage
+endpoint for real spend and plan details. Every visual is hand-drawn, so the
+page adds nothing to the download size.
+
+A plan badge (e.g. `Max 5× · $100/mo`) sits at the top, and below it:
+
+- **API value this month** — what this month's usage would cost at
+  pay-as-you-go API rates, measured against your subscription price (e.g. "≈ 33×
+  your subscription this month"), with **lifetime value** and the **break-even
+  day** (when the month's value first passed what you pay) grouped alongside.
+- **Extra usage this month** — real pay-as-you-go spend beyond your plan, from
+  the usage endpoint, against your monthly cap if you have one.
+- **Cache savings this month** — dollars saved by prompt caching vs paying full
+  input price, plus your **cache hit rate**.
+- **Time to 7-day cap** — a burn-rate estimate of when you'd hit the weekly limit
+  at your current pace (or "steady" / "clear" when you're not on track to).
+- **Current streak** and **sessions this month** — your active-day streak (and
+  best ever), and how many work sessions you've had (with average and longest).
+- **Value by model** and **value by project** — where that value came from,
+  broken down by model and by project folder.
+- **Code by language** — the languages of the files Claude edited or created this
+  month, by share of files (Python, C#, TypeScript, … with an *Other* roll-up).
+- **Activity mix** — how your tool calls split across coding, reading, planning,
+  thinking, searching and integrating.
+- **This week vs last** — this week's value against last week's, with the change.
+- **Value per day** — a per-day value bar strip across the month, with date ticks.
+- **When you work** — a 7×24 weekday-by-hour heatmap of your activity.
+- a **this-month recap** — top model, busiest day, biggest day ever, and totals.
+
+![Clawdmeter-Windows Stats page — subscription value and ROI, cache savings, value by model/project, code by language, an activity heatmap and a monthly recap](assets/Screenshot-stats.png)
+
 ## Overage
 
 Go past a limit and keep working on paid **usage credits**, and that window's bar
@@ -130,11 +172,89 @@ entry and is draggable (it remembers where you left it).
 
 ![Clawdmeter-Windows mini view — a tiny always-on-top readout with the mascot and session and weekly percentages](assets/Screenshot-mini.png)
 
+## Settings
+
+Open Settings from the **gear at the bottom of the left nav rail** — it's a
+full page in the same window, alongside the Dashboard and Stats, split across
+five tabs that each scroll on their own. Here's every setting, grouped by tab.
+
+![Clawdmeter-Windows settings panel — the General tab and the tab rail](assets/Screenshot-2-Settings.png)
+
+### General
+
+- **Window** — toggle **Always on top**, **Auto-hide title bar** (the title bar
+  collapses until you hover the top edge), and **Quit on close** (closes the app
+  instead of minimizing to the tray).
+- **Updates** — **Automatically check for updates** (on by default — checks the
+  GitHub releases on launch, then about once a day) and **Check for updates now**.
+- **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
+  to pin).
+
+### Display
+
+- **Sessions** — **Show multiple sessions** (the session shelf; off shows a single
+  mascot for the most recent session) and **Show subagents** (the child mascots).
+  Both on by default.
+- **Token usage** — **Show token usage** toggles every token figure (the totals
+  beside the bars, the per-session tiles and hover breakdown, and the tray line).
+  On by default; read from your local transcripts, never the API.
+
+### Connection
+
+- **Credentials** — by default the app reads `~/.claude/.credentials.json`. Use
+  **Use alternative credentials** (or set `CLAUDE_CREDENTIALS_PATH`) to point at
+  a non-default `.credentials.json`.
+- **Token** — Claude's OAuth access token expires roughly every 8 hours, which
+  would otherwise blank the dashboard. With **Auto-refresh when expired** on (the
+  default), the app mints a fresh token automatically so it stays live. The
+  **Refresh token now** button is a manual override, enabled only when the token
+  is actually expired.
+- **Usage polling** — how often the app checks your usage. Each check is a tiny
+  billed API request, so the interval is adjustable from **10 to 600 seconds**
+  (60 by default): lower is fresher but makes more requests; higher is gentler on
+  your quota when you leave it running. Out-of-range entries snap to the nearest
+  allowed value.
+
+### Notifications
+
+- **Notify on limit reset** pings you the moment a usage limit resets so you know
+  you can resume — but only when you were actually near the limit (or already
+  throttled), so it stays quiet otherwise.
+
+  ![Clawdmeter-Windows limit-reset notification — "Claude limit reset: Session limit has reset, you can resume"](assets/Screenshot-Session-Limit-Reset.png)
+
+  You choose **where** it reaches you — pick either channel, or both. **Show a
+  Windows notification** is the desktop toast plus a brief tray-icon flash, with
+  **Play a sound** and **Pop the window to front** as sub-options under it; **Send
+  a push notification** delivers off this machine. Under push you can **add one or
+  more channels** with **Add a channel** (remove with ✕), and **every channel you
+  add fires** on a reset — so you can get, say, a Pushover *and* a Discord alert at
+  once. The channels are **[ntfy](https://ntfy.sh)** (subscribe to a hard-to-guess
+  topic in the ntfy app — no account needed), **Telegram** (a bot token from
+  @BotFather + your chat ID), **Discord** / **Slack** (an incoming-webhook URL),
+  **Pushover** (an app API token + your user key), **Gotify** (a self-hosted server
+  URL + app token), and a **generic webhook** (a JSON `{title, body, app}` POST to
+  any URL — wire it to Zapier / Make / IFTTT / n8n / Home Assistant). Each channel's
+  in-app hint says where to get its credential; keep topics/tokens/URLs secret,
+  since anyone with them can post to or read your alerts. **Send test notification**
+  fires every configured channel at once.
+
+### About
+
+- Version, author, and credits — the source is **MIT** licensed; the Clawd mascot
+  is © Anthropic PBC and **not** covered by it; icons are Font Awesome Free.
+
 ## Download
 
 Grab the latest `Clawdmeter.exe` from the
 [Releases](../../releases) page — it's a single self-contained file (~29 MB,
 bundling Python + Qt), no install needed. Just run it.
+
+Clawdmeter checks the Releases page for a newer version on launch (then about
+once a day) and, when one's out, shows an **Update available** item in the tray
+menu — click it to open the download page and swap in the new `.exe`. You can
+turn the automatic check off, or trigger one on demand, under **Settings →
+Updates**.
 
 > **Heads up:** the exe is not code-signed, so Windows SmartScreen may show a
 > "Windows protected your PC / unknown publisher" prompt the first time you run
@@ -146,8 +266,12 @@ bundling Python + Qt), no install needed. Just run it.
 It reads your Claude Code OAuth token from `~/.claude/.credentials.json`,
 sends a minimal 1-token request to `api.anthropic.com/v1/messages` on a
 configurable interval (60s by default), and reads the rate-limit headers from
-the response. The window minimises to the system tray; closing the window
-hides it. **Quit** from the tray menu fully exits.
+the response. On the same poll it also reads Anthropic's OAuth usage and profile
+endpoints (`/api/oauth/usage`, `/api/oauth/profile`) for your plan, extra-usage
+spend and per-model limits. The Stats page values your **local transcripts**
+against a bundled price map — no extra API calls. The window minimises to the
+system tray; closing the window hides it. **Quit** from the tray menu fully
+exits.
 
 ## Requirements
 
@@ -182,52 +306,6 @@ platform plugins, and Qt's bundled translations) to keep the exe roughly half
 the size of an unpruned PySide6 build. If you start importing additional Qt
 modules, check the pruning block in the spec so you don't strip something you
 now need.
-
-## Settings
-
-Open the settings panel from the gear icon in the title bar.
-
-![Clawdmeter-Windows settings panel](assets/Screenshot-2-Settings.png)
-
-- **Credentials** — by default the app reads `~/.claude/.credentials.json`. Use
-  **Use alternative credentials** (or set `CLAUDE_CREDENTIALS_PATH`) to point at
-  a non-default `.credentials.json`.
-- **Token** — Claude's OAuth access token expires roughly every 8 hours,
-  which would otherwise blank the dashboard. With **Auto-refresh when expired**
-  on (the default), the app mints a fresh token automatically so it stays live.
-  The **Refresh token now** button is a manual override and is enabled only when
-  the token is actually expired.
-- **Window** — toggle **Always on top**, **Auto-hide title bar**, and **Quit on
-  close** (closes the app instead of minimizing to the tray).
-- **Sessions** — **Show multiple sessions** (the session shelf; off shows a single
-  mascot for the most recent session) and **Show subagents** (the child mascots).
-  Both on by default.
-- **Token usage** — **Show token usage** toggles every token figure (the totals
-  beside the bars, the per-session tiles and hover breakdown, and the tray line).
-  On by default; read from your local transcripts, never the API.
-- **Usage polling** — how often the app checks your usage. Each check is a tiny
-  billed API request, so the interval is adjustable from **10 to 600 seconds**
-  (60 by default): lower is fresher but makes more requests; higher is gentler
-  on your quota when you leave it running. Out-of-range entries snap to the
-  nearest allowed value.
-- **Notifications** — **Notify on limit reset** pings you the moment a usage
-  limit resets so you know you can resume — but only when you were actually near
-  the limit (or already throttled), so it stays quiet otherwise.
-
-  ![Clawdmeter-Windows limit-reset notification — "Claude limit reset: Session limit has reset, you can resume"](assets/Screenshot-Session-Limit-Reset.png)
-
-  It shows a tray
-  notification and briefly flashes the tray icon; **Play a sound**, **Pop the
-  window to front**, and **Send a push to my phone** are optional extras you can
-  switch off. The phone push reaches you via either **ntfy** or **Telegram**:
-  with [ntfy](https://ntfy.sh) (no account or API key) you subscribe to a topic
-  of your choosing in the ntfy app — pick a long, hard-to-guess topic since
-  anyone who knows it can read your alerts; with **Telegram** you create a bot
-  via @BotFather and enter its token and your chat ID. Keep both secret.
-- **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
-  to pin).
-
-The panel scrolls if the window is too short to fit every section.
 
 ## Credit
 

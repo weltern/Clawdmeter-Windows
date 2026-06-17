@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import sys
 
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication
 
 import app_settings
@@ -34,6 +34,12 @@ def main() -> int:
     icon_path = assets_root() / "icon.png"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
+
+    # Register bundled icon fonts (Font Awesome 6 Free Solid) before any window
+    # builds, so glyph-as-text labels resolve. Family: "Font Awesome 6 Free".
+    fa_path = assets_root() / "fonts" / "fa-solid-900.ttf"
+    if fa_path.exists():
+        QFontDatabase.addApplicationFont(str(fa_path))
 
     win = Dashboard(mock=mock)
     win.show_initial()   # launch directly into the last-used view mode

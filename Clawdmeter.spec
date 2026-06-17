@@ -14,6 +14,13 @@ a = Analysis(
         ('assets/sprites', 'assets/sprites'),
         ('assets/icon.png', 'assets'),
         ('assets/icon.ico', 'assets'),
+        # Font Awesome 6 Free (Solid) — tab/nav icons. Loaded via QFontDatabase
+        # at startup; SIL OFL 1.1, license bundled alongside.
+        ('assets/fonts/fa-solid-900.ttf', 'assets/fonts'),
+        ('assets/fonts/LICENSE.txt', 'assets/fonts'),
+        # USD price map for Claude models. Read at runtime by pricing.load_price_map
+        # via _MEIPASS/pricing/price_map.json (see src/pricing/__init__.py).
+        ('src/pricing/price_map.json', 'pricing'),
     ],
     hiddenimports=[],
     hookspath=[],
