@@ -417,6 +417,93 @@ def account_window_tokens(now: float, root: Path | None = None) -> tuple[int, in
     return sum_token_windows(all_events, now)
 
 
+# Per-file cache of parsed (ts, model, input, output, cache_read, cache_write)
+# token events for the by-model value scan, keyed/invalidated like the window
+# cache above. Separate cache because this scan reaches back further (a month)
+# and keeps all four token buckets + the model.
+_MODEL_EVENT_CACHE: dict[str, tuple[int, float, list]] = {}
+
+
+def _file_model_events(fp: Path) -> list:
+    """Parse one transcript into (ts, model, input, output, cache_read,
+    cache_write) for every assistant turn with a model + usage + timestamp."""
+    events: list = []
+    try:
+        with fp.open(encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = ev.get("message")
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
+                usage = msg.get("usage")
+                model = msg.get("model")
+                if not isinstance(usage, dict) or not model:
+                    continue
+                ts = parse_iso_ts(ev.get("timestamp"))
+                if ts is None:
+                    continue
+
+                def n(k: str) -> int:
+                    try:
+                        return int(usage.get(k) or 0)
+                    except (TypeError, ValueError):
+                        return 0
+
+                events.append((ts, model, n("input_tokens"), n("output_tokens"),
+                               n("cache_read_input_tokens"),
+                               n("cache_creation_input_tokens")))
+    except OSError:
+        return []
+    return events
+
+
+def account_tokens_by_model(since_ts: float, root: Path | None = None) -> dict:
+    """Per-model token totals across transcripts for assistant turns at/after
+    `since_ts`. Returns {model_id: {input, output, cache_read, cache_write}}.
+
+    Only files modified at/after `since_ts` are read (an older file can't hold an
+    in-window turn), reusing the same (size, mtime) per-file cache discipline as
+    the window scan. Does disk I/O — call it off the UI thread.
+    """
+    if root is None:
+        root = Path.home() / ".claude" / "projects"
+    out: dict[str, dict[str, int]] = {}
+    seen: set[str] = set()
+    for fp in root.rglob("*.jsonl"):
+        try:
+            st = fp.stat()
+        except OSError:
+            continue
+        if st.st_mtime < since_ts:
+            continue
+        key = str(fp)
+        seen.add(key)
+        cached = _MODEL_EVENT_CACHE.get(key)
+        if cached and cached[0] == st.st_size and cached[1] == st.st_mtime:
+            events = cached[2]
+        else:
+            events = _file_model_events(fp)
+            _MODEL_EVENT_CACHE[key] = (st.st_size, st.st_mtime, events)
+        for ts, model, i, o, cr, cw in events:
+            if ts < since_ts:
+                continue
+            acc = out.setdefault(
+                model, {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0})
+            acc["input"] += i
+            acc["output"] += o
+            acc["cache_read"] += cr
+            acc["cache_write"] += cw
+    for key in [k for k in _MODEL_EVENT_CACHE if k not in seen]:
+        del _MODEL_EVENT_CACHE[key]
+    return out
+
+
 def select_active(
     entries: list[tuple[Path, float]],
     now: float,
