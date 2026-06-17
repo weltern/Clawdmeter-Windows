@@ -190,6 +190,46 @@ def test_build_aggregate_cross_period():
     assert agg["record_day"][1] == agg["value_total"]
 
 
+def test_language_for_path():
+    assert stats.language_for_path("/home/u/app/main.py") == "Python"
+    assert stats.language_for_path(r"C:\proj\src\Program.cs") == "C#"
+    assert stats.language_for_path("/x/components/App.tsx") == "TypeScript"
+    assert stats.language_for_path("/x/ui/Page.svelte") == "Svelte"
+    assert stats.language_for_path("/x/widget.VUE") == "Vue"          # case-insensitive
+    assert stats.language_for_path("/x/Dockerfile") == "Other"        # no extension
+    assert stats.language_for_path("/x/.env") == "Other"             # leading-dot only
+    assert stats.language_for_path("/x/data.parquet") == "Other"      # unmapped ext
+    assert stats.language_for_path("") == "Other"
+
+
+def test_language_breakdown_dedup_and_window():
+    since = 1000.0
+    files = [
+        (1100.0, "/p/a.py"), (1200.0, "/p/a.py"),   # same file twice -> 1
+        (1300.0, "/p/b.py"),
+        (1400.0, "/p/Main.cs"),
+        (1500.0, "/p/README.md"),
+        (900.0, "/p/old.py"),                        # before `since` -> excluded
+    ]
+    counts, total = stats.language_breakdown(files, since)
+    assert counts == {"Python": 2, "C#": 1, "Markdown": 1}
+    assert total == 4
+    assert stats.language_breakdown([], since) == ({}, 0)
+
+
+def test_build_aggregate_language():
+    from datetime import datetime
+    d1 = datetime(2026, 6, 10, 9, 0, 0)
+    ev = [(d1.timestamp(), "claude-opus-4-8", "alpha", 1_000_000, 0, 0, 0)]
+    now = datetime(2026, 6, 12, 18, 0, 0).timestamp()
+    since = datetime(2026, 6, 1, 0, 0, 0).timestamp()
+    files = [(d1.timestamp(), "/p/x.py"), (d1.timestamp(), "/p/y.ps1"),
+             (since - 100, "/p/old.go")]   # pre-month -> excluded
+    agg = stats.build_aggregate(ev, now, since, file_events=files)
+    assert agg["language_counts"] == {"Python": 1, "PowerShell": 1}
+    assert agg["files_edited"] == 2
+
+
 def test_cap_eta():
     pts = [(0.0, 10.0), (1200.0, 30.0)]          # +20% over 1200s
     eta = stats.cap_eta(pts, current=30.0, now=1200.0)

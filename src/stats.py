@@ -27,6 +27,65 @@ PLAN_PRICES = {
 
 _DATE_SUFFIX = re.compile(r"-\d{6,8}$")
 
+# Extension (lowercase, no dot) -> language for the code-by-language breakdown.
+# Aims to cover the majorly-used languages; anything unlisted falls to "Other".
+LANGUAGE_BY_EXT = {
+    "py": "Python", "pyw": "Python", "pyi": "Python",
+    "cs": "C#",
+    "java": "Java",
+    "kt": "Kotlin", "kts": "Kotlin",
+    "scala": "Scala", "sc": "Scala",
+    "groovy": "Groovy", "gradle": "Groovy",
+    "c": "C/C++", "h": "C/C++", "cpp": "C/C++", "cxx": "C/C++", "cc": "C/C++",
+    "hpp": "C/C++", "hh": "C/C++", "hxx": "C/C++",
+    "go": "Go",
+    "rs": "Rust",
+    "swift": "Swift",
+    "dart": "Dart",
+    "rb": "Ruby", "erb": "Ruby", "rake": "Ruby",
+    "php": "PHP",
+    "js": "JavaScript", "jsx": "JavaScript", "mjs": "JavaScript", "cjs": "JavaScript",
+    "ts": "TypeScript", "tsx": "TypeScript", "mts": "TypeScript", "cts": "TypeScript",
+    "vue": "Vue",
+    "svelte": "Svelte",
+    "html": "HTML", "htm": "HTML",
+    "css": "CSS", "scss": "CSS", "sass": "CSS", "less": "CSS",
+    "lua": "Lua",
+    "r": "R", "rmd": "R",
+    "sh": "Shell", "bash": "Shell", "zsh": "Shell", "fish": "Shell",
+    "ps1": "PowerShell", "psm1": "PowerShell", "psd1": "PowerShell",
+    "pl": "Perl", "pm": "Perl",
+    "hs": "Haskell",
+    "ex": "Elixir", "exs": "Elixir",
+    "erl": "Erlang", "hrl": "Erlang",
+    "clj": "Clojure", "cljs": "Clojure", "cljc": "Clojure",
+    "fs": "F#", "fsx": "F#", "fsi": "F#",
+    "vb": "Visual Basic",
+    "jl": "Julia",
+    "zig": "Zig",
+    "nim": "Nim",
+    "ml": "OCaml", "mli": "OCaml",
+    "sol": "Solidity",
+    "sql": "SQL",
+    "graphql": "GraphQL", "gql": "GraphQL",
+    "md": "Markdown", "markdown": "Markdown", "mdx": "Markdown",
+    "json": "JSON", "jsonc": "JSON",
+    "yml": "YAML", "yaml": "YAML",
+    "toml": "TOML",
+    "xml": "XML",
+    "proto": "Protobuf",
+}
+
+
+def language_for_path(path: str) -> str:
+    """Language for a file path from its extension (handles both / and \\
+    separators). Leading-dot names (.env, .gitignore) and extension-less files
+    (Dockerfile, Makefile) have no extension -> 'Other'."""
+    name = re.split(r"[\\/]", path or "")[-1]
+    dot = name.rfind(".")
+    ext = name[dot + 1:].lower() if dot > 0 else ""
+    return LANGUAGE_BY_EXT.get(ext, "Other")
+
 
 def plan_monthly_usd(tier: str | None) -> float | None:
     """Monthly subscription price for a rate_limit_tier, or None if unknown."""
@@ -210,15 +269,30 @@ def day_streaks(active_days: set, today) -> tuple[int, int]:
     return cur, best
 
 
+def language_breakdown(file_events: list, since: float) -> tuple[dict, int]:
+    """({language: distinct-file count}, total files) for files mutated at/after
+    `since`, deduped by path (a file edited many times counts once)."""
+    seen: set = set()
+    counts: dict = {}
+    for ts, path in (file_events or []):
+        if ts >= since and path not in seen:
+            seen.add(path)
+            lang = language_for_path(path)
+            counts[lang] = counts.get(lang, 0) + 1
+    return counts, len(seen)
+
+
 def build_aggregate(events: list, now: float, since: float,
-                    activity_events: list | None = None) -> dict:
+                    activity_events: list | None = None,
+                    file_events: list | None = None) -> dict:
     """Compute every Stats aggregate from raw events in one pass (pure).
 
     `events`: (ts, model, project, input, output, cache_read, cache_write) — a
     LIFETIME list; `since` (the month start) scopes the month-to-date figures
     while the cross-period figures (lifetime value, streaks, week-over-week,
     record day) read the whole list. `activity_events`: (ts, activity_str) tool
-    calls, scoped to the month for the activity breakdown.
+    calls and `file_events`: (ts, file_path) mutated files, both scoped to the
+    month for the activity / code-by-language breakdowns.
     """
     by_model: dict = {}
     by_project: dict = {}                       # project -> {model: usage}
@@ -279,6 +353,8 @@ def build_aggregate(events: list, now: float, since: float,
         if ts >= since:
             activity_counts[a] = activity_counts.get(a, 0) + 1
 
+    lang_counts, files_edited = language_breakdown(file_events, since)
+
     cache_read_tokens = sum(u["cache_read"] for u in by_model.values())
     input_tokens = sum(u["input"] for u in by_model.values())
 
@@ -305,12 +381,15 @@ def build_aggregate(events: list, now: float, since: float,
         "week_last_usd": value_usd(wk_last),
         "sessions": session_stats(month_ts),
         "activity_counts": activity_counts,
+        "language_counts": lang_counts,     # {language: distinct-file count} (month)
+        "files_edited": files_edited,       # distinct files mutated this month
     }
 
 
 def compute_aggregate(now: float) -> dict:
     """Full Stats aggregate: month-to-date figures plus lifetime value, streaks,
-    week-over-week and the activity breakdown. Lifetime transcript scan (cached
-    per file by size/mtime). Does disk I/O — call it off the UI thread."""
-    rows, acts = scan_events(0.0)
-    return build_aggregate(rows, now, month_start_ts(now), activity_events=acts)
+    week-over-week, activity and code-by-language breakdowns. Lifetime transcript
+    scan (cached per file by size/mtime). Disk I/O — call it off the UI thread."""
+    rows, acts, files = scan_events(0.0)
+    return build_aggregate(rows, now, month_start_ts(now),
+                           activity_events=acts, file_events=files)

@@ -225,6 +225,7 @@ QLabel#statBig { font-size: 32px; font-weight: 700; color: #e6edf3; }
 QLabel#statMid { font-size: 18px; font-weight: 700; color: #e6edf3; }
 QLabel#statPlan { font-size: 12px; color: #CE7D6B; font-weight: 600; letter-spacing: 1px; }
 QLabel#statDelta { font-size: 12px; font-weight: 700; }
+QLabel#statCount { font-size: 11px; color: #6b7280; font-weight: 600; }
 QFrame#statDivider { background: #1f2937; max-height: 1px; min-height: 1px; border: 0; }
 QPushButton#resetLink {
     background: transparent; color: #9ca3af; border: 0; padding: 2px 4px;
@@ -1698,6 +1699,26 @@ def _fmt_dur(secs: float) -> str:
     return f"{secs}s"
 
 
+# Per-language bar colours for the code-by-language breakdown — brand-ish hues
+# tuned for contrast on the dark card. Languages without an entry use the
+# neutral default; "Other" is the muted grey.
+LANGUAGE_COLORS = {
+    "Python": "#4FB0E0", "C#": "#A77BE0", "Java": "#E0894B", "Kotlin": "#C792EA",
+    "Scala": "#E06A5A", "Groovy": "#A7C0E0", "C/C++": "#F26D9E", "Go": "#39C5CF",
+    "Rust": "#E0A584", "Swift": "#F0683B", "Dart": "#3AC2B8", "Ruby": "#E0556A",
+    "PHP": "#8A93D0", "JavaScript": "#E6D24A", "TypeScript": "#3D8FE0",
+    "Vue": "#54C99A", "Svelte": "#FF5A2B", "HTML": "#E0764A", "CSS": "#B07BD8",
+    "Lua": "#6E8AEF", "R": "#6FB7F0", "Shell": "#8FD96B", "PowerShell": "#3B6FB8",
+    "Perl": "#C7A04F", "Haskell": "#A77BD0", "Elixir": "#9B7BC0", "Erlang": "#D05A6A",
+    "Clojure": "#6FD08A", "F#": "#5AB0C7", "Visual Basic": "#7F9AD0", "Julia": "#B07BD0",
+    "Zig": "#E0A04F", "Nim": "#E0D24A", "OCaml": "#E0964F", "Solidity": "#9AA0A6",
+    "SQL": "#D9A441", "GraphQL": "#E060A0", "Markdown": "#9CA3AF", "JSON": "#C9A85A",
+    "YAML": "#D85C5C", "TOML": "#C58A5A", "XML": "#7FA6CF", "Protobuf": "#7FB0B0",
+    "Other": "#6b7280",
+}
+_LANG_DEFAULT = "#8a93a3"
+
+
 class _StatsWorker(QThread):
     """Computes the full Stats aggregate off the UI thread (a lifetime transcript
     scan + valuation, cached per file). Emits the aggregate dict when done."""
@@ -2135,6 +2156,10 @@ class Dashboard(QMainWindow):
         self.stat_projects = ModelBreakdown()
         viz_card("VALUE BY PROJECT", self.stat_projects)
 
+        self.stat_lang = CategoryBars(empty_text="No files edited yet")
+        self.stat_lang_count = QLabel("", objectName="statCount")
+        viz_card("CODE BY LANGUAGE", self.stat_lang, delta=self.stat_lang_count)
+
         self.stat_activity = CategoryBars(empty_text="No tool activity yet")
         viz_card("ACTIVITY MIX", self.stat_activity)
 
@@ -2178,6 +2203,26 @@ class Dashboard(QMainWindow):
             [(stats.model_display(m).replace("Claude ", ""), v)
              for m, v in agg.get("by_model_value", {}).items()])
         self.stat_projects.set_data(list(agg.get("by_project_value", {}).items()))
+
+        # Code by language — distinct files edited, top languages + an Other
+        # bucket, drawn with the per-language palette.
+        langs = agg.get("language_counts") or {}
+        files_edited = agg.get("files_edited", 0)
+        total = files_edited or sum(langs.values()) or 1
+        named = sorted(((n, c) for n, c in langs.items() if n != "Other"),
+                       key=lambda kv: kv[1], reverse=True)
+        other = langs.get("Other", 0)
+        if other or len(named) > 8:
+            other += sum(c for _, c in named[7:])
+            named = named[:7]
+        lang_rows = [(n, c / total * 100.0, LANGUAGE_COLORS.get(n, _LANG_DEFAULT))
+                     for n, c in named]
+        if other:
+            lang_rows.append(("Other", other / total * 100.0, LANGUAGE_COLORS["Other"]))
+        self.stat_lang.set_data(lang_rows)
+        self.stat_lang_count.setText(
+            f"{files_edited:,} file{'' if files_edited == 1 else 's'}")
+
         self.stat_bars.set_data(agg.get("value_by_day", []))
         self.stat_heat.set_data(agg.get("heatmap"))
 
@@ -2272,6 +2317,10 @@ class Dashboard(QMainWindow):
             "sessions": {"count": 147, "avg_secs": 38 * 60, "longest_secs": 2.4 * 3600},
             "activity_counts": {"coding": 5200, "reading": 3100, "planning": 1400,
                                 "thinking": 900, "searching": 420, "integrating": 180},
+            "language_counts": {"Python": 96, "C#": 28, "Markdown": 14,
+                                "TypeScript": 8, "PowerShell": 4, "JSON": 3,
+                                "Other": 5},
+            "files_edited": 158,
         }
 
     def _update_stats(self, s: UsageSample) -> None:
