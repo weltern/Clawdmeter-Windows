@@ -24,6 +24,7 @@ from PySide6.QtCore import (
     QRegularExpression,
     QSize,
     Qt,
+    QThread,
     QTimer,
     QUrl,
     Signal,
@@ -69,6 +70,9 @@ import winutil
 from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
+import stats
+from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, WeekBars
+from usage_history import UsageHistory
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
 from update_check import UpdateChecker
@@ -78,6 +82,7 @@ from session_shelf import (
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
     ACTIVITY_ANIMS,
+    ACTIVITY_COLORS,
     ACTIVITY_LABELS,
     Activity as TranscriptActivity,
     AgentState as TranscriptAgentState,
@@ -210,6 +215,18 @@ QLabel#pathDisplay {
 QLabel#credStatus { font-size: 10px; color: #6b7280; }
 QLabel#sectionHint { font-size: 10px; color: #6b7280; }
 QLabel#pollNote { font-size: 10px; color: #f59e0b; font-weight: 600; }
+
+/* Stats page cards */
+QFrame#statCard {
+    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 8px;
+}
+QLabel#statLabel { font-size: 10px; color: #6b7280; letter-spacing: 2px; font-weight: 600; }
+QLabel#statBig { font-size: 32px; font-weight: 700; color: #e6edf3; }
+QLabel#statMid { font-size: 18px; font-weight: 700; color: #e6edf3; }
+QLabel#statPlan { font-size: 12px; color: #CE7D6B; font-weight: 600; letter-spacing: 1px; }
+QLabel#statDelta { font-size: 12px; font-weight: 700; }
+QLabel#statCount { font-size: 11px; color: #6b7280; font-weight: 600; }
+QFrame#statDivider { background: #1f2937; max-height: 1px; min-height: 1px; border: 0; }
 QPushButton#resetLink {
     background: transparent; color: #9ca3af; border: 0; padding: 2px 4px;
     text-decoration: underline; font-size: 10px;
@@ -1645,6 +1662,77 @@ class NavRail(QWidget):
         self.setGeometry(0, 0, self.COLLAPSED, p.height())
 
 
+_PLAN_LABELS = {
+    "default_claude_max_20x": "Max 20×",
+    "default_claude_max_5x": "Max 5×",
+    "default_claude_pro": "Pro",
+    "default_claude_free": "Free",
+}
+
+
+def plan_label(tier: str | None) -> str:
+    """Human label for an organization.rate_limit_tier (e.g. 'Max 5×')."""
+    if not tier:
+        return "Claude"
+    return _PLAN_LABELS.get(
+        tier, tier.replace("default_claude_", "").replace("_", " ").title())
+
+
+def _fmt_count(n: int) -> str:
+    """Compact token/count label: 3_470_000_000 -> '3.5B'."""
+    if n >= 1_000_000_000:
+        return f"{n / 1e9:.1f}B"
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1e3:.0f}K"
+    return str(int(n))
+
+
+def _fmt_dur(secs: float) -> str:
+    """Compact duration label: 9120 -> '2.5h', 1500 -> '25m', 42 -> '42s'."""
+    secs = max(0, int(secs))
+    if secs >= 3600:
+        return f"{secs / 3600:.1f}h"
+    if secs >= 60:
+        return f"{secs // 60}m"
+    return f"{secs}s"
+
+
+# Per-language bar colours for the code-by-language breakdown — brand-ish hues
+# tuned for contrast on the dark card. Languages without an entry use the
+# neutral default; "Other" is the muted grey.
+LANGUAGE_COLORS = {
+    "Python": "#4FB0E0", "C#": "#A77BE0", "Java": "#E0894B", "Kotlin": "#C792EA",
+    "Scala": "#E06A5A", "Groovy": "#A7C0E0", "C/C++": "#F26D9E", "Go": "#39C5CF",
+    "Rust": "#E0A584", "Swift": "#F0683B", "Dart": "#3AC2B8", "Ruby": "#E0556A",
+    "PHP": "#8A93D0", "JavaScript": "#E6D24A", "TypeScript": "#3D8FE0",
+    "Vue": "#54C99A", "Svelte": "#FF5A2B", "HTML": "#E0764A", "CSS": "#B07BD8",
+    "Lua": "#6E8AEF", "R": "#6FB7F0", "Shell": "#8FD96B", "PowerShell": "#3B6FB8",
+    "Perl": "#C7A04F", "Haskell": "#A77BD0", "Elixir": "#9B7BC0", "Erlang": "#D05A6A",
+    "Clojure": "#6FD08A", "F#": "#5AB0C7", "Visual Basic": "#7F9AD0", "Julia": "#B07BD0",
+    "Zig": "#E0A04F", "Nim": "#E0D24A", "OCaml": "#E0964F", "Solidity": "#9AA0A6",
+    "SQL": "#D9A441", "GraphQL": "#E060A0", "Markdown": "#9CA3AF", "JSON": "#C9A85A",
+    "YAML": "#D85C5C", "TOML": "#C58A5A", "XML": "#7FA6CF", "Protobuf": "#7FB0B0",
+    "Other": "#6b7280",
+}
+_LANG_DEFAULT = "#8a93a3"
+
+
+class _StatsWorker(QThread):
+    """Computes the full Stats aggregate off the UI thread (a lifetime transcript
+    scan + valuation, cached per file). Emits the aggregate dict when done."""
+
+    ready = Signal(object)
+
+    def run(self) -> None:
+        try:
+            agg = stats.compute_aggregate(time.time())
+        except Exception:
+            return
+        self.ready.emit(agg)
+
+
 class Dashboard(QMainWindow):
     def __init__(self, mock: bool = False) -> None:
         super().__init__()
@@ -1920,6 +2008,10 @@ class Dashboard(QMainWindow):
         self._countdown.timeout.connect(self._tick_countdown)
         self._countdown.start()
 
+        # Persisted usage history for Stats trends. Disk off in mock so synthetic
+        # samples never land in the real on-disk history.
+        self.usage_history = UsageHistory(persist=not mock)
+
         if mock:
             self._start_mock()
         else:
@@ -1939,25 +2031,373 @@ class Dashboard(QMainWindow):
         """Switch the content stack to a nav-rail destination (0=Dashboard,
         1=Stats, 2=Settings)."""
         self._pages.setCurrentIndex(idx)
+        if idx == 0:
+            # Returning to the Dashboard: re-snap to its (possibly changed)
+            # content height, which was left alone while away.
+            self._fit_window_height()
 
     def _build_stats_page(self) -> QWidget:
-        """Placeholder Stats page for the nav-rail prototype."""
-        page = QWidget()
-        v = QVBoxLayout(page)
-        v.setContentsMargins(28, 18, 28, 14)
+        """Stats page: ROI + extra-usage spend, a per-day value strip, a 7x24
+        activity heatmap, and a 'this month' recap. Scrolls when tall."""
+        scroll = QScrollArea(objectName="settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.viewport().setStyleSheet("background: transparent;")
+        body = QWidget(objectName="settingsBody")
+        scroll.setWidget(body)
+        v = QVBoxLayout(body)
+        v.setContentsMargins(24, 18, 24, 18)
+        v.setSpacing(14)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.addWidget(QLabel("STATS", objectName="settingsTitle"))
+        header.addStretch(1)
+        self.stat_plan = QLabel("", objectName="statPlan")
+        header.addWidget(self.stat_plan, 0, Qt.AlignVCenter)
+        v.addLayout(header)
+
+        def num_card(label: str):
+            f = QFrame(objectName="statCard")
+            cl = QVBoxLayout(f)
+            cl.setContentsMargins(16, 14, 16, 16)
+            cl.setSpacing(3)
+            cl.addWidget(QLabel(label, objectName="statLabel"))
+            big = QLabel("—", objectName="statBig")
+            cl.addWidget(big)
+            sub = QLabel("", objectName="sectionHint")
+            sub.setWordWrap(True)
+            cl.addWidget(sub)
+            v.addWidget(f)
+            return big, sub
+
+        def viz_card(label: str, widget: QWidget, delta: QLabel | None = None) -> None:
+            f = QFrame(objectName="statCard")
+            cl = QVBoxLayout(f)
+            cl.setContentsMargins(16, 14, 16, 14)
+            cl.setSpacing(8)
+            head = QHBoxLayout()
+            head.setContentsMargins(0, 0, 0, 0)
+            head.addWidget(QLabel(label, objectName="statLabel"))
+            if delta is not None:
+                head.addStretch(1)
+                head.addWidget(delta, 0, Qt.AlignVCenter)
+            cl.addLayout(head)
+            cl.addWidget(widget)
+            v.addWidget(f)
+
+        def num_pair(label_a: str, label_b: str):
+            row = QHBoxLayout()
+            row.setSpacing(14)
+            outs = []
+            for lab in (label_a, label_b):
+                f = QFrame(objectName="statCard")
+                cl = QVBoxLayout(f)
+                cl.setContentsMargins(16, 14, 16, 16)
+                cl.setSpacing(3)
+                cl.addWidget(QLabel(lab, objectName="statLabel"))
+                big = QLabel("—", objectName="statBig")
+                cl.addWidget(big)
+                sub = QLabel("", objectName="sectionHint")
+                sub.setWordWrap(True)
+                cl.addWidget(sub)
+                row.addWidget(f, 1)
+                outs.append((big, sub))
+            v.addLayout(row)
+            return outs
+
+        # ROI card — API value this month, with lifetime value + break-even day
+        # grouped underneath (the "what is my plan worth" block).
+        roi = QFrame(objectName="statCard")
+        rl = QVBoxLayout(roi)
+        rl.setContentsMargins(16, 14, 16, 16)
+        rl.setSpacing(3)
+        rl.addWidget(QLabel("API VALUE THIS MONTH", objectName="statLabel"))
+        self.stat_value = QLabel("—", objectName="statBig")
+        rl.addWidget(self.stat_value)
+        self.stat_value_sub = QLabel("", objectName="sectionHint")
+        self.stat_value_sub.setWordWrap(True)
+        rl.addWidget(self.stat_value_sub)
+        divider = QFrame(objectName="statDivider")
+        rl.addSpacing(6)
+        rl.addWidget(divider)
+        rl.addSpacing(8)
+        extra = QHBoxLayout()
+        extra.setContentsMargins(0, 0, 0, 0)
+        extra.setSpacing(16)
+
+        def mini(label: str):
+            box = QVBoxLayout()
+            box.setSpacing(1)
+            val = QLabel("—", objectName="statMid")
+            box.addWidget(val)
+            box.addWidget(QLabel(label, objectName="statLabel"))
+            holder = QWidget()
+            holder.setLayout(box)
+            extra.addWidget(holder, 1)
+            return val
+
+        self.stat_lifetime = mini("LIFETIME VALUE")
+        self.stat_breakeven = mini("BROKE EVEN")
+        rl.addLayout(extra)
+        v.addWidget(roi)
+
+        self.stat_spend, self.stat_spend_sub = num_card("EXTRA USAGE THIS MONTH")
+        self.stat_cache, self.stat_cache_sub = num_card("CACHE SAVINGS THIS MONTH")
+        self.stat_burn, self.stat_burn_sub = num_card("TIME TO 7-DAY CAP")
+
+        (self.stat_streak, self.stat_streak_sub), \
+            (self.stat_sessions, self.stat_sessions_sub) = \
+            num_pair("CURRENT STREAK", "SESSIONS THIS MONTH")
+
+        self.stat_models = ModelBreakdown()
+        viz_card("VALUE BY MODEL", self.stat_models)
+
+        self.stat_projects = ModelBreakdown()
+        viz_card("VALUE BY PROJECT", self.stat_projects)
+
+        self.stat_lang = CategoryBars(empty_text="No files edited yet")
+        self.stat_lang_count = QLabel("", objectName="statCount")
+        viz_card("CODE BY LANGUAGE", self.stat_lang, delta=self.stat_lang_count)
+
+        self.stat_activity = CategoryBars(empty_text="No tool activity yet")
+        viz_card("ACTIVITY MIX", self.stat_activity)
+
+        self.stat_week = WeekBars()
+        self.stat_week_delta = QLabel("", objectName="statDelta")
+        viz_card("THIS WEEK VS LAST", self.stat_week, delta=self.stat_week_delta)
+
+        self.stat_bars = DailyBars()
+        viz_card("VALUE PER DAY", self.stat_bars)
+
+        self.stat_heat = Heatmap()
+        viz_card("WHEN YOU WORK  ·  LOCAL TIME", self.stat_heat)
+
+        wrap = QFrame(objectName="statCard")
+        wl = QVBoxLayout(wrap)
+        wl.setContentsMargins(16, 14, 16, 16)
+        wl.setSpacing(4)
+        wl.addWidget(QLabel("THIS MONTH", objectName="statLabel"))
+        self.stat_wrap = QLabel("—", objectName="sectionHint")
+        self.stat_wrap.setWordWrap(True)
+        wl.addWidget(self.stat_wrap)
+        v.addWidget(wrap)
+
         v.addStretch(1)
-        title = QLabel("STATS", objectName="sectionLabel", alignment=Qt.AlignCenter)
-        body = QLabel(
-            "Coming soon — token-usage trends, per-session history, and "
-            "limit-reset timelines.",
-            objectName="sectionHint", alignment=Qt.AlignCenter,
-        )
-        body.setWordWrap(True)
-        v.addWidget(title)
-        v.addSpacing(8)
-        v.addWidget(body)
-        v.addStretch(1)
-        return page
+        return scroll
+
+    def _on_aggregate(self, agg: dict) -> None:
+        """Update the Stats trend visuals + recap from a computed aggregate, and
+        feed the ROI card's dollar value."""
+        self._agg = agg
+        self._render_roi()
+
+        cr = agg.get("cache_read_tokens", 0)
+        rate = agg.get("cache_hit_rate", 0.0) * 100
+        self.stat_cache.setText(f"${agg.get('cache_savings_usd', 0):,.2f}")
+        self.stat_cache_sub.setText(
+            f"{rate:.0f}% cache hit rate · vs full input price on "
+            f"{_fmt_count(cr)} reads")
+
+        self.stat_models.set_data(
+            [(stats.model_display(m).replace("Claude ", ""), v)
+             for m, v in agg.get("by_model_value", {}).items()])
+        self.stat_projects.set_data(list(agg.get("by_project_value", {}).items()))
+
+        # Code by language — distinct files edited, top languages + an Other
+        # bucket, drawn with the per-language palette.
+        langs = agg.get("language_counts") or {}
+        files_edited = agg.get("files_edited", 0)
+        total = files_edited or sum(langs.values()) or 1
+        named = sorted(((n, c) for n, c in langs.items() if n != "Other"),
+                       key=lambda kv: kv[1], reverse=True)
+        other = langs.get("Other", 0)
+        if other or len(named) > 8:
+            other += sum(c for _, c in named[7:])
+            named = named[:7]
+        lang_rows = [(n, c / total * 100.0, LANGUAGE_COLORS.get(n, _LANG_DEFAULT))
+                     for n, c in named]
+        if other:
+            lang_rows.append(("Other", other / total * 100.0, LANGUAGE_COLORS["Other"]))
+        self.stat_lang.set_data(lang_rows)
+        self.stat_lang_count.setText(
+            f"{files_edited:,} file{'' if files_edited == 1 else 's'}")
+
+        self.stat_bars.set_data(agg.get("value_by_day", []))
+        self.stat_heat.set_data(agg.get("heatmap"))
+
+        # Streak + sessions
+        cur = agg.get("current_streak", 0)
+        best = agg.get("best_streak", 0)
+        self.stat_streak.setText(str(cur))
+        self.stat_streak_sub.setText(
+            f"day{'' if cur == 1 else 's'} · best ever {best}")
+        sess = agg.get("sessions") or {}
+        self.stat_sessions.setText(f"{sess.get('count', 0):,}")
+        self.stat_sessions_sub.setText(
+            f"avg {_fmt_dur(sess.get('avg_secs', 0))} · "
+            f"longest {_fmt_dur(sess.get('longest_secs', 0))}")
+
+        # Activity breakdown — counts -> % rows with the mascot activity colours.
+        counts = agg.get("activity_counts") or {}
+        total = sum(counts.values())
+        rows = []
+        if total:
+            for key, n in counts.items():
+                try:
+                    act = TranscriptActivity(key)
+                except ValueError:
+                    continue
+                rows.append((ACTIVITY_LABELS.get(act, key.upper()),
+                             n / total * 100.0, ACTIVITY_COLORS.get(act, "#6b7280")))
+            rows.sort(key=lambda r: r[1], reverse=True)
+        self.stat_activity.set_data(rows)
+
+        # This week vs last week + delta badge
+        wt = agg.get("week_this_usd", 0.0)
+        wl = agg.get("week_last_usd", 0.0)
+        self.stat_week.set_data(wt, wl)
+        if wl > 0:
+            pct = (wt - wl) / wl * 100.0
+            up = pct >= 0
+            self.stat_week_delta.setText(f"{'+' if up else '−'}{abs(pct):.0f}%")
+            self.stat_week_delta.setStyleSheet(
+                f"color: {'#5FB3A1' if up else '#c13434'};")
+        elif wt > 0:
+            self.stat_week_delta.setText("new")
+            self.stat_week_delta.setStyleSheet("color: #5FB3A1;")
+        else:
+            self.stat_week_delta.setText("")
+
+        # Recap
+        parts = []
+        tm = agg.get("top_model")
+        if tm and tm[1]:
+            parts.append(f"Top model — {stats.model_display(tm[0])} (${tm[1]:,.0f})")
+        bd = agg.get("busiest_day")
+        if bd and bd[1]:
+            parts.append(f"Busiest day — {bd[0]:%a %b %d} (${bd[1]:,.0f})")
+        rd = agg.get("record_day")
+        if rd and rd[1]:
+            parts.append(f"Biggest day ever — {rd[0]:%b %d, %Y} (${rd[1]:,.0f})")
+        parts.append(f"{agg.get('turns', 0):,} turns over "
+                     f"{agg.get('active_days', 0)} active days")
+        self.stat_wrap.setText("\n".join(parts))
+
+    def _refresh_stats(self) -> None:
+        """Recompute the Stats aggregate off the UI thread (held ref so it lives
+        until it finishes)."""
+        self._stats_worker = _StatsWorker()
+        self._stats_worker.ready.connect(self._on_aggregate)
+        self._stats_worker.start()
+
+    def _mock_aggregate(self) -> dict:
+        """Synthetic Stats aggregate for --mock (no transcript scan)."""
+        from datetime import date, timedelta
+        today = date.today()
+        series = [(today - timedelta(days=n), round(80 + abs(8 - (n % 17)) * 35.0, 2))
+                  for n in range(16, -1, -1)]
+        heat = [[(2 if 9 <= h <= 19 else 0) * (r + 1) + ((h * (r + 2)) % 7)
+                 for h in range(24)] for r in range(7)]
+        return {
+            "value_total": 3380.0, "value_by_day": series, "heatmap": heat,
+            "by_model_value": {"claude-opus-4-8": 2500.0, "claude-sonnet-4-6": 880.0},
+            "top_model": ("claude-opus-4-8", 2500.0),
+            "busiest_day": (today - timedelta(days=3), 412.0),
+            "turns": 16704, "active_days": 12,
+            "cache_savings_usd": 16999.36,
+            "cache_read_tokens": 3_470_000_000, "input_tokens": 12_400_000,
+            "cache_hit_rate": 3_470_000_000 / (3_470_000_000 + 12_400_000),
+            "by_project_value": {"Clawdmeter-Windows": 1880.0, "ReadyUp-Dev": 960.0,
+                                 "Watchlist-Dev": 540.0},
+            "lifetime_value_usd": 48231.0,
+            "record_day": (today - timedelta(days=21), 612.0),
+            "current_streak": 12, "best_streak": 19,
+            "week_this_usd": 1180.0, "week_last_usd": 960.0,
+            "sessions": {"count": 147, "avg_secs": 38 * 60, "longest_secs": 2.4 * 3600},
+            "activity_counts": {"coding": 5200, "reading": 3100, "planning": 1400,
+                                "thinking": 900, "searching": 420, "integrating": 180},
+            "language_counts": {"Python": 96, "C#": 28, "Markdown": 14,
+                                "TypeScript": 8, "PowerShell": 4, "JSON": 3,
+                                "Other": 5},
+            "files_edited": 158,
+        }
+
+    def _update_stats(self, s: UsageSample) -> None:
+        """Per-poll Stats update: the extra-usage spend card (from K1) and the
+        ROI card's plan side. The ROI dollar value comes from the aggregate."""
+        if s.extra_usage_enabled or s.extra_usage_used_usd:
+            self.stat_spend.setText(f"${s.extra_usage_used_usd:,.2f}")
+            self.stat_spend_sub.setText(
+                f"of ${s.extra_usage_limit_usd:,.2f} cap"
+                if s.extra_usage_limit_usd else "pay-as-you-go · no monthly cap")
+        else:
+            self.stat_spend.setText("$0.00")
+            self.stat_spend_sub.setText("Pay-as-you-go off")
+        self._render_roi()
+        self._update_burn(s)
+
+    def _update_burn(self, s: UsageSample) -> None:
+        """Time-to-cap card from the recent 7-day utilisation slope (K2 ring)."""
+        if s.weekly_pct >= 100:
+            self.stat_burn.setText("over")
+            self.stat_burn_sub.setText("7-day window already in overage")
+            return
+        ring = getattr(self, "usage_history", None)
+        points = [(p["ts"], p["w"]) for p in ring.ring] if ring else []
+        now = time.time()
+        eta = stats.cap_eta(points, s.weekly_pct, now)
+        if eta is None:
+            span = (points[-1][0] - points[0][0]) if len(points) >= 2 else 0
+            if len(points) < 2 or span < 600:
+                self.stat_burn.setText("—")
+                self.stat_burn_sub.setText("gathering pace data")
+            else:
+                self.stat_burn.setText("steady")
+                self.stat_burn_sub.setText("not on pace to cap")
+            return
+        secs = eta - now
+        reset_secs = (s.weekly_reset_minutes or 0) * 60
+        if reset_secs and secs > reset_secs:
+            self.stat_burn.setText("clear")
+            self.stat_burn_sub.setText("resets before you'd cap · at current pace")
+            return
+        if secs >= 86400:
+            amt = f"~{secs / 86400:.1f} days"
+        elif secs >= 3600:
+            amt = f"~{secs / 3600:.0f} hours"
+        else:
+            amt = f"~{max(1, int(secs / 60))} min"
+        self.stat_burn.setText(amt)
+        self.stat_burn_sub.setText("until the 7-day cap · at current pace")
+
+    def _render_roi(self) -> None:
+        """ROI card from the latest aggregate (the dollar value) + the latest
+        sample (the plan tier). Either source updating refreshes the card."""
+        s = getattr(self, "_last_sample", None)
+        tier = s.plan_tier if s else None
+        price = stats.plan_monthly_usd(tier)
+        self.stat_plan.setText(
+            f"{plan_label(tier)} · ${price:,.0f}/mo" if price else plan_label(tier))
+        agg = getattr(self, "_agg", None)
+        if agg is None:                       # aggregate not computed yet
+            self.stat_value.setText("—")
+            self.stat_value_sub.setText("computing…")
+            self.stat_lifetime.setText("—")
+            self.stat_breakeven.setText("—")
+            return
+        val = agg["value_total"]
+        self.stat_value.setText(f"${val:,.2f}")
+        if price and val:
+            mult = val / price
+            mult_s = f"{mult:.0f}×" if mult >= 10 else f"{mult:.1f}×"
+            self.stat_value_sub.setText(f"{mult_s} your subscription this month")
+        else:
+            self.stat_value_sub.setText("of pay-as-you-go API value this month")
+
+        self.stat_lifetime.setText(f"${agg.get('lifetime_value_usd', 0):,.0f}")
+        be = stats.break_even_day(agg.get("value_by_day", []), price)
+        self.stat_breakeven.setText(f"{be:%b %d}" if be else ("—" if price else "n/a"))
 
     def _set_always_on_top(self, on: bool) -> None:
         """Zero-flicker topmost via SetWindowPos. Qt's setWindowFlag forces a
@@ -2086,6 +2526,12 @@ class Dashboard(QMainWindow):
         self._poller.sample.connect(self._on_sample)
         self._poller.refresh_status.connect(self._on_refresh_status)
         self._poller.start()
+        # Stats trend aggregate: compute now + every 10 min, off the UI thread.
+        self._refresh_stats()
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setInterval(600_000)
+        self._stats_timer.timeout.connect(self._refresh_stats)
+        self._stats_timer.start()
 
     def _start_update_checker(self) -> None:
         self._update_checker = UpdateChecker()
@@ -2183,10 +2629,17 @@ class Dashboard(QMainWindow):
                 timestamp=time.time(),
                 tokens_5h=914_000,
                 tokens_7d=19_400_000,
+                plan_tier="default_claude_max_5x",
+                extra_usage_enabled=True,
+                extra_usage_used_usd=round(self._mock_pct * 0.3, 2),
+                model_windows={"Opus": 62, "Sonnet": 18},
             ))
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
         sample_tick()
+        self._on_aggregate(self._mock_aggregate())  # synthetic trends for --mock
+
+
 
         # Drive the shelf through a scripted roster that grows 1->4 sessions and
         # shrinks back, reordering and cycling activities along the way, so every
@@ -2332,6 +2785,7 @@ class Dashboard(QMainWindow):
         # without disturbing its baseline.
         decision = self._reset_notifier.observe(s)
         self._last_sample = s
+        self.usage_history.record(s)   # ring + throttled disk log (skips errors)
         if not s.ok:
             self._apply_status_badge(s.status)
             self._tray.setToolTip(f"Clawdmeter - {s.status}")
@@ -2351,6 +2805,7 @@ class Dashboard(QMainWindow):
         self._sync_mini(s)
         self._update_compact_usage(
             s, s.session_reset_minutes, s.weekly_reset_minutes)
+        self._update_stats(s)
 
         self._rate.observe(s.session_pct)
         # While the shelf is up it owns the mascots (per-session tiles + the
@@ -2460,6 +2915,11 @@ class Dashboard(QMainWindow):
         below the bars; the height follows the shelf as it grows/shrinks. Does
         nothing once the user has set their own height (auto-fit released)."""
         if not self._auto_fit_height:
+            return
+        # Only the Dashboard hugs its content. On Stats/Settings the height stays
+        # put (those pages scroll) — otherwise a background shelf/badge change on
+        # the hidden Dashboard would resize the window out from under those pages.
+        if self._pages.currentIndex() != 0:
             return
         if self.isMaximized() or self.isFullScreen():
             return
