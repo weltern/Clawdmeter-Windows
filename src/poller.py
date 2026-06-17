@@ -21,7 +21,6 @@ import httpx
 from PySide6.QtCore import QThread, Signal
 
 import app_settings
-import stats
 import token_refresh
 from transcript import account_window_tokens
 
@@ -44,12 +43,6 @@ API_BODY = {
 
 DEFAULT_CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 POLL_INTERVAL_SECONDS = 60
-
-# Month-to-date API-equivalent value is a month-long transcript scan (far heavier
-# than the 5h/7d window sum), so recompute it at most this often and reuse the
-# cached figure between — it changes slowly relative to the 60s poll.
-VALUE_RECOMPUTE_INTERVAL = 600  # seconds (10 min)
-_VALUE_CACHE = {"ts": 0.0, "usd": 0.0}
 
 
 @dataclass
@@ -79,7 +72,6 @@ class UsageSample:
     extra_usage_used_usd: float = 0.0       # real extra-usage spend, in dollars
     extra_usage_limit_usd: float | None = None  # monthly cap in $, None = uncapped
     model_windows: dict = field(default_factory=dict)  # {model display name: percent}
-    value_usd: float = 0.0                  # API-equivalent $ value of this month's usage
 
 
 def credentials_path() -> Path:
@@ -232,14 +224,6 @@ def _poll_once(token: str) -> UsageSample:
             sample.tokens_5h, sample.tokens_7d = account_window_tokens(now)
         except OSError:
             pass
-    # Month-to-date API-equivalent value (transcripts x price_map), throttled.
-    if now - _VALUE_CACHE["ts"] >= VALUE_RECOMPUTE_INTERVAL:
-        try:
-            _VALUE_CACHE["usd"] = stats.monthly_value_usd(now)
-            _VALUE_CACHE["ts"] = now
-        except OSError:
-            pass
-    sample.value_usd = _VALUE_CACHE["usd"]
     return sample
 
 

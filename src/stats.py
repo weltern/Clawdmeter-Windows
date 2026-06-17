@@ -64,6 +64,14 @@ def model_value_usd(model_id: str, usage: dict) -> float:
     ) / 1_000_000.0
 
 
+def model_display(model_id: str) -> str:
+    """Human display name for a model id (from price_map), else the id itself."""
+    rates = _rates_for(model_id)
+    if rates and rates.get("display_name"):
+        return rates["display_name"]
+    return model_id
+
+
 def value_usd(tokens_by_model: dict) -> float:
     """Total API-equivalent USD value across all models (rounded to cents)."""
     return round(sum(model_value_usd(m, u) for m, u in tokens_by_model.items()), 2)

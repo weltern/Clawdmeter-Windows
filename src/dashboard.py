@@ -24,6 +24,7 @@ from PySide6.QtCore import (
     QRegularExpression,
     QSize,
     Qt,
+    QThread,
     QTimer,
     QUrl,
     Signal,
@@ -70,6 +71,7 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 import stats
+from statviz import DailyBars, Heatmap
 from usage_history import UsageHistory
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
@@ -1670,6 +1672,20 @@ def plan_label(tier: str | None) -> str:
         tier, tier.replace("default_claude_", "").replace("_", " ").title())
 
 
+class _StatsWorker(QThread):
+    """Computes the monthly Stats aggregate off the UI thread (a month-long
+    transcript scan + valuation). Emits the aggregate dict when done."""
+
+    ready = Signal(object)
+
+    def run(self) -> None:
+        try:
+            agg = stats.monthly_aggregate(time.time())
+        except Exception:
+            return
+        self.ready.emit(agg)
+
+
 class Dashboard(QMainWindow):
     def __init__(self, mock: bool = False) -> None:
         super().__init__()
@@ -1970,17 +1986,23 @@ class Dashboard(QMainWindow):
         self._pages.setCurrentIndex(idx)
 
     def _build_stats_page(self) -> QWidget:
-        """Stats page: ROI (API value vs subscription) + real extra-usage spend.
-        More cards (trends, heatmap) land here next."""
-        page = QWidget()
-        v = QVBoxLayout(page)
+        """Stats page: ROI + extra-usage spend, a per-day value strip, a 7x24
+        activity heatmap, and a 'this month' recap. Scrolls when tall."""
+        scroll = QScrollArea(objectName="settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.viewport().setStyleSheet("background: transparent;")
+        body = QWidget(objectName="settingsBody")
+        scroll.setWidget(body)
+        v = QVBoxLayout(body)
         v.setContentsMargins(24, 18, 24, 18)
         v.setSpacing(14)
         v.addWidget(QLabel("STATS", objectName="settingsTitle"))
 
-        def card(label: str):
-            frame = QFrame(objectName="statCard")
-            cl = QVBoxLayout(frame)
+        def num_card(label: str):
+            f = QFrame(objectName="statCard")
+            cl = QVBoxLayout(f)
             cl.setContentsMargins(16, 14, 16, 16)
             cl.setSpacing(3)
             cl.addWidget(QLabel(label, objectName="statLabel"))
@@ -1989,28 +2011,83 @@ class Dashboard(QMainWindow):
             sub = QLabel("", objectName="sectionHint")
             sub.setWordWrap(True)
             cl.addWidget(sub)
-            v.addWidget(frame)
+            v.addWidget(f)
             return big, sub
 
-        self.stat_value, self.stat_value_sub = card("API VALUE THIS MONTH")
-        self.stat_spend, self.stat_spend_sub = card("EXTRA USAGE THIS MONTH")
+        def viz_card(label: str, widget: QWidget) -> None:
+            f = QFrame(objectName="statCard")
+            cl = QVBoxLayout(f)
+            cl.setContentsMargins(16, 14, 16, 14)
+            cl.setSpacing(8)
+            cl.addWidget(QLabel(label, objectName="statLabel"))
+            cl.addWidget(widget)
+            v.addWidget(f)
+
+        self.stat_value, self.stat_value_sub = num_card("API VALUE THIS MONTH")
+        self.stat_spend, self.stat_spend_sub = num_card("EXTRA USAGE THIS MONTH")
+
+        self.stat_bars = DailyBars()
+        viz_card("VALUE PER DAY", self.stat_bars)
+
+        self.stat_heat = Heatmap()
+        viz_card("WHEN YOU WORK  ·  LOCAL TIME", self.stat_heat)
+
+        wrap = QFrame(objectName="statCard")
+        wl = QVBoxLayout(wrap)
+        wl.setContentsMargins(16, 14, 16, 16)
+        wl.setSpacing(4)
+        wl.addWidget(QLabel("THIS MONTH", objectName="statLabel"))
+        self.stat_wrap = QLabel("—", objectName="sectionHint")
+        self.stat_wrap.setWordWrap(True)
+        wl.addWidget(self.stat_wrap)
+        v.addWidget(wrap)
+
         v.addStretch(1)
-        return page
+        return scroll
+
+    def _on_aggregate(self, agg: dict) -> None:
+        """Update the Stats trend visuals + recap from a computed aggregate, and
+        feed the ROI card's dollar value."""
+        self._agg = agg
+        self._render_roi()
+        self.stat_bars.set_data(agg.get("value_by_day", []))
+        self.stat_heat.set_data(agg.get("heatmap"))
+        parts = []
+        tm = agg.get("top_model")
+        if tm and tm[1]:
+            parts.append(f"Top model — {stats.model_display(tm[0])} (${tm[1]:,.0f})")
+        bd = agg.get("busiest_day")
+        if bd and bd[1]:
+            parts.append(f"Busiest day — {bd[0]:%a %b %d} (${bd[1]:,.0f})")
+        parts.append(f"{agg.get('turns', 0):,} turns over {agg.get('active_days', 0)} active days")
+        self.stat_wrap.setText("\n".join(parts))
+
+    def _refresh_stats(self) -> None:
+        """Recompute the Stats aggregate off the UI thread (held ref so it lives
+        until it finishes)."""
+        self._stats_worker = _StatsWorker()
+        self._stats_worker.ready.connect(self._on_aggregate)
+        self._stats_worker.start()
+
+    def _mock_aggregate(self) -> dict:
+        """Synthetic Stats aggregate for --mock (no transcript scan)."""
+        from datetime import date, timedelta
+        today = date.today()
+        series = [(today - timedelta(days=n), round(80 + abs(8 - (n % 17)) * 35.0, 2))
+                  for n in range(16, -1, -1)]
+        heat = [[(2 if 9 <= h <= 19 else 0) * (r + 1) + ((h * (r + 2)) % 7)
+                 for h in range(24)] for r in range(7)]
+        return {
+            "value_total": 3380.0, "value_by_day": series, "heatmap": heat,
+            "by_model_value": {"claude-opus-4-8": 2500.0, "claude-sonnet-4-6": 880.0},
+            "top_model": ("claude-opus-4-8", 2500.0),
+            "busiest_day": (today - timedelta(days=3), 412.0),
+            "turns": 16704, "active_days": 12,
+        }
 
     def _update_stats(self, s: UsageSample) -> None:
-        """Refresh the Stats cards from a sample (called on every ok poll)."""
-        # ROI: API-equivalent value of usage vs the monthly subscription price.
-        self.stat_value.setText(f"${s.value_usd:,.2f}")
-        price = stats.plan_monthly_usd(s.plan_tier)
-        if price and s.value_usd:
-            mult = s.value_usd / price
-            mult_s = f"{mult:.0f}×" if mult >= 10 else f"{mult:.1f}×"
-            self.stat_value_sub.setText(
-                f"{plan_label(s.plan_tier)} plan · ${price:,.0f}/mo · {mult_s} the subscription")
-        else:
-            self.stat_value_sub.setText("of pay-as-you-go API value this month")
-
-        # Real extra-usage (overage) spend.
+        """Per-poll Stats update: the extra-usage spend card (from K1) and the
+        ROI card's plan side. The ROI dollar value comes from the aggregate."""
         if s.extra_usage_enabled or s.extra_usage_used_usd:
             self.stat_spend.setText(f"${s.extra_usage_used_usd:,.2f}")
             cap = (f"of ${s.extra_usage_limit_usd:,.2f} cap"
@@ -2019,6 +2096,28 @@ class Dashboard(QMainWindow):
         else:
             self.stat_spend.setText("$0.00")
             self.stat_spend_sub.setText("Pay-as-you-go off")
+        self._render_roi()
+
+    def _render_roi(self) -> None:
+        """ROI card from the latest aggregate (the dollar value) + the latest
+        sample (the plan tier). Either source updating refreshes the card."""
+        agg = getattr(self, "_agg", None)
+        if agg is None:                       # aggregate not computed yet
+            self.stat_value.setText("—")
+            self.stat_value_sub.setText("computing…")
+            return
+        val = agg["value_total"]
+        self.stat_value.setText(f"${val:,.2f}")
+        s = getattr(self, "_last_sample", None)
+        tier = s.plan_tier if s else None
+        price = stats.plan_monthly_usd(tier)
+        if price and val:
+            mult = val / price
+            mult_s = f"{mult:.0f}×" if mult >= 10 else f"{mult:.1f}×"
+            self.stat_value_sub.setText(
+                f"{plan_label(tier)} plan · ${price:,.0f}/mo · {mult_s} the subscription")
+        else:
+            self.stat_value_sub.setText("of pay-as-you-go API value this month")
 
     def _set_always_on_top(self, on: bool) -> None:
         """Zero-flicker topmost via SetWindowPos. Qt's setWindowFlag forces a
@@ -2147,6 +2246,12 @@ class Dashboard(QMainWindow):
         self._poller.sample.connect(self._on_sample)
         self._poller.refresh_status.connect(self._on_refresh_status)
         self._poller.start()
+        # Stats trend aggregate: compute now + every 10 min, off the UI thread.
+        self._refresh_stats()
+        self._stats_timer = QTimer(self)
+        self._stats_timer.setInterval(600_000)
+        self._stats_timer.timeout.connect(self._refresh_stats)
+        self._stats_timer.start()
 
     def _start_update_checker(self) -> None:
         self._update_checker = UpdateChecker()
@@ -2247,11 +2352,13 @@ class Dashboard(QMainWindow):
                 plan_tier="default_claude_max_5x",
                 extra_usage_enabled=True,
                 extra_usage_used_usd=round(self._mock_pct * 0.3, 2),
-                value_usd=round(self._mock_pct * 26.0, 2),
             ))
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
         sample_tick()
+        self._on_aggregate(self._mock_aggregate())  # synthetic trends for --mock
+
+
 
         # Drive the shelf through a scripted roster that grows 1->4 sessions and
         # shrinks back, reordering and cycling activities along the way, so every
