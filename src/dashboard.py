@@ -69,6 +69,7 @@ import winutil
 from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
+from usage_history import UsageHistory
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
 from update_check import UpdateChecker
@@ -1920,6 +1921,10 @@ class Dashboard(QMainWindow):
         self._countdown.timeout.connect(self._tick_countdown)
         self._countdown.start()
 
+        # Persisted usage history for Stats trends. Disk off in mock so synthetic
+        # samples never land in the real on-disk history.
+        self.usage_history = UsageHistory(persist=not mock)
+
         if mock:
             self._start_mock()
         else:
@@ -2332,6 +2337,7 @@ class Dashboard(QMainWindow):
         # without disturbing its baseline.
         decision = self._reset_notifier.observe(s)
         self._last_sample = s
+        self.usage_history.record(s)   # ring + throttled disk log (skips errors)
         if not s.ok:
             self._apply_status_badge(s.status)
             self._tray.setToolTip(f"Clawdmeter - {s.status}")
