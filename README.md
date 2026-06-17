@@ -172,69 +172,6 @@ entry and is draggable (it remembers where you left it).
 
 ![Clawdmeter-Windows mini view — a tiny always-on-top readout with the mascot and session and weekly percentages](assets/Screenshot-mini.png)
 
-## Download
-
-Grab the latest `Clawdmeter.exe` from the
-[Releases](../../releases) page — it's a single self-contained file (~29 MB,
-bundling Python + Qt), no install needed. Just run it.
-
-Clawdmeter checks the Releases page for a newer version on launch (then about
-once a day) and, when one's out, shows an **Update available** item in the tray
-menu — click it to open the download page and swap in the new `.exe`. You can
-turn the automatic check off, or trigger one on demand, under **Settings →
-Updates**.
-
-> **Heads up:** the exe is not code-signed, so Windows SmartScreen may show a
-> "Windows protected your PC / unknown publisher" prompt the first time you run
-> it. Click **More info → Run anyway**. If you'd rather not trust the binary,
-> [run from source](#run-from-source) or [build it yourself](#build-the-standalone-exe).
-
-## How it works
-
-It reads your Claude Code OAuth token from `~/.claude/.credentials.json`,
-sends a minimal 1-token request to `api.anthropic.com/v1/messages` on a
-configurable interval (60s by default), and reads the rate-limit headers from
-the response. On the same poll it also reads Anthropic's OAuth usage and profile
-endpoints (`/api/oauth/usage`, `/api/oauth/profile`) for your plan, extra-usage
-spend and per-model limits. The Stats page values your **local transcripts**
-against a bundled price map — no extra API calls. The window minimises to the
-system tray; closing the window hides it. **Quit** from the tray menu fully
-exits.
-
-## Requirements
-
-- Windows 10 or 11
-- Python 3.10 or newer (the code uses 3.10+ syntax)
-
-## Run from source
-
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\pip install -r requirements.txt
-.\.venv\Scripts\python src\main.py
-```
-
-Add `--mock` to drive the UI with synthetic data (no API calls):
-
-```powershell
-.\.venv\Scripts\python src\main.py --mock
-```
-
-## Build the standalone .exe
-
-```powershell
-.\build.ps1
-```
-
-Output: `dist\Clawdmeter.exe` — single-file, no console window, ~29 MB.
-
-`Clawdmeter.spec` prunes the parts of PySide6/Qt the app doesn't use (the
-QML/Quick stack, the ~20 MB software-OpenGL fallback, unused image-format and
-platform plugins, and Qt's bundled translations) to keep the exe roughly half
-the size of an unpruned PySide6 build. If you start importing additional Qt
-modules, check the pruning block in the spec so you don't strip something you
-now need.
-
 ## Settings
 
 Open Settings from the **gear at the bottom of the left nav rail** — it's a
@@ -306,6 +243,69 @@ five tabs that each scroll on their own. Here's every setting, grouped by tab.
 
 - Version, author, and credits — the source is **MIT** licensed; the Clawd mascot
   is © Anthropic PBC and **not** covered by it; icons are Font Awesome Free.
+
+## Download
+
+Grab the latest `Clawdmeter.exe` from the
+[Releases](../../releases) page — it's a single self-contained file (~29 MB,
+bundling Python + Qt), no install needed. Just run it.
+
+Clawdmeter checks the Releases page for a newer version on launch (then about
+once a day) and, when one's out, shows an **Update available** item in the tray
+menu — click it to open the download page and swap in the new `.exe`. You can
+turn the automatic check off, or trigger one on demand, under **Settings →
+Updates**.
+
+> **Heads up:** the exe is not code-signed, so Windows SmartScreen may show a
+> "Windows protected your PC / unknown publisher" prompt the first time you run
+> it. Click **More info → Run anyway**. If you'd rather not trust the binary,
+> [run from source](#run-from-source) or [build it yourself](#build-the-standalone-exe).
+
+## How it works
+
+It reads your Claude Code OAuth token from `~/.claude/.credentials.json`,
+sends a minimal 1-token request to `api.anthropic.com/v1/messages` on a
+configurable interval (60s by default), and reads the rate-limit headers from
+the response. On the same poll it also reads Anthropic's OAuth usage and profile
+endpoints (`/api/oauth/usage`, `/api/oauth/profile`) for your plan, extra-usage
+spend and per-model limits. The Stats page values your **local transcripts**
+against a bundled price map — no extra API calls. The window minimises to the
+system tray; closing the window hides it. **Quit** from the tray menu fully
+exits.
+
+## Requirements
+
+- Windows 10 or 11
+- Python 3.10 or newer (the code uses 3.10+ syntax)
+
+## Run from source
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+.\.venv\Scripts\python src\main.py
+```
+
+Add `--mock` to drive the UI with synthetic data (no API calls):
+
+```powershell
+.\.venv\Scripts\python src\main.py --mock
+```
+
+## Build the standalone .exe
+
+```powershell
+.\build.ps1
+```
+
+Output: `dist\Clawdmeter.exe` — single-file, no console window, ~29 MB.
+
+`Clawdmeter.spec` prunes the parts of PySide6/Qt the app doesn't use (the
+QML/Quick stack, the ~20 MB software-OpenGL fallback, unused image-format and
+platform plugins, and Qt's bundled translations) to keep the exe roughly half
+the size of an unpruned PySide6 build. If you start importing additional Qt
+modules, check the pruning block in the spec so you don't strip something you
+now need.
 
 ## Credit
 
