@@ -136,11 +136,12 @@ def build_aggregate(events: list, now: float, since: float) -> dict:
     assistant-turn heatmap, per-model value, and the Wrapped headline figures.
     """
     by_model: dict[str, dict[str, int]] = {}
+    by_project: dict[str, dict[str, dict[str, int]]] = {}   # project -> {model: usage}
     day_tokens: dict = {}                       # date -> {model: usage}
     heatmap = [[0] * 24 for _ in range(7)]      # [weekday 0=Mon][hour] turn counts
     turns = 0
     days_seen: set = set()
-    for ts, model, i, o, cr, cw in events:
+    for ts, model, project, i, o, cr, cw in events:
         turns += 1
         dt = datetime.fromtimestamp(ts)
         heatmap[dt.weekday()][dt.hour] += 1
@@ -148,11 +149,14 @@ def build_aggregate(events: list, now: float, since: float) -> dict:
         days_seen.add(d)
         acc = by_model.setdefault(model, {k: 0 for k in _BUCKETS})
         dacc = day_tokens.setdefault(d, {}).setdefault(model, {k: 0 for k in _BUCKETS})
+        pacc = by_project.setdefault(project, {}).setdefault(model, {k: 0 for k in _BUCKETS})
         for key, v in zip(_BUCKETS, (i, o, cr, cw)):
             acc[key] += v
             dacc[key] += v
+            pacc[key] += v
 
     by_model_value = {m: round(model_value_usd(m, u), 2) for m, u in by_model.items()}
+    by_project_value = {pj: value_usd(models) for pj, models in by_project.items()}
     top_model = max(by_model_value.items(), key=lambda kv: kv[1]) if by_model_value else None
 
     series: list = []
@@ -168,6 +172,7 @@ def build_aggregate(events: list, now: float, since: float) -> dict:
         "value_by_day": series,          # [(date, usd)] oldest..today
         "heatmap": heatmap,              # [7][24] assistant-turn counts
         "by_model_value": by_model_value,
+        "by_project_value": by_project_value,
         "top_model": top_model,          # (model_id, usd) | None
         "busiest_day": busiest,          # (date, usd) | None
         "turns": turns,

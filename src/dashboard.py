@@ -2034,6 +2034,9 @@ class Dashboard(QMainWindow):
         self.stat_models = ModelBreakdown()
         viz_card("VALUE BY MODEL", self.stat_models)
 
+        self.stat_projects = ModelBreakdown()
+        viz_card("VALUE BY PROJECT", self.stat_projects)
+
         self.stat_bars = DailyBars()
         viz_card("VALUE PER DAY", self.stat_bars)
 
@@ -2065,6 +2068,7 @@ class Dashboard(QMainWindow):
         self.stat_models.set_data(
             [(stats.model_display(m).replace("Claude ", ""), v)
              for m, v in agg.get("by_model_value", {}).items()])
+        self.stat_projects.set_data(list(agg.get("by_project_value", {}).items()))
         self.stat_bars.set_data(agg.get("value_by_day", []))
         self.stat_heat.set_data(agg.get("heatmap"))
         parts = []
@@ -2100,6 +2104,8 @@ class Dashboard(QMainWindow):
             "turns": 16704, "active_days": 12,
             "cache_savings_usd": 16999.36,
             "cache_read_tokens": 3_470_000_000, "input_tokens": 12_400_000,
+            "by_project_value": {"Clawdmeter-Windows": 1880.0, "ReadyUp-Dev": 960.0,
+                                 "Watchlist-Dev": 540.0},
         }
 
     def _update_stats(self, s: UsageSample) -> None:

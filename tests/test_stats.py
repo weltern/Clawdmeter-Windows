@@ -93,9 +93,9 @@ def test_build_aggregate():
     d2 = datetime(2026, 6, 10, 15, 0, 0)
     d3 = datetime(2026, 6, 12, 9, 0, 0)    # one sonnet turn, different day
     ev = [
-        (d1.timestamp(), "claude-opus-4-8", 1_000_000, 0, 0, 0),   # $5
-        (d2.timestamp(), "claude-opus-4-8", 0, 1_000_000, 0, 0),   # $25
-        (d3.timestamp(), "claude-sonnet-4-6", 1_000_000, 0, 0, 0),
+        (d1.timestamp(), "claude-opus-4-8", "alpha", 1_000_000, 0, 0, 0),   # $5
+        (d2.timestamp(), "claude-opus-4-8", "alpha", 0, 1_000_000, 0, 0),   # $25
+        (d3.timestamp(), "claude-sonnet-4-6", "beta", 1_000_000, 0, 0, 0),
     ]
     now = datetime(2026, 6, 12, 18, 0, 0).timestamp()
     since = datetime(2026, 6, 1, 0, 0, 0).timestamp()
@@ -115,6 +115,7 @@ def test_build_aggregate():
     assert agg["busiest_day"][0] == date(2026, 6, 10)
     assert len(agg["value_by_day"]) == 12   # Jun 1..12 inclusive
     assert "cache_savings_usd" in agg and "cache_read_tokens" in agg
+    assert agg["by_project_value"]["alpha"] == 30.0   # both opus turns
 
 
 def test_cache_savings():

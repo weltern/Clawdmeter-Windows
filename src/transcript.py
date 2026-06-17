@@ -425,9 +425,12 @@ _MODEL_EVENT_CACHE: dict[str, tuple[int, float, list]] = {}
 
 
 def _file_model_events(fp: Path) -> list:
-    """Parse one transcript into (ts, model, input, output, cache_read,
-    cache_write) for every assistant turn with a model + usage + timestamp."""
-    events: list = []
+    """Parse one transcript into (ts, model, project, input, output, cache_read,
+    cache_write) for every assistant turn with a model + usage + timestamp. The
+    project (the cwd leaf, captured once per file) lets the value be bucketed by
+    project as well as by model."""
+    rows: list = []
+    cwd: str | None = None
     try:
         with fp.open(encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -438,6 +441,10 @@ def _file_model_events(fp: Path) -> list:
                     ev = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if cwd is None:
+                    c = ev.get("cwd")
+                    if isinstance(c, str) and c:
+                        cwd = c
                 msg = ev.get("message")
                 if not isinstance(msg, dict) or msg.get("role") != "assistant":
                     continue
@@ -455,12 +462,13 @@ def _file_model_events(fp: Path) -> list:
                     except (TypeError, ValueError):
                         return 0
 
-                events.append((ts, model, n("input_tokens"), n("output_tokens"),
-                               n("cache_read_input_tokens"),
-                               n("cache_creation_input_tokens")))
+                rows.append((ts, model, n("input_tokens"), n("output_tokens"),
+                             n("cache_read_input_tokens"),
+                             n("cache_creation_input_tokens")))
     except OSError:
         return []
-    return events
+    project = project_name_from_cwd(cwd, fp)
+    return [(ts, model, project, i, o, cr, cw) for (ts, model, i, o, cr, cw) in rows]
 
 
 def iter_model_events(since_ts: float, root: Path | None = None) -> list:
@@ -501,7 +509,7 @@ def account_tokens_by_model(since_ts: float, root: Path | None = None) -> dict:
     """Per-model token totals (input, output, cache_read, cache_write) for turns
     at/after `since_ts`. Returns {model_id: {...}}."""
     out: dict[str, dict[str, int]] = {}
-    for _ts, model, i, o, cr, cw in iter_model_events(since_ts, root):
+    for _ts, model, _project, i, o, cr, cw in iter_model_events(since_ts, root):
         acc = out.setdefault(
             model, {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0})
         acc["input"] += i
