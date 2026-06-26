@@ -247,6 +247,39 @@ QCheckBox::indicator:checked {
     image: none;
 }
 
+/* Text/number inputs — the app had no input styling, so these fell back to the
+   native light Windows look. Theme them to match the dark surface: poll-interval
+   field, push-channel editors, and the threshold / idle spinners. */
+QLineEdit, QSpinBox {
+    background-color: #0e1116; color: #e6edf3;
+    border: 1px solid #374151; border-radius: 6px;
+    padding: 4px 8px;
+    selection-background-color: #CE7D6B; selection-color: #0a0d12;
+}
+QLineEdit:focus, QSpinBox:focus { border-color: #CE7D6B; }
+QLineEdit:disabled, QSpinBox:disabled {
+    color: #4b5563; background-color: #161b22; border-color: #21262d;
+}
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: border; width: 15px; background: #1f2937;
+    border-left: 1px solid #374151;
+}
+QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 6px; }
+QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 6px; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #374151; }
+QSpinBox::up-arrow {
+    width: 0; height: 0; image: none;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-bottom: 5px solid #9ca3af;
+}
+QSpinBox::down-arrow {
+    width: 0; height: 0; image: none;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-top: 5px solid #9ca3af;
+}
+QSpinBox::up-arrow:hover { border-bottom-color: #e6edf3; }
+QSpinBox::down-arrow:hover { border-top-color: #e6edf3; }
+
 /* Slim left nav rail (overlay). Same icon+label language as the settings tabs:
    Segoe UI primary so labels stay crisp; the leading FA glyph falls back to FA.
    Labels are clipped while the rail is collapsed and revealed as it expands. */
