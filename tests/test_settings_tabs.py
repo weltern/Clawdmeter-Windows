@@ -67,7 +67,7 @@ def test_sections_routed_to_expected_tabs():
                        sp.poll_interval_edit, sp.idle_backoff_check,
                        sp.idle_after_spin, sp.idle_interval_spin],
         "notifications": [sp.notify_check, sp.approaching_check,
-                          sp.session_pct_spin, sp.weekly_pct_spin, sp.overage_check,
+                          sp.session_pct_slider, sp.weekly_pct_slider, sp.overage_check,
                           sp.notify_toast_check, sp.notify_push_check,
                           sp.notify_push_add_btn],
     }

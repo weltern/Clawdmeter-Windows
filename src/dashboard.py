@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QSystemTrayIcon,
@@ -279,6 +280,21 @@ QSpinBox::down-arrow {
 }
 QSpinBox::up-arrow:hover { border-bottom-color: #e6edf3; }
 QSpinBox::down-arrow:hover { border-top-color: #e6edf3; }
+
+/* Approaching-limit threshold sliders: dark groove, salmon fill up to the
+   handle, salmon handle, with a value pill beside it. */
+QSlider#threshold::groove:horizontal { height: 4px; border-radius: 2px; background: #1f2937; }
+QSlider#threshold::add-page:horizontal { background: #1f2937; border-radius: 2px; }
+QSlider#threshold::sub-page:horizontal { background: #CE7D6B; border-radius: 2px; }
+QSlider#threshold::handle:horizontal {
+    width: 13px; height: 13px; margin: -5px 0; border-radius: 7px;
+    background: #CE7D6B; border: 2px solid #0a0d12;
+}
+QSlider#threshold::handle:horizontal:hover { background: #d98f7e; }
+QLabel#thresholdPill {
+    min-width: 38px; font-size: 12px; font-weight: 600; color: #e6edf3;
+    background: #1f2937; border: 1px solid #374151; border-radius: 6px; padding: 3px 0;
+}
 
 /* Slim left nav rail (overlay). Same icon+label language as the settings tabs:
    Segoe UI primary so labels stay crisp; the leading FA glyph falls back to FA.
@@ -1338,16 +1354,14 @@ class SettingsPanel(QWidget):
         appr_box = QVBoxLayout(self.approaching_box)
         appr_box.setContentsMargins(44, 0, 0, 0)
         appr_box.setSpacing(6)
-        self.session_pct_spin = self._make_threshold_spin(
-            app_settings.get_approaching_session_pct(),
+        sess_row, self.session_pct_slider, self.session_pct_pill = self._make_threshold_slider(
+            "5h session", app_settings.get_approaching_session_pct(),
             self._on_session_pct_changed)
-        self.weekly_pct_spin = self._make_threshold_spin(
-            app_settings.get_approaching_weekly_pct(),
+        week_row, self.weekly_pct_slider, self.weekly_pct_pill = self._make_threshold_slider(
+            "7d week", app_settings.get_approaching_weekly_pct(),
             self._on_weekly_pct_changed)
-        appr_box.addLayout(self._threshold_row("Warn at", self.session_pct_spin,
-                                               "of the 5h session"))
-        appr_box.addLayout(self._threshold_row("Warn at", self.weekly_pct_spin,
-                                               "of the 7d week"))
+        appr_box.addLayout(sess_row)
+        appr_box.addLayout(week_row)
         self.overage_check = QCheckBox("Also alert when I cross 100% into overage")
         self.overage_check.setChecked(app_settings.get_overage_alert_enabled())
         self.overage_check.toggled.connect(self._on_overage_alert_toggled)
@@ -1597,15 +1611,23 @@ class SettingsPanel(QWidget):
         if self._on_token_view_changed:
             self._on_token_view_changed()
 
-    def _make_threshold_spin(self, value: int, on_change) -> QSpinBox:
-        """A self-clamping %-threshold spinner for the approaching-limit warnings."""
-        spin = QSpinBox()
-        spin.setRange(app_settings.APPROACHING_PCT_MIN, app_settings.APPROACHING_PCT_MAX)
-        spin.setSuffix("%")
-        spin.setValue(value)
-        spin.setFixedWidth(72)
-        spin.valueChanged.connect(on_change)
-        return spin
+    def _make_threshold_slider(self, label: str, value: int, on_change):
+        """A row for an approaching-limit % threshold: window label, a slider over
+        the allowed range, and a live value pill. Returns (row, slider, pill)."""
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        win = QLabel(label)
+        win.setMinimumWidth(72)
+        slider = QSlider(Qt.Horizontal, objectName="threshold")
+        slider.setRange(app_settings.APPROACHING_PCT_MIN, app_settings.APPROACHING_PCT_MAX)
+        slider.setValue(value)
+        pill = QLabel(f"{value}%", objectName="thresholdPill")
+        pill.setAlignment(Qt.AlignCenter)
+        slider.valueChanged.connect(lambda v: (pill.setText(f"{v}%"), on_change(v)))
+        row.addWidget(win)
+        row.addWidget(slider, 1)
+        row.addWidget(pill)
+        return row, slider, pill
 
     def _threshold_row(self, lead: str, spin: QSpinBox, trail: str) -> QHBoxLayout:
         row = QHBoxLayout()
