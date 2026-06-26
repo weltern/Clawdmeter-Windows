@@ -217,6 +217,12 @@ five tabs that each scroll on their own. Here's every setting, grouped by tab.
   (60 by default): lower is fresher but makes more requests; higher is gentler on
   your quota when you leave it running. Out-of-range entries snap to the nearest
   allowed value.
+- **Slow polling when idle** *(off by default)* — when no Claude Code session has
+  been active for a configurable spell (**Back off after**, default 15 min), drop
+  to a slower **idle interval** (default 300s) until activity resumes, then snap
+  straight back. Cuts requests while you're away. Note your usage % is
+  account-wide, so usage driven from another machine just shows up more slowly
+  while idle — polling slows, it never stops.
 
 ### Notifications
 

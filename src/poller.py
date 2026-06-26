@@ -247,6 +247,7 @@ class UsagePoller(QThread):
         super().__init__(parent)
         self._interval = interval_seconds
         self._stop = False
+        self._wake = False
         self._auto_refresh = app_settings.get_auto_refresh()
         self._manual_refresh = False
         self._last_refresh_attempt = 0.0
@@ -254,6 +255,12 @@ class UsagePoller(QThread):
 
     def stop(self) -> None:
         self._stop = True
+
+    def wake(self) -> None:
+        """Cut the current sleep short and poll now. Used to snap back to a fresh
+        sample after the idle back-off has slowed the cadence and activity
+        resumes, instead of waiting out the long idle sleep."""
+        self._wake = True
 
     def set_auto_refresh(self, on: bool) -> None:
         self._auto_refresh = bool(on)
@@ -289,6 +296,7 @@ class UsagePoller(QThread):
 
     def run(self) -> None:  # QThread entry
         while not self._stop:
+            self._wake = False  # cleared each cycle; a wake during this poll re-sets it
             if self._manual_refresh:
                 self._manual_refresh = False
                 self._do_refresh(manual=True)
@@ -306,6 +314,6 @@ class UsagePoller(QThread):
             for _ in range(self._interval):
                 if self._stop:
                     return
-                if self._manual_refresh:
+                if self._manual_refresh or self._wake:
                     break  # service the request promptly at the top of the loop
                 self.msleep(1000)

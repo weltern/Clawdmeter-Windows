@@ -65,6 +65,7 @@ from PySide6.QtWidgets import (
 )
 
 import app_settings
+import poll_cadence
 import run_at_startup
 import start_menu
 import token_refresh
@@ -985,7 +986,8 @@ class SettingsPanel(QWidget):
     def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed,
                  on_refresh_token=None, on_auto_refresh_changed=None,
                  on_poll_interval_changed=None, on_sessions_view_changed=None,
-                 on_token_view_changed=None, on_check_updates=None) -> None:
+                 on_token_view_changed=None, on_check_updates=None,
+                 on_idle_backoff_changed=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -997,6 +999,7 @@ class SettingsPanel(QWidget):
         self._on_sessions_view_changed = on_sessions_view_changed
         self._on_token_view_changed = on_token_view_changed
         self._on_check_updates = on_check_updates
+        self._on_idle_backoff_changed = on_idle_backoff_changed
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1238,6 +1241,45 @@ class SettingsPanel(QWidget):
         self._poll_note_hold.setInterval(3200)
         self._poll_note_hold.timeout.connect(self._fade_poll_note)
         layout.addWidget(self.poll_interval_note)
+
+        # Idle back-off: slow polling when no local session has been active for a
+        # while. Opt-in; the sub-box (after / interval spinners) follows the toggle.
+        self.idle_backoff_check = QCheckBox("Slow polling when idle")
+        self.idle_backoff_check.setChecked(app_settings.get_idle_backoff_enabled())
+        self.idle_backoff_check.toggled.connect(self._on_idle_backoff_toggled)
+        layout.addWidget(self.idle_backoff_check)
+
+        self.idle_box = QWidget()
+        idle_box = QVBoxLayout(self.idle_box)
+        idle_box.setContentsMargins(22, 0, 0, 0)
+        idle_box.setSpacing(6)
+        idle_hint = QLabel(
+            "Poll less often when no Claude Code session has been active for a "
+            "while. Usage is account-wide, so usage from another machine shows "
+            "up more slowly while idle — it never stops, just slows.",
+            objectName="sectionHint",
+        )
+        idle_hint.setWordWrap(True)
+        idle_box.addWidget(idle_hint)
+        self.idle_after_spin = QSpinBox()
+        self.idle_after_spin.setRange(app_settings.IDLE_AFTER_MIN, app_settings.IDLE_AFTER_MAX)
+        self.idle_after_spin.setSuffix(" min")
+        self.idle_after_spin.setValue(app_settings.get_idle_after_minutes())
+        self.idle_after_spin.setFixedWidth(80)
+        self.idle_after_spin.valueChanged.connect(self._on_idle_after_changed)
+        self.idle_interval_spin = QSpinBox()
+        self.idle_interval_spin.setRange(app_settings.IDLE_INTERVAL_MIN, app_settings.IDLE_INTERVAL_MAX)
+        self.idle_interval_spin.setSuffix(" s")
+        self.idle_interval_spin.setSingleStep(30)
+        self.idle_interval_spin.setValue(app_settings.get_idle_interval())
+        self.idle_interval_spin.setFixedWidth(88)
+        self.idle_interval_spin.valueChanged.connect(self._on_idle_interval_changed)
+        idle_box.addLayout(self._threshold_row("Back off after", self.idle_after_spin,
+                                               "of inactivity"))
+        idle_box.addLayout(self._threshold_row("then poll every", self.idle_interval_spin,
+                                               ""))
+        layout.addWidget(self.idle_box)
+        self.idle_box.setVisible(self.idle_backoff_check.isChecked())
 
         layout = notif_layout
         layout.addWidget(QLabel("WHAT TO NOTIFY", objectName="sectionLabel"))
@@ -1553,6 +1595,22 @@ class SettingsPanel(QWidget):
 
     def _on_overage_alert_toggled(self, checked: bool) -> None:
         app_settings.set_overage_alert_enabled(checked)
+
+    def _on_idle_backoff_toggled(self, checked: bool) -> None:
+        app_settings.set_idle_backoff_enabled(checked)
+        self.idle_box.setVisible(checked)
+        if self._on_idle_backoff_changed:
+            self._on_idle_backoff_changed()
+
+    def _on_idle_after_changed(self, value: int) -> None:
+        app_settings.set_idle_after_minutes(value)
+        if self._on_idle_backoff_changed:
+            self._on_idle_backoff_changed()
+
+    def _on_idle_interval_changed(self, value: int) -> None:
+        app_settings.set_idle_interval(value)
+        if self._on_idle_backoff_changed:
+            self._on_idle_backoff_changed()
 
     def _on_notify_toggled(self, checked: bool) -> None:
         app_settings.set_reset_notify(checked)
@@ -1972,6 +2030,7 @@ class Dashboard(QMainWindow):
             on_sessions_view_changed=self._apply_session_view,
             on_token_view_changed=self._apply_token_view,
             on_check_updates=self._check_for_updates_now,
+            on_idle_backoff_changed=self._apply_poll_cadence,
         )
         self._pages.addWidget(self.settings_panel)   # index 2 (Settings)
 
@@ -2025,6 +2084,11 @@ class Dashboard(QMainWindow):
         self._rate = RateGroupTracker()
         self._reset_notifier = ResetNotifier()
         self._approaching_notifier = ApproachingNotifier()
+        # Idle poll back-off: track the last time a local session was active, and
+        # whether the poll is currently slowed. Start "active" so a fresh launch
+        # polls normally until the idle window elapses.
+        self._last_session_activity_ts = time.time()
+        self._poll_idle = False
         self._last_sample: UsageSample | None = None
         self._last_tooltip = ""
         self._transcript_state: TranscriptState | None = None
@@ -2712,6 +2776,46 @@ class Dashboard(QMainWindow):
         if poller is not None:
             poller.set_interval(seconds)
 
+    def _note_session_activity(self) -> None:
+        """A live session was seen — refresh the activity clock and, if polling
+        had backed off while idle, snap straight back to the normal cadence."""
+        self._last_session_activity_ts = time.time()
+        if self._poll_idle:
+            self._poll_idle = False
+            poller = getattr(self, "_poller", None)
+            if poller is not None:
+                poller.set_interval(app_settings.get_poll_interval())
+                poller.wake()  # don't wait out the long idle sleep
+
+    def _maybe_backoff_poll(self) -> None:
+        """Each poll: slow the cadence when idle back-off is on and no session
+        has been active for the idle window; otherwise keep it normal."""
+        poller = getattr(self, "_poller", None)
+        if poller is None:
+            return
+        now = time.time()
+        enabled = app_settings.get_idle_backoff_enabled()
+        idle_after = app_settings.get_idle_after_minutes() * 60
+        self._poll_idle = poll_cadence.is_idle(
+            now, self._last_session_activity_ts,
+            enabled=enabled, idle_after_secs=idle_after)
+        poller.set_interval(poll_cadence.target_interval(
+            now, self._last_session_activity_ts,
+            enabled=enabled,
+            normal=app_settings.get_poll_interval(),
+            idle_interval=app_settings.get_idle_interval(),
+            idle_after_secs=idle_after))
+
+    def _apply_poll_cadence(self, *args) -> None:
+        """Re-evaluate the cadence after an idle-back-off setting changes; wake
+        the poller if we just dropped out of idle so the change is immediate."""
+        was_idle = self._poll_idle
+        self._maybe_backoff_poll()
+        if was_idle and not self._poll_idle:
+            poller = getattr(self, "_poller", None)
+            if poller is not None:
+                poller.wake()
+
     def _on_refresh_status(self, result) -> None:
         """token_refresh.RefreshResult from the poll thread (auto or manual)."""
         if result.ok:
@@ -2903,6 +3007,7 @@ class Dashboard(QMainWindow):
         )
         self._last_sample = s
         self.usage_history.record(s)   # ring + throttled disk log (skips errors)
+        self._maybe_backoff_poll()     # adjust cadence to local session activity
         if not s.ok:
             self._apply_status_badge(s.status)
             self._tray.setToolTip(f"Clawdmeter - {s.status}")
@@ -3179,6 +3284,8 @@ class Dashboard(QMainWindow):
         """Receive the watcher's per-session states, remember them, and render
         through the current Settings view (multiple-sessions / subagents toggles)."""
         self._last_raw_states = list(states)
+        if states:  # a live session is present -> reset the idle clock
+            self._note_session_activity()
         self._apply_session_view()
 
     def _apply_session_view(self) -> None:
