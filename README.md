@@ -220,19 +220,30 @@ five tabs that each scroll on their own. Here's every setting, grouped by tab.
 
 ### Notifications
 
-- **Notify on limit reset** pings you the moment a usage limit resets so you know
+Choose **what** to be alerted about, then **how** you're reached — the delivery
+channels are shared across every alert.
+
+- **On a limit reset** pings you the moment a usage limit resets so you know
   you can resume — but only when you were actually near the limit (or already
   throttled), so it stays quiet otherwise.
 
   ![Clawdmeter-Windows limit-reset notification — "Claude limit reset: Session limit has reset, you can resume"](assets/Screenshot-Session-Limit-Reset.png)
 
-  You choose **where** it reaches you — pick either channel, or both. **Show a
+- **When approaching a limit** warns you *before* you run out — pick a separate
+  **% threshold for the 5h session and the 7d week** (50–99%; defaults 90% and
+  80%, since the weekly window is the scarce one you can't recover quickly). Each
+  warning fires **once** when you cross its threshold and re-arms after that
+  window resets, so it never nags every poll. **Also alert when I cross 100% into
+  overage** adds a ping the moment either window tips onto paid usage credits.
+  Off by default — flip it on when you want the heads-up.
+
+  You choose **where** alerts reach you — pick either channel, or both. **Show a
   Windows notification** is the desktop toast plus a brief tray-icon flash, with
   **Play a sound** and **Pop the window to front** as sub-options under it; **Send
   a push notification** delivers off this machine. Under push you can **add one or
   more channels** with **Add a channel** (remove with ✕), and **every channel you
-  add fires** on a reset — so you can get, say, a Pushover *and* a Discord alert at
-  once. The channels are **[ntfy](https://ntfy.sh)** (subscribe to a hard-to-guess
+  add fires** on each alert — so you can get, say, a Pushover *and* a Discord alert
+  at once. The channels are **[ntfy](https://ntfy.sh)** (subscribe to a hard-to-guess
   topic in the ntfy app — no account needed), **Telegram** (a bot token from
   @BotFather + your chat ID), **Discord** / **Slack** (an incoming-webhook URL),
   **Pushover** (an app API token + your user key), **Gotify** (a self-hosted server

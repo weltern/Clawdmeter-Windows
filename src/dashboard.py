@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QStackedWidget,
     QSystemTrayIcon,
     QToolButton,
@@ -74,6 +75,7 @@ import remote_notify
 import stats
 from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, WeekBars
 from usage_history import UsageHistory
+from approaching_notify import ApproachingNotifier
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
 from update_check import UpdateChecker
@@ -1238,24 +1240,66 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.poll_interval_note)
 
         layout = notif_layout
-        layout.addWidget(QLabel("NOTIFICATIONS", objectName="sectionLabel"))
+        layout.addWidget(QLabel("WHAT TO NOTIFY", objectName="sectionLabel"))
         notify_hint = QLabel(
-            "Alert me when a usage limit resets and I can resume — only when I "
-            "was near the limit.",
+            "Pick what you want to be alerted about. Choose how you're reached "
+            "below — it applies to every alert here.",
             objectName="sectionHint",
         )
         notify_hint.setWordWrap(True)
         layout.addWidget(notify_hint)
-        self.notify_check = QCheckBox("Notify on limit reset")
+        self.notify_check = QCheckBox("On a limit reset (when you can resume)")
         self.notify_check.setChecked(app_settings.get_reset_notify())
         self.notify_check.toggled.connect(self._on_notify_toggled)
         layout.addWidget(self.notify_check)
 
-        # Windows channel: the desktop toast + tray flash (indented under the
-        # master), with Play-a-sound / Pop-to-front nested in an indented box so
-        # they hide together when the channel — or the master — is off.
+        # Approaching-limit master + its threshold sub-box.
+        self.approaching_check = QCheckBox("When approaching a limit")
+        self.approaching_check.setChecked(app_settings.get_approaching_enabled())
+        self.approaching_check.toggled.connect(self._on_approaching_toggled)
+        layout.addWidget(self.approaching_check)
+
+        self.approaching_box = QWidget()
+        appr_box = QVBoxLayout(self.approaching_box)
+        appr_box.setContentsMargins(44, 0, 0, 0)
+        appr_box.setSpacing(6)
+        self.session_pct_spin = self._make_threshold_spin(
+            app_settings.get_approaching_session_pct(),
+            self._on_session_pct_changed)
+        self.weekly_pct_spin = self._make_threshold_spin(
+            app_settings.get_approaching_weekly_pct(),
+            self._on_weekly_pct_changed)
+        appr_box.addLayout(self._threshold_row("Warn at", self.session_pct_spin,
+                                               "of the 5h session"))
+        appr_box.addLayout(self._threshold_row("Warn at", self.weekly_pct_spin,
+                                               "of the 7d week"))
+        self.overage_check = QCheckBox("Also alert when I cross 100% into overage")
+        self.overage_check.setChecked(app_settings.get_overage_alert_enabled())
+        self.overage_check.toggled.connect(self._on_overage_alert_toggled)
+        appr_box.addWidget(self.overage_check)
+        layout.addWidget(self.approaching_box)
+
+        # Shared delivery channels, wrapped so the whole block hides as a unit
+        # when no alert type is enabled. Subsequent channel widgets go into it.
+        layout.addSpacing(10)
+        self.notify_how_box = QWidget()
+        how_layout = QVBoxLayout(self.notify_how_box)
+        how_layout.setContentsMargins(0, 0, 0, 0)
+        how_layout.setSpacing(6)
+        how_layout.addWidget(QLabel("HOW YOU'RE NOTIFIED", objectName="sectionLabel"))
+        how_hint = QLabel(
+            "Where alerts reach you — shared by every alert above.",
+            objectName="sectionHint",
+        )
+        how_hint.setWordWrap(True)
+        how_layout.addWidget(how_hint)
+        layout.addWidget(self.notify_how_box)
+        layout = how_layout
+
+        # Windows channel: the desktop toast + tray flash, with Play-a-sound /
+        # Pop-to-front nested in an indented box so they hide together when the
+        # channel — or all alerts — are off.
         self.notify_toast_check = QCheckBox("Show a Windows notification")
-        self.notify_toast_check.setStyleSheet("margin-left: 22px;")
         self.notify_toast_check.setChecked(app_settings.get_reset_notify_toast())
         self.notify_toast_check.toggled.connect(self._on_notify_toast_toggled)
         layout.addWidget(self.notify_toast_check)
@@ -1275,7 +1319,6 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.notify_toast_box)
 
         self.notify_push_check = QCheckBox("Send a push notification")
-        self.notify_push_check.setStyleSheet("margin-left: 22px;")
         self.notify_push_check.setChecked(app_settings.get_reset_notify_push())
         self.notify_push_check.toggled.connect(self._on_notify_push_toggled)
         layout.addWidget(self.notify_push_check)
@@ -1479,6 +1522,38 @@ class SettingsPanel(QWidget):
         if self._on_token_view_changed:
             self._on_token_view_changed()
 
+    def _make_threshold_spin(self, value: int, on_change) -> QSpinBox:
+        """A self-clamping %-threshold spinner for the approaching-limit warnings."""
+        spin = QSpinBox()
+        spin.setRange(app_settings.APPROACHING_PCT_MIN, app_settings.APPROACHING_PCT_MAX)
+        spin.setSuffix("%")
+        spin.setValue(value)
+        spin.setFixedWidth(72)
+        spin.valueChanged.connect(on_change)
+        return spin
+
+    def _threshold_row(self, lead: str, spin: QSpinBox, trail: str) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(QLabel(lead))
+        row.addWidget(spin)
+        row.addWidget(QLabel(trail))
+        row.addStretch(1)
+        return row
+
+    def _on_approaching_toggled(self, checked: bool) -> None:
+        app_settings.set_approaching_enabled(checked)
+        self._sync_notify_subtoggles()
+
+    def _on_session_pct_changed(self, value: int) -> None:
+        app_settings.set_approaching_session_pct(value)
+
+    def _on_weekly_pct_changed(self, value: int) -> None:
+        app_settings.set_approaching_weekly_pct(value)
+
+    def _on_overage_alert_toggled(self, checked: bool) -> None:
+        app_settings.set_overage_alert_enabled(checked)
+
     def _on_notify_toggled(self, checked: bool) -> None:
         app_settings.set_reset_notify(checked)
         self._sync_notify_subtoggles()
@@ -1559,19 +1634,23 @@ class SettingsPanel(QWidget):
 
     def _sync_notify_subtoggles(self) -> None:
         """Show/hide the notification sub-options to match the hierarchy: the
-        master off hides both channels; each channel's sub-box (Windows
-        sound/pop, or the push channel list) hides when that channel is off."""
-        on = self.notify_check.isChecked()
-        # Both channel toggles hide entirely when the master is off.
-        self.notify_toast_check.setVisible(on)
-        self.notify_push_check.setVisible(on)
+        threshold box follows the approaching master; the shared delivery
+        channels appear when ANY alert type is on; each channel's sub-box
+        (Windows sound/pop, or the push channel list) hides when its channel is
+        off."""
+        # Threshold sub-box follows the approaching master.
+        self.approaching_box.setVisible(self.approaching_check.isChecked())
 
-        # Windows channel sub-box (sound + pop): only when master + Windows on.
-        toast_on = on and self.notify_toast_check.isChecked()
+        # Shared "how" channels are relevant when any alert type is enabled.
+        any_on = self.notify_check.isChecked() or self.approaching_check.isChecked()
+        self.notify_how_box.setVisible(any_on)
+
+        # Windows channel sub-box (sound + pop): only when shown + Windows on.
+        toast_on = any_on and self.notify_toast_check.isChecked()
         self.notify_toast_box.setVisible(toast_on)
 
-        # Push channel sub-box (the added-channel list): only when master + push on.
-        push_on = on and self.notify_push_check.isChecked()
+        # Push channel sub-box (the added-channel list): only when shown + push on.
+        push_on = any_on and self.notify_push_check.isChecked()
         self.notify_push_box.setVisible(push_on)
         if not push_on:
             self.notify_push_test_status.clear()
@@ -1945,6 +2024,7 @@ class Dashboard(QMainWindow):
 
         self._rate = RateGroupTracker()
         self._reset_notifier = ResetNotifier()
+        self._approaching_notifier = ApproachingNotifier()
         self._last_sample: UsageSample | None = None
         self._last_tooltip = ""
         self._transcript_state: TranscriptState | None = None
@@ -2811,9 +2891,16 @@ class Dashboard(QMainWindow):
         self._on_sessions(states)
 
     def _on_sample(self, s: UsageSample) -> None:
-        # Feed every sample (incl. errors) so the notifier can ignore them
-        # without disturbing its baseline.
+        # Feed every sample (incl. errors) so the notifiers can ignore them
+        # without disturbing their baselines.
         decision = self._reset_notifier.observe(s)
+        approaching = self._approaching_notifier.observe(
+            s,
+            enabled=app_settings.get_approaching_enabled(),
+            session_threshold=app_settings.get_approaching_session_pct(),
+            weekly_threshold=app_settings.get_approaching_weekly_pct(),
+            overage_enabled=app_settings.get_overage_alert_enabled(),
+        )
         self._last_sample = s
         self.usage_history.record(s)   # ring + throttled disk log (skips errors)
         if not s.ok:
@@ -2854,16 +2941,32 @@ class Dashboard(QMainWindow):
         # (optionally) pop the window to the foreground.
         if decision.notify and app_settings.get_reset_notify():
             self._fire_reset_notification(decision)
+        if approaching:
+            self._fire_approaching_notification(approaching)
 
     def _fire_reset_notification(self, decision: ResetDecision) -> None:
         """Surface a gated limit reset via the user's chosen methods."""
         which = " & ".join(r.capitalize() for r in decision.reasons) or "Usage"
-        title = "Claude limit reset"
         body = f"{which} limit has reset — you can resume."
+        self._deliver_alert("Claude limit reset", body)
 
-        # Windows channel: the themed toast + tray flash, with sound and
-        # window-pop as its sub-options. Off -> the push channel can still fire,
-        # so the user can choose to be notified only on their phone/Discord.
+    def _fire_approaching_notification(self, events: list) -> None:
+        """Surface approaching-limit / overage events via the shared channels."""
+        overage = any(e.kind == "overage" for e in events)
+        title = "Claude overage started" if overage else "Approaching Claude limit"
+        lines = [
+            f"{e.window} passed 100% — now using paid credits."
+            if e.kind == "overage"
+            else f"{e.window} is at {e.pct}% of your limit."
+            for e in events
+        ]
+        self._deliver_alert(title, "\n".join(lines))
+
+    def _deliver_alert(self, title: str, body: str) -> None:
+        """Send an alert over the user's chosen channels (shared by reset and
+        approaching alerts). Windows channel: the themed toast + tray flash,
+        with sound and window-pop as sub-options. Off -> the push channel can
+        still fire, so the user can be notified only on their phone/Discord."""
         if app_settings.get_reset_notify_toast():
             self._toast.show_message(title, body)
             self._start_tray_flash()

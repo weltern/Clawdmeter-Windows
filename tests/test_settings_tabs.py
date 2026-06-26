@@ -65,12 +65,50 @@ def test_sections_routed_to_expected_tabs():
         "display": [sp.multi_sessions_check, sp.subagents_check, sp.token_usage_check],
         "connection": [sp.cred_btn, sp.auto_refresh_check, sp.refresh_token_btn,
                        sp.poll_interval_edit],
-        "notifications": [sp.notify_check, sp.notify_toast_check,
-                          sp.notify_push_check, sp.notify_push_add_btn],
+        "notifications": [sp.notify_check, sp.approaching_check,
+                          sp.session_pct_spin, sp.weekly_pct_spin, sp.overage_check,
+                          sp.notify_toast_check, sp.notify_push_check,
+                          sp.notify_push_add_btn],
     }
     for tab, widgets in expected.items():
         for w in widgets:
             assert page[tab].isAncestorOf(w), f"{w.objectName() or w} not on {tab} tab"
+
+
+def _set_silently(checkbox, on):
+    # Flip a checkbox WITHOUT firing its toggled handler, so the test never
+    # persists a setting (e.g. enabling approaching alerts) into HKCU.
+    checkbox.blockSignals(True)
+    checkbox.setChecked(on)
+    checkbox.blockSignals(False)
+
+
+def test_approaching_threshold_box_follows_its_master():
+    sp = _panel()
+    _set_silently(sp.approaching_check, True)
+    sp._sync_notify_subtoggles()
+    assert not sp.approaching_box.isHidden()
+    _set_silently(sp.approaching_check, False)
+    sp._sync_notify_subtoggles()
+    assert sp.approaching_box.isHidden()
+
+
+def test_shared_channels_show_for_any_alert_and_hide_when_all_off():
+    sp = _panel()
+    # Reset on, approaching off -> channels shown.
+    _set_silently(sp.notify_check, True)
+    _set_silently(sp.approaching_check, False)
+    sp._sync_notify_subtoggles()
+    assert not sp.notify_how_box.isHidden()
+    # Only approaching on -> still shown (channels are shared).
+    _set_silently(sp.notify_check, False)
+    _set_silently(sp.approaching_check, True)
+    sp._sync_notify_subtoggles()
+    assert not sp.notify_how_box.isHidden()
+    # Everything off -> channels hidden as a unit.
+    _set_silently(sp.approaching_check, False)
+    sp._sync_notify_subtoggles()
+    assert sp.notify_how_box.isHidden()
 
 
 if __name__ == "__main__":
