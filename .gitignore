@@ -5,3 +5,7 @@ venv/
 build/
 dist/
 *.spec.bak
+
+# Generated/scratch outputs of tools/ scripts
+readme_preview.html
+ratelimit_log.jsonl

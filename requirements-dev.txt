@@ -1,0 +1,6 @@
+# Development-only dependencies (not needed to run or build the app).
+# Install with:  .\.venv\Scripts\pip install -r requirements-dev.txt
+-r requirements.txt
+
+# tools/md_preview.py — render README.md -> readme_preview.html for local review
+markdown==3.10.2
