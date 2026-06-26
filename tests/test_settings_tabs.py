@@ -61,7 +61,7 @@ def test_sections_routed_to_expected_tabs():
     }
     expected = {
         "general": [sp.aot_check, sp.auto_hide_check, sp.quit_on_close_check,
-                    sp.auto_check_updates_check, sp.start_btn],
+                    sp.startup_check, sp.auto_check_updates_check, sp.start_btn],
         "display": [sp.multi_sessions_check, sp.subagents_check, sp.token_usage_check],
         "connection": [sp.cred_btn, sp.auto_refresh_check, sp.refresh_token_btn,
                        sp.poll_interval_edit],

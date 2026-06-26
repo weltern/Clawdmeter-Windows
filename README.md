@@ -185,6 +185,9 @@ five tabs that each scroll on their own. Here's every setting, grouped by tab.
 - **Window** — toggle **Always on top**, **Auto-hide title bar** (the title bar
   collapses until you hover the top edge), and **Quit on close** (closes the app
   instead of minimizing to the tray).
+- **Startup** — **Start when I sign in to Windows** launches Clawdmeter
+  automatically at sign-in. It comes up quietly in the system tray (no window
+  pops open) — click the tray icon to open it.
 - **Updates** — **Automatically check for updates** (on by default — checks the
   GitHub releases on launch, then about once a day) and **Check for updates now**.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start

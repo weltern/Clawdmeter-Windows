@@ -64,6 +64,7 @@ from PySide6.QtWidgets import (
 )
 
 import app_settings
+import run_at_startup
 import start_menu
 import token_refresh
 import winutil
@@ -1115,6 +1116,21 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.quit_on_close_check)
 
         layout.addSpacing(10)
+        layout.addWidget(QLabel("STARTUP", objectName="sectionLabel"))
+        startup_hint = QLabel(
+            "Launch Clawdmeter automatically when you sign in to Windows. It "
+            "starts quietly in the system tray — click the tray icon to open it.",
+            objectName="sectionHint",
+        )
+        startup_hint.setWordWrap(True)
+        layout.addWidget(startup_hint)
+        self.startup_check = QCheckBox("Start when I sign in to Windows")
+        self.startup_check.setChecked(run_at_startup.is_enabled())
+        self.startup_check.setEnabled(run_at_startup.is_supported())
+        self.startup_check.toggled.connect(self._on_run_at_startup_toggled)
+        layout.addWidget(self.startup_check)
+
+        layout.addSpacing(10)
         layout.addWidget(QLabel("UPDATES", objectName="sectionLabel"))
         updates_hint = QLabel(
             "Clawdmeter ships as a single .exe with no auto-installer. When a "
@@ -1559,6 +1575,17 @@ class SettingsPanel(QWidget):
         self.notify_push_box.setVisible(push_on)
         if not push_on:
             self.notify_push_test_status.clear()
+
+    def _on_run_at_startup_toggled(self, checked: bool) -> None:
+        ok, msg = run_at_startup.enable() if checked else run_at_startup.disable()
+        if not ok:
+            QMessageBox.warning(
+                self, "Clawdmeter",
+                f"Couldn't update the startup setting:\n{msg}")
+            # Revert the box to the registry's actual state without re-firing.
+            self.startup_check.blockSignals(True)
+            self.startup_check.setChecked(run_at_startup.is_enabled())
+            self.startup_check.blockSignals(False)
 
     def _refresh_start_menu_btn(self) -> None:
         if start_menu.has_shortcut():
