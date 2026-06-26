@@ -9,6 +9,7 @@ from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication
 
 import app_settings
+import run_at_startup
 import single_instance
 from dashboard import Dashboard
 from sprite_player import assets_root
@@ -16,6 +17,7 @@ from sprite_player import assets_root
 
 def main() -> int:
     mock = "--mock" in sys.argv
+    startup = run_at_startup.STARTUP_FLAG in sys.argv  # launched at sign-in
     app = QApplication(sys.argv)
     app.setApplicationName("Clawdmeter")
     app.setOrganizationName(app_settings.ORG)
@@ -42,7 +44,12 @@ def main() -> int:
         QFontDatabase.addApplicationFont(str(fa_path))
 
     win = Dashboard(mock=mock)
-    win.show_initial()   # launch directly into the last-used view mode
+    if startup:
+        # Sign-in launch: stay in the tray (don't pop the window). The poller,
+        # update checker and transcript watcher already start in __init__.
+        run_at_startup.sync_if_enabled()  # keep the entry pointed at this .exe
+    else:
+        win.show_initial()   # launch directly into the last-used view mode
 
     # Listen for later launches so they surface this window instead of
     # spawning a duplicate. Kept on `app` so it isn't garbage-collected.
