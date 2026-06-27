@@ -292,6 +292,12 @@ QSlider#threshold::handle:horizontal {
     background: #CE7D6B; border: 2px solid #0a0d12;
 }
 QSlider#threshold::handle:horizontal:hover { background: #d98f7e; }
+/* Light the handle up while you drag (pressed) or have it focused — the slider's
+   parallel to the value field's salmon focus border. */
+QSlider#threshold::handle:horizontal:pressed,
+QSlider#threshold:focus::handle:horizontal {
+    background: #e6a18f; border: 2px solid #f2c9bc;
+}
 /* Editable value field beside the slider — looks like a pill, but click + type. */
 QSpinBox#thresholdField { padding: 3px 4px; font-weight: 600; }
 
