@@ -41,6 +41,7 @@ from PySide6.QtGui import (
     QRegularExpressionValidator,
 )
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -56,6 +57,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QStackedWidget,
     QSystemTrayIcon,
@@ -246,6 +248,55 @@ QCheckBox::indicator:checked {
     background-color: #CE7D6B; border-color: #CE7D6B;
     image: none;
 }
+
+/* Text/number inputs — the app had no input styling, so these fell back to the
+   native light Windows look. Theme them to match the dark surface: poll-interval
+   field, push-channel editors, and the threshold / idle spinners. */
+QLineEdit, QSpinBox {
+    background-color: #0e1116; color: #e6edf3;
+    border: 1px solid #374151; border-radius: 6px;
+    padding: 4px 8px;
+    selection-background-color: #CE7D6B; selection-color: #0a0d12;
+}
+QLineEdit:focus, QSpinBox:focus { border-color: #CE7D6B; }
+QLineEdit:disabled, QSpinBox:disabled {
+    color: #4b5563; background-color: #161b22; border-color: #21262d;
+}
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: border; width: 15px; background: #1f2937;
+    border-left: 1px solid #374151;
+}
+QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 6px; }
+QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 6px; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #374151; }
+QSpinBox::up-arrow {
+    width: 0; height: 0; image: none;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-bottom: 5px solid #9ca3af;
+}
+QSpinBox::down-arrow {
+    width: 0; height: 0; image: none;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-top: 5px solid #9ca3af;
+}
+QSpinBox::up-arrow:hover { border-bottom-color: #e6edf3; }
+QSpinBox::down-arrow:hover { border-top-color: #e6edf3; }
+
+/* Approaching-limit threshold sliders: dark groove, salmon fill up to the
+   handle, salmon handle, with a value pill beside it. */
+QSlider#threshold::groove:horizontal { height: 4px; border-radius: 2px; background: #1f2937; }
+QSlider#threshold::add-page:horizontal { background: #1f2937; border-radius: 2px; }
+QSlider#threshold::sub-page:horizontal { background: #CE7D6B; border-radius: 2px; }
+QSlider#threshold::handle:horizontal {
+    width: 13px; height: 13px; margin: -5px 0; border-radius: 7px;
+    background: #CE7D6B; border: 2px solid #0a0d12;
+}
+QSlider#threshold::handle:horizontal:hover { background: #d98f7e; }
+/* Editable value field beside the slider — looks like a pill, but click + type.
+   It lights up with the salmon focus border both when focused and while its
+   slider is being dragged ([sliding="true"]). */
+QSpinBox#thresholdField { padding: 3px 4px; font-weight: 600; }
+QSpinBox#thresholdField[sliding="true"] { border-color: #CE7D6B; }
 
 /* Slim left nav rail (overlay). Same icon+label language as the settings tabs:
    Segoe UI primary so labels stay crisp; the leading FA glyph falls back to FA.
@@ -1305,16 +1356,14 @@ class SettingsPanel(QWidget):
         appr_box = QVBoxLayout(self.approaching_box)
         appr_box.setContentsMargins(44, 0, 0, 0)
         appr_box.setSpacing(6)
-        self.session_pct_spin = self._make_threshold_spin(
-            app_settings.get_approaching_session_pct(),
+        sess_row, self.session_pct_slider, self.session_pct_field = self._make_threshold_slider(
+            "5h session", app_settings.get_approaching_session_pct(),
             self._on_session_pct_changed)
-        self.weekly_pct_spin = self._make_threshold_spin(
-            app_settings.get_approaching_weekly_pct(),
+        week_row, self.weekly_pct_slider, self.weekly_pct_field = self._make_threshold_slider(
+            "7d week", app_settings.get_approaching_weekly_pct(),
             self._on_weekly_pct_changed)
-        appr_box.addLayout(self._threshold_row("Warn at", self.session_pct_spin,
-                                               "of the 5h session"))
-        appr_box.addLayout(self._threshold_row("Warn at", self.weekly_pct_spin,
-                                               "of the 7d week"))
+        appr_box.addLayout(sess_row)
+        appr_box.addLayout(week_row)
         self.overage_check = QCheckBox("Also alert when I cross 100% into overage")
         self.overage_check.setChecked(app_settings.get_overage_alert_enabled())
         self.overage_check.toggled.connect(self._on_overage_alert_toggled)
@@ -1564,15 +1613,50 @@ class SettingsPanel(QWidget):
         if self._on_token_view_changed:
             self._on_token_view_changed()
 
-    def _make_threshold_spin(self, value: int, on_change) -> QSpinBox:
-        """A self-clamping %-threshold spinner for the approaching-limit warnings."""
-        spin = QSpinBox()
-        spin.setRange(app_settings.APPROACHING_PCT_MIN, app_settings.APPROACHING_PCT_MAX)
-        spin.setSuffix("%")
-        spin.setValue(value)
-        spin.setFixedWidth(72)
-        spin.valueChanged.connect(on_change)
-        return spin
+    def _make_threshold_slider(self, label: str, value: int, on_change):
+        """A row for an approaching-limit % threshold: window label, a slider over
+        the allowed range, and an editable value field. Drag the slider or type a
+        number — the two stay in sync. Returns (row, slider, field)."""
+        lo, hi = app_settings.APPROACHING_PCT_MIN, app_settings.APPROACHING_PCT_MAX
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        win = QLabel(label)
+        win.setMinimumWidth(72)
+        slider = QSlider(Qt.Horizontal, objectName="threshold")
+        slider.setRange(lo, hi)
+        slider.setValue(value)
+        # Buttonless spinbox: looks like the value pill but you can click + type.
+        field = QSpinBox(objectName="thresholdField")
+        field.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        field.setRange(lo, hi)
+        field.setSuffix("%")
+        field.setValue(value)
+        field.setAlignment(Qt.AlignCenter)
+        field.setFixedWidth(48)
+
+        def from_slider(v: int) -> None:
+            field.blockSignals(True); field.setValue(v); field.blockSignals(False)
+            on_change(v)
+
+        def from_field(v: int) -> None:
+            slider.blockSignals(True); slider.setValue(v); slider.blockSignals(False)
+            on_change(v)
+
+        def set_sliding(on: bool) -> None:
+            # Show the field's salmon focus border while the slider is dragged,
+            # so moving the slider gives the same "active" cue as typing in it.
+            field.setProperty("sliding", "true" if on else "false")
+            field.style().unpolish(field)
+            field.style().polish(field)
+
+        slider.valueChanged.connect(from_slider)
+        field.valueChanged.connect(from_field)
+        slider.sliderPressed.connect(lambda: set_sliding(True))
+        slider.sliderReleased.connect(lambda: set_sliding(False))
+        row.addWidget(win)
+        row.addWidget(slider, 1)
+        row.addWidget(field)
+        return row, slider, field
 
     def _threshold_row(self, lead: str, spin: QSpinBox, trail: str) -> QHBoxLayout:
         row = QHBoxLayout()
