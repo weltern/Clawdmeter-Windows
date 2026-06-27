@@ -640,6 +640,7 @@ class ResetToast(QWidget):
         self.setObjectName("toastShell")
         self.setWindowTitle("Clawdmeter")
         self._show_seq = 0  # bumps each show so the sprite restarts its anim
+        self._on_click = None  # optional per-message click action (else `clicked`)
         # Frameless, on-top, no taskbar entry, and — critically — never steal
         # focus/activation from whatever the user is doing when it pops.
         self.setWindowFlags(
@@ -686,8 +687,11 @@ class ResetToast(QWidget):
         self._dismiss_timer.setSingleShot(True)
         self._dismiss_timer.timeout.connect(self.dismiss)
 
-    def show_message(self, title: str, body: str) -> None:
-        """Show (or re-show) the toast with new text and restart the timer."""
+    def show_message(self, title: str, body: str, on_click=None) -> None:
+        """Show (or re-show) the toast with new text and restart the timer.
+        `on_click`, if given, runs when the toast is clicked (instead of emitting
+        `clicked`) — e.g. the update toast opens the download page."""
+        self._on_click = on_click
         self.title.setText(title)
         self.body.setText(body)
         # dismiss() stops the sprite, and set_anims() no-ops on an unchanged key —
@@ -745,7 +749,10 @@ class ResetToast(QWidget):
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
-            self.clicked.emit()
+            if self._on_click is not None:
+                self._on_click()
+            else:
+                self.clicked.emit()
             self.dismiss()
             e.accept()
         else:
@@ -2797,35 +2804,29 @@ class Dashboard(QMainWindow):
         self._update_action.setText(f"Update available ({info.version}) — get it")
         self._update_action.setVisible(True)
         self._tray.setToolTip(f"Clawdmeter — update {info.version} available")
-        self._tray.showMessage(
+        self._toast.show_message(
             "Clawdmeter update available",
-            f"Version {info.version} is out. Click here, or use the tray menu, "
-            "to open the download page.",
-            QSystemTrayIcon.MessageIcon.Information, 10000,
+            f"Version {info.version} is out — click here or the tray menu to "
+            "open the download page.",
+            on_click=self._open_update_page,
         )
         self._start_tray_flash()
 
     def _on_update_check_finished(self, info) -> None:
         """Feedback for a manual 'Check for updates' (info is None when current)."""
         if info is None:
-            self._tray.showMessage(
-                "Clawdmeter",
-                f"You're on the latest version ({app_settings.APP_VERSION}).",
-                QSystemTrayIcon.MessageIcon.Information, 5000,
+            self._toast.show_message(
+                "You're up to date",
+                f"Clawdmeter {app_settings.APP_VERSION} is the latest version.",
             )
 
     def _check_for_updates_now(self) -> None:
         checker = getattr(self, "_update_checker", None)
         if checker is None:
-            self._tray.showMessage(
-                "Clawdmeter", "Update check isn't available in mock mode.",
-                QSystemTrayIcon.MessageIcon.Information, 4000,
-            )
+            self._toast.show_message(
+                "Clawdmeter", "Update check isn't available in mock mode.")
             return
-        self._tray.showMessage(
-            "Clawdmeter", "Checking for updates…",
-            QSystemTrayIcon.MessageIcon.Information, 3000,
-        )
+        self._toast.show_message("Clawdmeter", "Checking for updates…")
         checker.request_check()
 
     def _open_update_page(self) -> None:
