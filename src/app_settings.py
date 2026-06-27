@@ -6,7 +6,7 @@ from PySide6.QtCore import QSettings
 
 ORG = "Clawdmeter"
 APP = "Clawdmeter"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 
 KEY_CRED_PATH = "credentials/path"
 KEY_ALWAYS_ON_TOP = "window/always_on_top"
@@ -20,6 +20,9 @@ KEY_SHOW_SUBAGENTS = "sessions/show_subagents"
 KEY_SHOW_TOKEN_USAGE = "tokens/show_usage"
 KEY_AUTO_REFRESH = "token/auto_refresh"
 KEY_POLL_INTERVAL = "poll/interval_seconds"
+KEY_IDLE_BACKOFF_ENABLED = "poll/idle_backoff_enabled"
+KEY_IDLE_INTERVAL = "poll/idle_interval_seconds"
+KEY_IDLE_AFTER_MINUTES = "poll/idle_after_minutes"
 KEY_RESET_NOTIFY = "notify/reset_enabled"
 KEY_RESET_NOTIFY_TOAST = "notify/reset_toast"
 KEY_RESET_NOTIFY_SOUND = "notify/reset_sound"
@@ -36,6 +39,10 @@ KEY_RESET_NOTIFY_PUSH_PO_USER = "notify/reset_push_po_user"
 KEY_RESET_NOTIFY_PUSH_GOTIFY_URL = "notify/reset_push_gotify_url"
 KEY_RESET_NOTIFY_PUSH_GOTIFY_TOKEN = "notify/reset_push_gotify_token"
 KEY_RESET_NOTIFY_PUSH_CHANNELS = "notify/reset_push_channels"
+KEY_APPROACHING_ENABLED = "notify/approaching_enabled"
+KEY_APPROACHING_SESSION_PCT = "notify/approaching_session_pct"
+KEY_APPROACHING_WEEKLY_PCT = "notify/approaching_weekly_pct"
+KEY_OVERAGE_ALERT_ENABLED = "notify/overage_alert_enabled"
 KEY_AUTO_CHECK_UPDATES = "updates/auto_check"
 KEY_LAST_UPDATE_CHECK = "updates/last_check"
 KEY_SKIP_VERSION = "updates/skip_version"
@@ -49,6 +56,24 @@ PUSH_PROVIDERS = ("ntfy", "telegram", "discord", "slack", "pushover", "gotify",
 POLL_INTERVAL_MIN = 10
 POLL_INTERVAL_MAX = 600
 POLL_INTERVAL_DEFAULT = 60
+
+# Idle back-off: when no local session has been active for IDLE_AFTER minutes,
+# slow the poll to IDLE_INTERVAL seconds (still capped to never beat the normal
+# interval). Opt-in — see poll_cadence for why it only slows, never stops.
+IDLE_INTERVAL_MIN = 60
+IDLE_INTERVAL_MAX = 3600
+IDLE_INTERVAL_DEFAULT = 300
+IDLE_AFTER_MIN = 1
+IDLE_AFTER_MAX = 240
+IDLE_AFTER_DEFAULT = 15
+
+# Approaching-limit warning thresholds (% utilization). The floor keeps a
+# "warning" meaningful — below 50% you're not approaching anything, and the 5h
+# window cycles often enough that a low threshold would just spam.
+APPROACHING_PCT_MIN = 50
+APPROACHING_PCT_MAX = 99
+APPROACHING_SESSION_DEFAULT = 90  # 5h resets fast — warn later
+APPROACHING_WEEKLY_DEFAULT = 80   # 7d is the scarce window — warn earlier
 
 
 def _settings() -> QSettings:
@@ -208,6 +233,53 @@ def set_poll_interval(seconds: int) -> int:
     return clamped
 
 
+def get_idle_backoff_enabled() -> bool:
+    v = _settings().value(KEY_IDLE_BACKOFF_ENABLED, False)  # opt-in
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_idle_backoff_enabled(on: bool) -> None:
+    _settings().setValue(KEY_IDLE_BACKOFF_ENABLED, bool(on))
+
+
+def _clamp_idle_interval(value: int) -> int:
+    return max(IDLE_INTERVAL_MIN, min(IDLE_INTERVAL_MAX, value))
+
+
+def get_idle_interval() -> int:
+    raw = _settings().value(KEY_IDLE_INTERVAL, IDLE_INTERVAL_DEFAULT)
+    try:
+        return _clamp_idle_interval(int(raw))
+    except (TypeError, ValueError):
+        return IDLE_INTERVAL_DEFAULT
+
+
+def set_idle_interval(seconds: int) -> int:
+    clamped = _clamp_idle_interval(int(seconds))
+    _settings().setValue(KEY_IDLE_INTERVAL, clamped)
+    return clamped
+
+
+def _clamp_idle_after(value: int) -> int:
+    return max(IDLE_AFTER_MIN, min(IDLE_AFTER_MAX, value))
+
+
+def get_idle_after_minutes() -> int:
+    raw = _settings().value(KEY_IDLE_AFTER_MINUTES, IDLE_AFTER_DEFAULT)
+    try:
+        return _clamp_idle_after(int(raw))
+    except (TypeError, ValueError):
+        return IDLE_AFTER_DEFAULT
+
+
+def set_idle_after_minutes(minutes: int) -> int:
+    clamped = _clamp_idle_after(int(minutes))
+    _settings().setValue(KEY_IDLE_AFTER_MINUTES, clamped)
+    return clamped
+
+
 def get_reset_notify() -> bool:
     v = _settings().value(KEY_RESET_NOTIFY, True)  # on by default
     if isinstance(v, str):
@@ -351,6 +423,61 @@ def get_reset_notify_push_gotify_token() -> str:
 
 def set_reset_notify_push_gotify_token(token: str) -> None:
     _settings().setValue(KEY_RESET_NOTIFY_PUSH_GOTIFY_TOKEN, (token or "").strip())
+
+
+def get_approaching_enabled() -> bool:
+    v = _settings().value(KEY_APPROACHING_ENABLED, False)  # opt-in (proactive)
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_approaching_enabled(on: bool) -> None:
+    _settings().setValue(KEY_APPROACHING_ENABLED, bool(on))
+
+
+def _clamp_approaching_pct(value: int) -> int:
+    return max(APPROACHING_PCT_MIN, min(APPROACHING_PCT_MAX, value))
+
+
+def _get_approaching_pct(key: str, default: int) -> int:
+    raw = _settings().value(key, default)
+    try:
+        return _clamp_approaching_pct(int(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+def get_approaching_session_pct() -> int:
+    return _get_approaching_pct(KEY_APPROACHING_SESSION_PCT, APPROACHING_SESSION_DEFAULT)
+
+
+def set_approaching_session_pct(pct: int) -> int:
+    """Clamp to [MIN, MAX], persist, and return the value actually stored."""
+    clamped = _clamp_approaching_pct(int(pct))
+    _settings().setValue(KEY_APPROACHING_SESSION_PCT, clamped)
+    return clamped
+
+
+def get_approaching_weekly_pct() -> int:
+    return _get_approaching_pct(KEY_APPROACHING_WEEKLY_PCT, APPROACHING_WEEKLY_DEFAULT)
+
+
+def set_approaching_weekly_pct(pct: int) -> int:
+    clamped = _clamp_approaching_pct(int(pct))
+    _settings().setValue(KEY_APPROACHING_WEEKLY_PCT, clamped)
+    return clamped
+
+
+def get_overage_alert_enabled() -> bool:
+    v = _settings().value(KEY_OVERAGE_ALERT_ENABLED, True)  # on within the feature
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_overage_alert_enabled(on: bool) -> None:
+    _settings().setValue(KEY_OVERAGE_ALERT_ENABLED, bool(on))
 
 
 def get_auto_check_updates() -> bool:

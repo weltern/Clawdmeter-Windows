@@ -41,6 +41,7 @@ from PySide6.QtGui import (
     QRegularExpressionValidator,
 )
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -56,6 +57,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
+    QSpinBox,
     QStackedWidget,
     QSystemTrayIcon,
     QToolButton,
@@ -64,6 +67,8 @@ from PySide6.QtWidgets import (
 )
 
 import app_settings
+import poll_cadence
+import run_at_startup
 import start_menu
 import token_refresh
 import winutil
@@ -73,6 +78,7 @@ import remote_notify
 import stats
 from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, WeekBars
 from usage_history import UsageHistory
+from approaching_notify import ApproachingNotifier
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
 from update_check import UpdateChecker
@@ -242,6 +248,55 @@ QCheckBox::indicator:checked {
     background-color: #CE7D6B; border-color: #CE7D6B;
     image: none;
 }
+
+/* Text/number inputs — the app had no input styling, so these fell back to the
+   native light Windows look. Theme them to match the dark surface: poll-interval
+   field, push-channel editors, and the threshold / idle spinners. */
+QLineEdit, QSpinBox {
+    background-color: #0e1116; color: #e6edf3;
+    border: 1px solid #374151; border-radius: 6px;
+    padding: 4px 8px;
+    selection-background-color: #CE7D6B; selection-color: #0a0d12;
+}
+QLineEdit:focus, QSpinBox:focus { border-color: #CE7D6B; }
+QLineEdit:disabled, QSpinBox:disabled {
+    color: #4b5563; background-color: #161b22; border-color: #21262d;
+}
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: border; width: 15px; background: #1f2937;
+    border-left: 1px solid #374151;
+}
+QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 6px; }
+QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 6px; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #374151; }
+QSpinBox::up-arrow {
+    width: 0; height: 0; image: none;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-bottom: 5px solid #9ca3af;
+}
+QSpinBox::down-arrow {
+    width: 0; height: 0; image: none;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-top: 5px solid #9ca3af;
+}
+QSpinBox::up-arrow:hover { border-bottom-color: #e6edf3; }
+QSpinBox::down-arrow:hover { border-top-color: #e6edf3; }
+
+/* Approaching-limit threshold sliders: dark groove, salmon fill up to the
+   handle, salmon handle, with a value pill beside it. */
+QSlider#threshold::groove:horizontal { height: 4px; border-radius: 2px; background: #1f2937; }
+QSlider#threshold::add-page:horizontal { background: #1f2937; border-radius: 2px; }
+QSlider#threshold::sub-page:horizontal { background: #CE7D6B; border-radius: 2px; }
+QSlider#threshold::handle:horizontal {
+    width: 13px; height: 13px; margin: -5px 0; border-radius: 7px;
+    background: #CE7D6B; border: 2px solid #0a0d12;
+}
+QSlider#threshold::handle:horizontal:hover { background: #d98f7e; }
+/* Editable value field beside the slider — looks like a pill, but click + type.
+   It lights up with the salmon focus border both when focused and while its
+   slider is being dragged ([sliding="true"]). */
+QSpinBox#thresholdField { padding: 3px 4px; font-weight: 600; }
+QSpinBox#thresholdField[sliding="true"] { border-color: #CE7D6B; }
 
 /* Slim left nav rail (overlay). Same icon+label language as the settings tabs:
    Segoe UI primary so labels stay crisp; the leading FA glyph falls back to FA.
@@ -585,6 +640,7 @@ class ResetToast(QWidget):
         self.setObjectName("toastShell")
         self.setWindowTitle("Clawdmeter")
         self._show_seq = 0  # bumps each show so the sprite restarts its anim
+        self._on_click = None  # optional per-message click action (else `clicked`)
         # Frameless, on-top, no taskbar entry, and — critically — never steal
         # focus/activation from whatever the user is doing when it pops.
         self.setWindowFlags(
@@ -631,8 +687,11 @@ class ResetToast(QWidget):
         self._dismiss_timer.setSingleShot(True)
         self._dismiss_timer.timeout.connect(self.dismiss)
 
-    def show_message(self, title: str, body: str) -> None:
-        """Show (or re-show) the toast with new text and restart the timer."""
+    def show_message(self, title: str, body: str, on_click=None) -> None:
+        """Show (or re-show) the toast with new text and restart the timer.
+        `on_click`, if given, runs when the toast is clicked (instead of emitting
+        `clicked`) — e.g. the update toast opens the download page."""
+        self._on_click = on_click
         self.title.setText(title)
         self.body.setText(body)
         # dismiss() stops the sprite, and set_anims() no-ops on an unchanged key —
@@ -690,7 +749,10 @@ class ResetToast(QWidget):
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
-            self.clicked.emit()
+            if self._on_click is not None:
+                self._on_click()
+            else:
+                self.clicked.emit()
             self.dismiss()
             e.accept()
         else:
@@ -982,7 +1044,8 @@ class SettingsPanel(QWidget):
     def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed,
                  on_refresh_token=None, on_auto_refresh_changed=None,
                  on_poll_interval_changed=None, on_sessions_view_changed=None,
-                 on_token_view_changed=None, on_check_updates=None) -> None:
+                 on_token_view_changed=None, on_check_updates=None,
+                 on_idle_backoff_changed=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -994,6 +1057,7 @@ class SettingsPanel(QWidget):
         self._on_sessions_view_changed = on_sessions_view_changed
         self._on_token_view_changed = on_token_view_changed
         self._on_check_updates = on_check_updates
+        self._on_idle_backoff_changed = on_idle_backoff_changed
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1115,6 +1179,21 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.quit_on_close_check)
 
         layout.addSpacing(10)
+        layout.addWidget(QLabel("STARTUP", objectName="sectionLabel"))
+        startup_hint = QLabel(
+            "Launch Clawdmeter automatically when you sign in to Windows. It "
+            "starts quietly in the system tray — click the tray icon to open it.",
+            objectName="sectionHint",
+        )
+        startup_hint.setWordWrap(True)
+        layout.addWidget(startup_hint)
+        self.startup_check = QCheckBox("Start when I sign in to Windows")
+        self.startup_check.setChecked(run_at_startup.is_enabled())
+        self.startup_check.setEnabled(run_at_startup.is_supported())
+        self.startup_check.toggled.connect(self._on_run_at_startup_toggled)
+        layout.addWidget(self.startup_check)
+
+        layout.addSpacing(10)
         layout.addWidget(QLabel("UPDATES", objectName="sectionLabel"))
         updates_hint = QLabel(
             "Clawdmeter ships as a single .exe with no auto-installer. When a "
@@ -1221,25 +1300,104 @@ class SettingsPanel(QWidget):
         self._poll_note_hold.timeout.connect(self._fade_poll_note)
         layout.addWidget(self.poll_interval_note)
 
+        # Idle back-off: slow polling when no local session has been active for a
+        # while. Opt-in; the sub-box (after / interval spinners) follows the toggle.
+        self.idle_backoff_check = QCheckBox("Slow polling when idle")
+        self.idle_backoff_check.setChecked(app_settings.get_idle_backoff_enabled())
+        self.idle_backoff_check.toggled.connect(self._on_idle_backoff_toggled)
+        layout.addWidget(self.idle_backoff_check)
+
+        self.idle_box = QWidget()
+        idle_box = QVBoxLayout(self.idle_box)
+        idle_box.setContentsMargins(22, 0, 0, 0)
+        idle_box.setSpacing(6)
+        idle_hint = QLabel(
+            "Poll less often when no Claude Code session has been active for a "
+            "while. Usage is account-wide, so usage from another machine shows "
+            "up more slowly while idle — it never stops, just slows.",
+            objectName="sectionHint",
+        )
+        idle_hint.setWordWrap(True)
+        idle_box.addWidget(idle_hint)
+        self.idle_after_spin = QSpinBox()
+        self.idle_after_spin.setRange(app_settings.IDLE_AFTER_MIN, app_settings.IDLE_AFTER_MAX)
+        self.idle_after_spin.setSuffix(" min")
+        self.idle_after_spin.setValue(app_settings.get_idle_after_minutes())
+        self.idle_after_spin.setFixedWidth(80)
+        self.idle_after_spin.valueChanged.connect(self._on_idle_after_changed)
+        self.idle_interval_spin = QSpinBox()
+        self.idle_interval_spin.setRange(app_settings.IDLE_INTERVAL_MIN, app_settings.IDLE_INTERVAL_MAX)
+        self.idle_interval_spin.setSuffix(" s")
+        self.idle_interval_spin.setSingleStep(30)
+        self.idle_interval_spin.setValue(app_settings.get_idle_interval())
+        self.idle_interval_spin.setFixedWidth(88)
+        self.idle_interval_spin.valueChanged.connect(self._on_idle_interval_changed)
+        idle_box.addLayout(self._threshold_row("Back off after", self.idle_after_spin,
+                                               "of inactivity"))
+        idle_box.addLayout(self._threshold_row("then poll every", self.idle_interval_spin,
+                                               ""))
+        layout.addWidget(self.idle_box)
+        self.idle_box.setVisible(self.idle_backoff_check.isChecked())
+
         layout = notif_layout
-        layout.addWidget(QLabel("NOTIFICATIONS", objectName="sectionLabel"))
+        layout.addWidget(QLabel("WHAT TO NOTIFY", objectName="sectionLabel"))
         notify_hint = QLabel(
-            "Alert me when a usage limit resets and I can resume — only when I "
-            "was near the limit.",
+            "Pick what you want to be alerted about. Choose how you're reached "
+            "below — it applies to every alert here.",
             objectName="sectionHint",
         )
         notify_hint.setWordWrap(True)
         layout.addWidget(notify_hint)
-        self.notify_check = QCheckBox("Notify on limit reset")
+        self.notify_check = QCheckBox("On a limit reset (when you can resume)")
         self.notify_check.setChecked(app_settings.get_reset_notify())
         self.notify_check.toggled.connect(self._on_notify_toggled)
         layout.addWidget(self.notify_check)
 
-        # Windows channel: the desktop toast + tray flash (indented under the
-        # master), with Play-a-sound / Pop-to-front nested in an indented box so
-        # they hide together when the channel — or the master — is off.
+        # Approaching-limit master + its threshold sub-box.
+        self.approaching_check = QCheckBox("When approaching a limit")
+        self.approaching_check.setChecked(app_settings.get_approaching_enabled())
+        self.approaching_check.toggled.connect(self._on_approaching_toggled)
+        layout.addWidget(self.approaching_check)
+
+        self.approaching_box = QWidget()
+        appr_box = QVBoxLayout(self.approaching_box)
+        appr_box.setContentsMargins(44, 0, 0, 0)
+        appr_box.setSpacing(6)
+        sess_row, self.session_pct_slider, self.session_pct_field = self._make_threshold_slider(
+            "5h session", app_settings.get_approaching_session_pct(),
+            self._on_session_pct_changed)
+        week_row, self.weekly_pct_slider, self.weekly_pct_field = self._make_threshold_slider(
+            "7d week", app_settings.get_approaching_weekly_pct(),
+            self._on_weekly_pct_changed)
+        appr_box.addLayout(sess_row)
+        appr_box.addLayout(week_row)
+        self.overage_check = QCheckBox("Also alert when I cross 100% into overage")
+        self.overage_check.setChecked(app_settings.get_overage_alert_enabled())
+        self.overage_check.toggled.connect(self._on_overage_alert_toggled)
+        appr_box.addWidget(self.overage_check)
+        layout.addWidget(self.approaching_box)
+
+        # Shared delivery channels, wrapped so the whole block hides as a unit
+        # when no alert type is enabled. Subsequent channel widgets go into it.
+        layout.addSpacing(10)
+        self.notify_how_box = QWidget()
+        how_layout = QVBoxLayout(self.notify_how_box)
+        how_layout.setContentsMargins(0, 0, 0, 0)
+        how_layout.setSpacing(6)
+        how_layout.addWidget(QLabel("HOW YOU'RE NOTIFIED", objectName="sectionLabel"))
+        how_hint = QLabel(
+            "Where alerts reach you — shared by every alert above.",
+            objectName="sectionHint",
+        )
+        how_hint.setWordWrap(True)
+        how_layout.addWidget(how_hint)
+        layout.addWidget(self.notify_how_box)
+        layout = how_layout
+
+        # Windows channel: the desktop toast + tray flash, with Play-a-sound /
+        # Pop-to-front nested in an indented box so they hide together when the
+        # channel — or all alerts — are off.
         self.notify_toast_check = QCheckBox("Show a Windows notification")
-        self.notify_toast_check.setStyleSheet("margin-left: 22px;")
         self.notify_toast_check.setChecked(app_settings.get_reset_notify_toast())
         self.notify_toast_check.toggled.connect(self._on_notify_toast_toggled)
         layout.addWidget(self.notify_toast_check)
@@ -1259,7 +1417,6 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.notify_toast_box)
 
         self.notify_push_check = QCheckBox("Send a push notification")
-        self.notify_push_check.setStyleSheet("margin-left: 22px;")
         self.notify_push_check.setChecked(app_settings.get_reset_notify_push())
         self.notify_push_check.toggled.connect(self._on_notify_push_toggled)
         layout.addWidget(self.notify_push_check)
@@ -1463,6 +1620,89 @@ class SettingsPanel(QWidget):
         if self._on_token_view_changed:
             self._on_token_view_changed()
 
+    def _make_threshold_slider(self, label: str, value: int, on_change):
+        """A row for an approaching-limit % threshold: window label, a slider over
+        the allowed range, and an editable value field. Drag the slider or type a
+        number — the two stay in sync. Returns (row, slider, field)."""
+        lo, hi = app_settings.APPROACHING_PCT_MIN, app_settings.APPROACHING_PCT_MAX
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        win = QLabel(label)
+        win.setMinimumWidth(72)
+        slider = QSlider(Qt.Horizontal, objectName="threshold")
+        slider.setRange(lo, hi)
+        slider.setValue(value)
+        # Buttonless spinbox: looks like the value pill but you can click + type.
+        field = QSpinBox(objectName="thresholdField")
+        field.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        field.setRange(lo, hi)
+        field.setSuffix("%")
+        field.setValue(value)
+        field.setAlignment(Qt.AlignCenter)
+        field.setFixedWidth(48)
+
+        def from_slider(v: int) -> None:
+            field.blockSignals(True); field.setValue(v); field.blockSignals(False)
+            on_change(v)
+
+        def from_field(v: int) -> None:
+            slider.blockSignals(True); slider.setValue(v); slider.blockSignals(False)
+            on_change(v)
+
+        def set_sliding(on: bool) -> None:
+            # Show the field's salmon focus border while the slider is dragged,
+            # so moving the slider gives the same "active" cue as typing in it.
+            field.setProperty("sliding", "true" if on else "false")
+            field.style().unpolish(field)
+            field.style().polish(field)
+
+        slider.valueChanged.connect(from_slider)
+        field.valueChanged.connect(from_field)
+        slider.sliderPressed.connect(lambda: set_sliding(True))
+        slider.sliderReleased.connect(lambda: set_sliding(False))
+        row.addWidget(win)
+        row.addWidget(slider, 1)
+        row.addWidget(field)
+        return row, slider, field
+
+    def _threshold_row(self, lead: str, spin: QSpinBox, trail: str) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(QLabel(lead))
+        row.addWidget(spin)
+        row.addWidget(QLabel(trail))
+        row.addStretch(1)
+        return row
+
+    def _on_approaching_toggled(self, checked: bool) -> None:
+        app_settings.set_approaching_enabled(checked)
+        self._sync_notify_subtoggles()
+
+    def _on_session_pct_changed(self, value: int) -> None:
+        app_settings.set_approaching_session_pct(value)
+
+    def _on_weekly_pct_changed(self, value: int) -> None:
+        app_settings.set_approaching_weekly_pct(value)
+
+    def _on_overage_alert_toggled(self, checked: bool) -> None:
+        app_settings.set_overage_alert_enabled(checked)
+
+    def _on_idle_backoff_toggled(self, checked: bool) -> None:
+        app_settings.set_idle_backoff_enabled(checked)
+        self.idle_box.setVisible(checked)
+        if self._on_idle_backoff_changed:
+            self._on_idle_backoff_changed()
+
+    def _on_idle_after_changed(self, value: int) -> None:
+        app_settings.set_idle_after_minutes(value)
+        if self._on_idle_backoff_changed:
+            self._on_idle_backoff_changed()
+
+    def _on_idle_interval_changed(self, value: int) -> None:
+        app_settings.set_idle_interval(value)
+        if self._on_idle_backoff_changed:
+            self._on_idle_backoff_changed()
+
     def _on_notify_toggled(self, checked: bool) -> None:
         app_settings.set_reset_notify(checked)
         self._sync_notify_subtoggles()
@@ -1543,22 +1783,37 @@ class SettingsPanel(QWidget):
 
     def _sync_notify_subtoggles(self) -> None:
         """Show/hide the notification sub-options to match the hierarchy: the
-        master off hides both channels; each channel's sub-box (Windows
-        sound/pop, or the push channel list) hides when that channel is off."""
-        on = self.notify_check.isChecked()
-        # Both channel toggles hide entirely when the master is off.
-        self.notify_toast_check.setVisible(on)
-        self.notify_push_check.setVisible(on)
+        threshold box follows the approaching master; the shared delivery
+        channels appear when ANY alert type is on; each channel's sub-box
+        (Windows sound/pop, or the push channel list) hides when its channel is
+        off."""
+        # Threshold sub-box follows the approaching master.
+        self.approaching_box.setVisible(self.approaching_check.isChecked())
 
-        # Windows channel sub-box (sound + pop): only when master + Windows on.
-        toast_on = on and self.notify_toast_check.isChecked()
+        # Shared "how" channels are relevant when any alert type is enabled.
+        any_on = self.notify_check.isChecked() or self.approaching_check.isChecked()
+        self.notify_how_box.setVisible(any_on)
+
+        # Windows channel sub-box (sound + pop): only when shown + Windows on.
+        toast_on = any_on and self.notify_toast_check.isChecked()
         self.notify_toast_box.setVisible(toast_on)
 
-        # Push channel sub-box (the added-channel list): only when master + push on.
-        push_on = on and self.notify_push_check.isChecked()
+        # Push channel sub-box (the added-channel list): only when shown + push on.
+        push_on = any_on and self.notify_push_check.isChecked()
         self.notify_push_box.setVisible(push_on)
         if not push_on:
             self.notify_push_test_status.clear()
+
+    def _on_run_at_startup_toggled(self, checked: bool) -> None:
+        ok, msg = run_at_startup.enable() if checked else run_at_startup.disable()
+        if not ok:
+            QMessageBox.warning(
+                self, "Clawdmeter",
+                f"Couldn't update the startup setting:\n{msg}")
+            # Revert the box to the registry's actual state without re-firing.
+            self.startup_check.blockSignals(True)
+            self.startup_check.setChecked(run_at_startup.is_enabled())
+            self.startup_check.blockSignals(False)
 
     def _refresh_start_menu_btn(self) -> None:
         if start_menu.has_shortcut():
@@ -1866,6 +2121,7 @@ class Dashboard(QMainWindow):
             on_sessions_view_changed=self._apply_session_view,
             on_token_view_changed=self._apply_token_view,
             on_check_updates=self._check_for_updates_now,
+            on_idle_backoff_changed=self._apply_poll_cadence,
         )
         self._pages.addWidget(self.settings_panel)   # index 2 (Settings)
 
@@ -1918,6 +2174,12 @@ class Dashboard(QMainWindow):
 
         self._rate = RateGroupTracker()
         self._reset_notifier = ResetNotifier()
+        self._approaching_notifier = ApproachingNotifier()
+        # Idle poll back-off: track the last time a local session was active, and
+        # whether the poll is currently slowed. Start "active" so a fresh launch
+        # polls normally until the idle window elapses.
+        self._last_session_activity_ts = time.time()
+        self._poll_idle = False
         self._last_sample: UsageSample | None = None
         self._last_tooltip = ""
         self._transcript_state: TranscriptState | None = None
@@ -2542,35 +2804,29 @@ class Dashboard(QMainWindow):
         self._update_action.setText(f"Update available ({info.version}) — get it")
         self._update_action.setVisible(True)
         self._tray.setToolTip(f"Clawdmeter — update {info.version} available")
-        self._tray.showMessage(
+        self._toast.show_message(
             "Clawdmeter update available",
-            f"Version {info.version} is out. Click here, or use the tray menu, "
-            "to open the download page.",
-            QSystemTrayIcon.MessageIcon.Information, 10000,
+            f"Version {info.version} is out — click here or the tray menu to "
+            "open the download page.",
+            on_click=self._open_update_page,
         )
         self._start_tray_flash()
 
     def _on_update_check_finished(self, info) -> None:
         """Feedback for a manual 'Check for updates' (info is None when current)."""
         if info is None:
-            self._tray.showMessage(
-                "Clawdmeter",
-                f"You're on the latest version ({app_settings.APP_VERSION}).",
-                QSystemTrayIcon.MessageIcon.Information, 5000,
+            self._toast.show_message(
+                "You're up to date",
+                f"Clawdmeter {app_settings.APP_VERSION} is the latest version.",
             )
 
     def _check_for_updates_now(self) -> None:
         checker = getattr(self, "_update_checker", None)
         if checker is None:
-            self._tray.showMessage(
-                "Clawdmeter", "Update check isn't available in mock mode.",
-                QSystemTrayIcon.MessageIcon.Information, 4000,
-            )
+            self._toast.show_message(
+                "Clawdmeter", "Update check isn't available in mock mode.")
             return
-        self._tray.showMessage(
-            "Clawdmeter", "Checking for updates…",
-            QSystemTrayIcon.MessageIcon.Information, 3000,
-        )
+        self._toast.show_message("Clawdmeter", "Checking for updates…")
         checker.request_check()
 
     def _open_update_page(self) -> None:
@@ -2604,6 +2860,46 @@ class Dashboard(QMainWindow):
         poller = getattr(self, "_poller", None)
         if poller is not None:
             poller.set_interval(seconds)
+
+    def _note_session_activity(self) -> None:
+        """A live session was seen — refresh the activity clock and, if polling
+        had backed off while idle, snap straight back to the normal cadence."""
+        self._last_session_activity_ts = time.time()
+        if self._poll_idle:
+            self._poll_idle = False
+            poller = getattr(self, "_poller", None)
+            if poller is not None:
+                poller.set_interval(app_settings.get_poll_interval())
+                poller.wake()  # don't wait out the long idle sleep
+
+    def _maybe_backoff_poll(self) -> None:
+        """Each poll: slow the cadence when idle back-off is on and no session
+        has been active for the idle window; otherwise keep it normal."""
+        poller = getattr(self, "_poller", None)
+        if poller is None:
+            return
+        now = time.time()
+        enabled = app_settings.get_idle_backoff_enabled()
+        idle_after = app_settings.get_idle_after_minutes() * 60
+        self._poll_idle = poll_cadence.is_idle(
+            now, self._last_session_activity_ts,
+            enabled=enabled, idle_after_secs=idle_after)
+        poller.set_interval(poll_cadence.target_interval(
+            now, self._last_session_activity_ts,
+            enabled=enabled,
+            normal=app_settings.get_poll_interval(),
+            idle_interval=app_settings.get_idle_interval(),
+            idle_after_secs=idle_after))
+
+    def _apply_poll_cadence(self, *args) -> None:
+        """Re-evaluate the cadence after an idle-back-off setting changes; wake
+        the poller if we just dropped out of idle so the change is immediate."""
+        was_idle = self._poll_idle
+        self._maybe_backoff_poll()
+        if was_idle and not self._poll_idle:
+            poller = getattr(self, "_poller", None)
+            if poller is not None:
+                poller.wake()
 
     def _on_refresh_status(self, result) -> None:
         """token_refresh.RefreshResult from the poll thread (auto or manual)."""
@@ -2784,11 +3080,19 @@ class Dashboard(QMainWindow):
         self._on_sessions(states)
 
     def _on_sample(self, s: UsageSample) -> None:
-        # Feed every sample (incl. errors) so the notifier can ignore them
-        # without disturbing its baseline.
+        # Feed every sample (incl. errors) so the notifiers can ignore them
+        # without disturbing their baselines.
         decision = self._reset_notifier.observe(s)
+        approaching = self._approaching_notifier.observe(
+            s,
+            enabled=app_settings.get_approaching_enabled(),
+            session_threshold=app_settings.get_approaching_session_pct(),
+            weekly_threshold=app_settings.get_approaching_weekly_pct(),
+            overage_enabled=app_settings.get_overage_alert_enabled(),
+        )
         self._last_sample = s
         self.usage_history.record(s)   # ring + throttled disk log (skips errors)
+        self._maybe_backoff_poll()     # adjust cadence to local session activity
         if not s.ok:
             self._apply_status_badge(s.status)
             self._tray.setToolTip(f"Clawdmeter - {s.status}")
@@ -2827,16 +3131,32 @@ class Dashboard(QMainWindow):
         # (optionally) pop the window to the foreground.
         if decision.notify and app_settings.get_reset_notify():
             self._fire_reset_notification(decision)
+        if approaching:
+            self._fire_approaching_notification(approaching)
 
     def _fire_reset_notification(self, decision: ResetDecision) -> None:
         """Surface a gated limit reset via the user's chosen methods."""
         which = " & ".join(r.capitalize() for r in decision.reasons) or "Usage"
-        title = "Claude limit reset"
         body = f"{which} limit has reset — you can resume."
+        self._deliver_alert("Claude limit reset", body)
 
-        # Windows channel: the themed toast + tray flash, with sound and
-        # window-pop as its sub-options. Off -> the push channel can still fire,
-        # so the user can choose to be notified only on their phone/Discord.
+    def _fire_approaching_notification(self, events: list) -> None:
+        """Surface approaching-limit / overage events via the shared channels."""
+        overage = any(e.kind == "overage" for e in events)
+        title = "Claude overage started" if overage else "Approaching Claude limit"
+        lines = [
+            f"{e.window} passed 100% — now using paid credits."
+            if e.kind == "overage"
+            else f"{e.window} is at {e.pct}% of your limit."
+            for e in events
+        ]
+        self._deliver_alert(title, "\n".join(lines))
+
+    def _deliver_alert(self, title: str, body: str) -> None:
+        """Send an alert over the user's chosen channels (shared by reset and
+        approaching alerts). Windows channel: the themed toast + tray flash,
+        with sound and window-pop as sub-options. Off -> the push channel can
+        still fire, so the user can be notified only on their phone/Discord."""
         if app_settings.get_reset_notify_toast():
             self._toast.show_message(title, body)
             self._start_tray_flash()
@@ -3049,6 +3369,8 @@ class Dashboard(QMainWindow):
         """Receive the watcher's per-session states, remember them, and render
         through the current Settings view (multiple-sessions / subagents toggles)."""
         self._last_raw_states = list(states)
+        if states:  # a live session is present -> reset the idle clock
+            self._note_session_activity()
         self._apply_session_view()
 
     def _apply_session_view(self) -> None:
