@@ -67,7 +67,8 @@ def test_sections_routed_to_expected_tabs():
                        sp.poll_interval_edit, sp.idle_backoff_check,
                        sp.idle_after_spin, sp.idle_interval_spin],
         "notifications": [sp.notify_check, sp.approaching_check,
-                          sp.session_pct_slider, sp.weekly_pct_slider, sp.overage_check,
+                          sp.session_pct_slider, sp.session_pct_field,
+                          sp.weekly_pct_slider, sp.weekly_pct_field, sp.overage_check,
                           sp.notify_toast_check, sp.notify_push_check,
                           sp.notify_push_add_btn],
     }
@@ -110,6 +111,21 @@ def test_shared_channels_show_for_any_alert_and_hide_when_all_off():
     _set_silently(sp.approaching_check, False)
     sp._sync_notify_subtoggles()
     assert sp.notify_how_box.isHidden()
+
+
+def test_threshold_slider_and_field_stay_in_sync():
+    import app_settings
+    # Swap the setter to a no-op so driving the widgets never writes real settings.
+    real = app_settings.set_approaching_session_pct
+    app_settings.set_approaching_session_pct = lambda v: None
+    try:
+        sp = _panel()
+        sp.session_pct_slider.setValue(72)
+        assert sp.session_pct_field.value() == 72   # slider -> field
+        sp.session_pct_field.setValue(64)
+        assert sp.session_pct_slider.value() == 64   # field -> slider (no loop)
+    finally:
+        app_settings.set_approaching_session_pct = real
 
 
 if __name__ == "__main__":

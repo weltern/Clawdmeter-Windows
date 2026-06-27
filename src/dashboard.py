@@ -41,6 +41,7 @@ from PySide6.QtGui import (
     QRegularExpressionValidator,
 )
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -291,10 +292,8 @@ QSlider#threshold::handle:horizontal {
     background: #CE7D6B; border: 2px solid #0a0d12;
 }
 QSlider#threshold::handle:horizontal:hover { background: #d98f7e; }
-QLabel#thresholdPill {
-    min-width: 38px; font-size: 12px; font-weight: 600; color: #e6edf3;
-    background: #1f2937; border: 1px solid #374151; border-radius: 6px; padding: 3px 0;
-}
+/* Editable value field beside the slider — looks like a pill, but click + type. */
+QSpinBox#thresholdField { padding: 3px 4px; font-weight: 600; }
 
 /* Slim left nav rail (overlay). Same icon+label language as the settings tabs:
    Segoe UI primary so labels stay crisp; the leading FA glyph falls back to FA.
@@ -1354,10 +1353,10 @@ class SettingsPanel(QWidget):
         appr_box = QVBoxLayout(self.approaching_box)
         appr_box.setContentsMargins(44, 0, 0, 0)
         appr_box.setSpacing(6)
-        sess_row, self.session_pct_slider, self.session_pct_pill = self._make_threshold_slider(
+        sess_row, self.session_pct_slider, self.session_pct_field = self._make_threshold_slider(
             "5h session", app_settings.get_approaching_session_pct(),
             self._on_session_pct_changed)
-        week_row, self.weekly_pct_slider, self.weekly_pct_pill = self._make_threshold_slider(
+        week_row, self.weekly_pct_slider, self.weekly_pct_field = self._make_threshold_slider(
             "7d week", app_settings.get_approaching_weekly_pct(),
             self._on_weekly_pct_changed)
         appr_box.addLayout(sess_row)
@@ -1613,21 +1612,39 @@ class SettingsPanel(QWidget):
 
     def _make_threshold_slider(self, label: str, value: int, on_change):
         """A row for an approaching-limit % threshold: window label, a slider over
-        the allowed range, and a live value pill. Returns (row, slider, pill)."""
+        the allowed range, and an editable value field. Drag the slider or type a
+        number — the two stay in sync. Returns (row, slider, field)."""
+        lo, hi = app_settings.APPROACHING_PCT_MIN, app_settings.APPROACHING_PCT_MAX
         row = QHBoxLayout()
         row.setSpacing(10)
         win = QLabel(label)
         win.setMinimumWidth(72)
         slider = QSlider(Qt.Horizontal, objectName="threshold")
-        slider.setRange(app_settings.APPROACHING_PCT_MIN, app_settings.APPROACHING_PCT_MAX)
+        slider.setRange(lo, hi)
         slider.setValue(value)
-        pill = QLabel(f"{value}%", objectName="thresholdPill")
-        pill.setAlignment(Qt.AlignCenter)
-        slider.valueChanged.connect(lambda v: (pill.setText(f"{v}%"), on_change(v)))
+        # Buttonless spinbox: looks like the value pill but you can click + type.
+        field = QSpinBox(objectName="thresholdField")
+        field.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        field.setRange(lo, hi)
+        field.setSuffix("%")
+        field.setValue(value)
+        field.setAlignment(Qt.AlignCenter)
+        field.setFixedWidth(48)
+
+        def from_slider(v: int) -> None:
+            field.blockSignals(True); field.setValue(v); field.blockSignals(False)
+            on_change(v)
+
+        def from_field(v: int) -> None:
+            slider.blockSignals(True); slider.setValue(v); slider.blockSignals(False)
+            on_change(v)
+
+        slider.valueChanged.connect(from_slider)
+        field.valueChanged.connect(from_field)
         row.addWidget(win)
         row.addWidget(slider, 1)
-        row.addWidget(pill)
-        return row, slider, pill
+        row.addWidget(field)
+        return row, slider, field
 
     def _threshold_row(self, lead: str, spin: QSpinBox, trail: str) -> QHBoxLayout:
         row = QHBoxLayout()
