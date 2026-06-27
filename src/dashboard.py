@@ -292,14 +292,11 @@ QSlider#threshold::handle:horizontal {
     background: #CE7D6B; border: 2px solid #0a0d12;
 }
 QSlider#threshold::handle:horizontal:hover { background: #d98f7e; }
-/* Light the handle up while you drag (pressed) or have it focused — the slider's
-   parallel to the value field's salmon focus border. */
-QSlider#threshold::handle:horizontal:pressed,
-QSlider#threshold:focus::handle:horizontal {
-    background: #e6a18f; border: 2px solid #f2c9bc;
-}
-/* Editable value field beside the slider — looks like a pill, but click + type. */
+/* Editable value field beside the slider — looks like a pill, but click + type.
+   It lights up with the salmon focus border both when focused and while its
+   slider is being dragged ([sliding="true"]). */
 QSpinBox#thresholdField { padding: 3px 4px; font-weight: 600; }
+QSpinBox#thresholdField[sliding="true"] { border-color: #CE7D6B; }
 
 /* Slim left nav rail (overlay). Same icon+label language as the settings tabs:
    Segoe UI primary so labels stay crisp; the leading FA glyph falls back to FA.
@@ -1645,8 +1642,17 @@ class SettingsPanel(QWidget):
             slider.blockSignals(True); slider.setValue(v); slider.blockSignals(False)
             on_change(v)
 
+        def set_sliding(on: bool) -> None:
+            # Show the field's salmon focus border while the slider is dragged,
+            # so moving the slider gives the same "active" cue as typing in it.
+            field.setProperty("sliding", "true" if on else "false")
+            field.style().unpolish(field)
+            field.style().polish(field)
+
         slider.valueChanged.connect(from_slider)
         field.valueChanged.connect(from_field)
+        slider.sliderPressed.connect(lambda: set_sliding(True))
+        slider.sliderReleased.connect(lambda: set_sliding(False))
         row.addWidget(win)
         row.addWidget(slider, 1)
         row.addWidget(field)
