@@ -6,7 +6,7 @@ from PySide6.QtCore import QSettings
 
 ORG = "Clawdmeter"
 APP = "Clawdmeter"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.4.1"
 
 KEY_CRED_PATH = "credentials/path"
 KEY_ALWAYS_ON_TOP = "window/always_on_top"

@@ -204,6 +204,9 @@ def _poll_once(token: str) -> UsageSample:
     try:
         with httpx.Client(timeout=20.0) as http:
             resp = http.post(API_URL, headers=headers, json=API_BODY)
+            # A non-2xx has no rate-limit headers; without this, sample_from_headers()
+            # misreads that as a genuine 0% (it always returns ok=True) -> false reset alert.
+            resp.raise_for_status()
             sample = sample_from_headers(resp.headers, now)
             # K1: enrich with the OAuth usage + profile endpoints (plan tier,
             # extra-usage spend, per-model windows) on the same client/cadence.
