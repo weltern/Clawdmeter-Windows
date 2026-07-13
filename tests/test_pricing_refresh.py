@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QApplication
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import app_settings  # noqa: E402
+import plan_pricing  # noqa: E402
 import pricing  # noqa: E402
 import pricing_refresh  # noqa: E402
 from pricing import updater as pricing_updater  # noqa: E402
@@ -62,6 +63,24 @@ def _no_real_credentials(monkeypatch):
     # credentials. Tests that specifically exercise the registry path override
     # poller.read_token themselves.
     monkeypatch.setattr(pricing_refresh.poller, "read_token", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_plan_fetch(monkeypatch):
+    # Same reasoning as _no_real_credentials, for the plan-price refresh
+    # _refresh_once() now also triggers: default every test to "fetch fails"
+    # so no test hits the real claude.com/pricing page. Tests that exercise
+    # the plan-price path override plan_pricing.fetch_plan_page themselves.
+    def _no_network():
+        raise ConnectionError("no network in tests")
+    monkeypatch.setattr(pricing_refresh.plan_pricing, "fetch_plan_page", _no_network)
+
+
+@pytest.fixture(autouse=True)
+def _reset_plan_override():
+    plan_pricing.set_override_path(None)
+    yield
+    plan_pricing.set_override_path(None)
 
 
 # --- throttle (_due) --------------------------------------------------------
@@ -264,6 +283,87 @@ def test_refresh_once_falls_back_when_no_token(monkeypatch, tmp_path, sample_md)
 
     written = pricing_updater.load_existing(cache_file)
     assert "claude-opus-4-8" in written["models"]   # NAME_TO_ID's guess, unchanged
+
+
+# --- plan-price refresh ------------------------------------------------------
+
+_SAMPLE_PLAN_HTML = (
+    '<div data-plan="pro_monthly">$20</div>'
+    '<div data-plan="max_5x_monthly">From $100</div>'
+)
+
+
+def test_refresh_plan_prices_writes_cache_and_sets_override(monkeypatch, tmp_path):
+    cache_file = tmp_path / "plan_prices.json"
+    monkeypatch.setattr(pricing_refresh, "plan_prices_cache_path", lambda: cache_file)
+    monkeypatch.setattr(plan_pricing, "fetch_plan_page", lambda: _SAMPLE_PLAN_HTML)
+
+    pricing_refresh.PricingRefresher()._refresh_plan_prices()
+
+    assert cache_file.exists()
+    assert plan_pricing.plan_amount("default_claude_pro") == 20.0
+    assert plan_pricing.plan_amount("default_claude_max_20x") == 200.0   # derived
+
+
+def test_refresh_plan_prices_no_changes_skips_write(monkeypatch, tmp_path):
+    cache_file = tmp_path / "plan_prices.json"
+    existing = plan_pricing.parse_plan_prices(_SAMPLE_PLAN_HTML)
+    plan_pricing.write_plan_prices(existing, cache_file)
+    mtime_before = cache_file.stat().st_mtime
+
+    monkeypatch.setattr(pricing_refresh, "plan_prices_cache_path", lambda: cache_file)
+    monkeypatch.setattr(plan_pricing, "fetch_plan_page", lambda: _SAMPLE_PLAN_HTML)
+
+    pricing_refresh.PricingRefresher()._refresh_plan_prices()
+
+    assert cache_file.stat().st_mtime == mtime_before
+
+
+def test_refresh_plan_prices_swallows_fetch_error(monkeypatch, tmp_path):
+    def _boom():
+        raise ConnectionError("offline")
+    monkeypatch.setattr(pricing_refresh, "plan_prices_cache_path", lambda: tmp_path / "plan_prices.json")
+    monkeypatch.setattr(plan_pricing, "fetch_plan_page", _boom)
+
+    pricing_refresh.PricingRefresher()._refresh_plan_prices()   # must not raise
+
+    assert not (tmp_path / "plan_prices.json").exists()
+
+
+def test_refresh_once_still_refreshes_plan_prices_when_model_pricing_fails(monkeypatch, tmp_path):
+    # The two refreshes are independent -- a broken rate-card fetch must not
+    # prevent the plan-price refresh from running its own cycle.
+    monkeypatch.setattr(app_settings, "get_last_pricing_refresh", lambda: 0.0)
+    monkeypatch.setattr(app_settings, "set_last_pricing_refresh", lambda ts: None)
+    monkeypatch.setattr(pricing_updater, "fetch_rate_card",
+                         lambda: (_ for _ in ()).throw(ConnectionError("offline")))
+
+    plan_cache = tmp_path / "plan_prices.json"
+    monkeypatch.setattr(pricing_refresh, "plan_prices_cache_path", lambda: plan_cache)
+    monkeypatch.setattr(plan_pricing, "fetch_plan_page", lambda: _SAMPLE_PLAN_HTML)
+
+    pricing_refresh.PricingRefresher()._refresh_once()
+
+    assert plan_cache.exists()
+    assert plan_pricing.plan_amount("default_claude_pro") == 20.0
+
+
+def test_apply_cached_override_covers_plan_prices_too(monkeypatch, tmp_path, sample_md):
+    model_cache = tmp_path / "price_map.json"
+    plan_cache = tmp_path / "plan_prices.json"
+    monkeypatch.setattr(pricing_refresh, "cache_path", lambda: model_cache)
+    monkeypatch.setattr(pricing_refresh, "plan_prices_cache_path", lambda: plan_cache)
+
+    pricing_updater.write_price_map(
+        pricing_updater.build_price_map(pricing_updater.parse_rate_card(sample_md),
+                                        fetched_at="2026-01-01"),
+        model_cache)
+    plan_pricing.write_plan_prices(plan_pricing.parse_plan_prices(_SAMPLE_PLAN_HTML), plan_cache)
+
+    pricing_refresh.apply_cached_override()
+
+    assert pricing.load_price_map()["fetched_at"] == "2026-01-01"
+    assert plan_pricing.plan_amount("default_claude_pro") == 20.0
 
 
 if __name__ == "__main__":

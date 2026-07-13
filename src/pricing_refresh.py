@@ -46,6 +46,7 @@ import httpx
 from PySide6.QtCore import QStandardPaths, QThread, Signal
 
 import app_settings
+import plan_pricing
 import pricing
 import poller
 from pricing import updater as pricing_updater
@@ -110,14 +111,30 @@ def cache_path() -> Path:
     return d / CACHE_FILENAME
 
 
+def plan_prices_cache_path() -> Path:
+    """`%APPDATA%/Clawdmeter/plan_prices.json` — same folder, same reasoning
+    as ``cache_path()`` above, just for plan_pricing's smaller cache file."""
+    base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+    d = Path(base) if base else (Path.home() / ".clawdmeter")
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return d / plan_pricing.CACHE_FILENAME
+
+
 def apply_cached_override() -> None:
     """Call once at startup, before anything reads pricing (stats, Stats page):
     if an earlier session's live refresh left a validated cache file behind,
     prefer it over the build-time bundled map immediately — don't wait for
-    today's throttle window to allow another fetch."""
+    today's throttle window to allow another fetch. Covers both the model
+    price map and plan_pricing's subscription-price cache."""
     path = cache_path()
     if path.exists():
         pricing.set_override_path(path)
+    plan_path = plan_prices_cache_path()
+    if plan_path.exists():
+        plan_pricing.set_override_path(plan_path)
 
 
 class PricingRefresher(QThread):
@@ -163,19 +180,38 @@ class PricingRefresher(QThread):
             # crash this thread; a run of failures just retries next wake cycle
             # rather than falsely marking today as checked (mirrors UpdateChecker).
             log.warning("Live pricing refresh failed, will retry: %s", exc)
-            return
-        app_settings.set_last_pricing_refresh(time.time())
+        else:
+            app_settings.set_last_pricing_refresh(time.time())
 
-        path = cache_path()
-        existing = pricing_updater.load_existing(path) or pricing.load_price_map()
-        diff = pricing_updater.diff_maps(existing, new_map)
-        if not pricing_updater.has_changes(diff):
+            path = cache_path()
+            existing = pricing_updater.load_existing(path) or pricing.load_price_map()
+            diff = pricing_updater.diff_maps(existing, new_map)
+            if pricing_updater.has_changes(diff):
+                pricing_updater.write_price_map(new_map, path)
+                pricing.set_override_path(path)
+                log.info("Live pricing refreshed: %s", pricing_updater.format_diff(diff))
+                self.refreshed.emit(diff)
+
+        # Independent success/failure from the model-pricing refresh above --
+        # shares this same daily _due() gate rather than its own timestamp,
+        # since it's a smaller, less-volatile secondary concern (see
+        # plan_pricing.py's module docstring).
+        self._refresh_plan_prices()
+
+    def _refresh_plan_prices(self) -> None:
+        try:
+            html = plan_pricing.fetch_plan_page()
+            prices = plan_pricing.parse_plan_prices(html)
+        except Exception as exc:   # noqa: BLE001 - same "never crash" contract
+            log.warning("Live plan-price refresh failed, will retry: %s", exc)
             return
 
-        pricing_updater.write_price_map(new_map, path)
-        pricing.set_override_path(path)
-        log.info("Live pricing refreshed: %s", pricing_updater.format_diff(diff))
-        self.refreshed.emit(diff)
+        path = plan_prices_cache_path()
+        if plan_pricing.load_existing(path) == prices:
+            return
+        plan_pricing.write_plan_prices(prices, path)
+        plan_pricing.set_override_path(path)
+        log.info("Live plan prices refreshed: %s", prices)
 
     def run(self) -> None:  # QThread entry
         for _ in range(_INITIAL_DELAY_SECONDS):
