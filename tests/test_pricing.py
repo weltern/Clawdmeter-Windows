@@ -117,6 +117,22 @@ def test_map_claude_sonnet_5():
     assert updater.map_name_to_id("Claude Sonnet 5") == "claude-sonnet-5"
 
 
+def test_map_prefers_registry_over_name_to_id():
+    # NAME_TO_ID's guess is the bare, undated form; Anthropic's own registry
+    # (from the Models API) knows the real, dated ID actual usage is billed
+    # under -- the registry must win.
+    registry = {"Claude Opus 4.5": "claude-opus-4-5-20251101"}
+    assert updater.map_name_to_id("Claude Opus 4.5", registry) == "claude-opus-4-5-20251101"
+    assert updater.map_name_to_id("Claude Opus 4.5") == "claude-opus-4-5"   # unchanged w/o one
+
+
+def test_map_falls_back_past_registry_miss():
+    # A name absent from the registry (e.g. announced on the rate card before
+    # the Models API lists it) still falls through to NAME_TO_ID/slugify.
+    registry = {"Claude Opus 4.5": "claude-opus-4-5-20251101"}
+    assert updater.map_name_to_id("Claude Opus 4.8", registry) == "claude-opus-4-8"
+
+
 # --- time-boxed variant resolution -----------------------------------------
 
 def _rates(input_: float) -> dict:
@@ -172,6 +188,18 @@ def test_build_price_map_carries_rate_changes_through(monkeypatch):
     assert model["input"] == 2.0
     assert model["rate_changes"][0]["effective_from"] == "2026-09-01"
     assert updater._validate_model("claude-sonnet-5", model) == []
+
+
+def test_build_price_map_uses_registry_id_when_given():
+    parsed = {"Claude Opus 4.5": _rates(5.0)}
+    pm_no_registry = updater.build_price_map(parsed, fetched_at="2026-07-12")
+    assert "claude-opus-4-5" in pm_no_registry["models"]          # unchanged guess
+
+    pm_with_registry = updater.build_price_map(
+        parsed, fetched_at="2026-07-12",
+        registry={"Claude Opus 4.5": "claude-opus-4-5-20251101"})
+    assert "claude-opus-4-5-20251101" in pm_with_registry["models"]
+    assert "claude-opus-4-5" not in pm_with_registry["models"]
 
 
 # --- validation -----------------------------------------------------------

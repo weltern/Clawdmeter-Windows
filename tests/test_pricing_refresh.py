@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 from PySide6.QtWidgets import QApplication
 
@@ -23,6 +24,19 @@ import app_settings  # noqa: E402
 import pricing  # noqa: E402
 import pricing_refresh  # noqa: E402
 from pricing import updater as pricing_updater  # noqa: E402
+
+
+def _mock_httpx_client(handler):
+    """A pricing_refresh.httpx.Client stand-in wired to an httpx.MockTransport,
+    so fetch_model_registry can be exercised with zero real network access.
+    Captures the real httpx.Client before patching -- referring to httpx.Client
+    by name inside factory() would recurse into itself once patched in."""
+    real_client = httpx.Client
+
+    def factory(**kwargs):
+        kwargs.pop("transport", None)
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+    return factory
 
 _app = QApplication.instance() or QApplication([])
 
@@ -39,6 +53,15 @@ def _reset_override():
     pricing.set_override_path(None)
     yield
     pricing.set_override_path(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_credentials(monkeypatch):
+    # Default every test to "no OAuth session" so _refresh_once()'s registry
+    # step never makes a real network call using this machine's actual Claude
+    # credentials. Tests that specifically exercise the registry path override
+    # poller.read_token themselves.
+    monkeypatch.setattr(pricing_refresh.poller, "read_token", lambda: None)
 
 
 # --- throttle (_due) --------------------------------------------------------
@@ -134,6 +157,113 @@ def test_apply_cached_override_noop_without_cache(monkeypatch, tmp_path):
 
     # Falls back to the bundled map rather than raising.
     assert "claude-opus-4-8" in pricing.load_price_map()["models"]
+
+
+# --- fetch_model_registry ----------------------------------------------------
+
+def test_fetch_model_registry_single_page(monkeypatch):
+    def handler(request):
+        assert request.headers["authorization"] == "Bearer tok123"
+        return httpx.Response(200, json={
+            "data": [
+                {"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"},
+                {"id": "claude-opus-4-8", "display_name": "Claude Opus 4.8"},
+            ],
+            "has_more": False, "first_id": "a", "last_id": "b",
+        })
+    monkeypatch.setattr(pricing_refresh.httpx, "Client", _mock_httpx_client(handler))
+
+    registry = pricing_refresh.fetch_model_registry("tok123")
+
+    assert registry == {"Claude Sonnet 5": "claude-sonnet-5", "Claude Opus 4.8": "claude-opus-4-8"}
+
+
+def test_fetch_model_registry_paginates(monkeypatch):
+    seen_after_ids = []
+
+    def handler(request):
+        after = request.url.params.get("after_id")
+        seen_after_ids.append(after)
+        if after is None:
+            return httpx.Response(200, json={
+                "data": [{"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"}],
+                "has_more": True, "first_id": "1", "last_id": "1",
+            })
+        return httpx.Response(200, json={
+            "data": [{"id": "claude-opus-4-8", "display_name": "Claude Opus 4.8"}],
+            "has_more": False, "first_id": "2", "last_id": "2",
+        })
+    monkeypatch.setattr(pricing_refresh.httpx, "Client", _mock_httpx_client(handler))
+
+    registry = pricing_refresh.fetch_model_registry("tok123")
+
+    assert registry == {"Claude Sonnet 5": "claude-sonnet-5", "Claude Opus 4.8": "claude-opus-4-8"}
+    assert seen_after_ids == [None, "1"]
+
+
+def test_fetch_model_registry_raises_on_http_error(monkeypatch):
+    def handler(request):
+        return httpx.Response(401, json={"error": "unauthorized"})
+    monkeypatch.setattr(pricing_refresh.httpx, "Client", _mock_httpx_client(handler))
+
+    with pytest.raises(httpx.HTTPError):
+        pricing_refresh.fetch_model_registry("bad-token")
+
+
+# --- PricingRefresher._fetch_registry (graceful fallback) -------------------
+
+def test_fetch_registry_none_without_a_token(monkeypatch):
+    monkeypatch.setattr(pricing_refresh.poller, "read_token", lambda: None)
+    assert pricing_refresh.PricingRefresher()._fetch_registry() is None
+
+
+def test_fetch_registry_none_on_fetch_failure(monkeypatch):
+    monkeypatch.setattr(pricing_refresh.poller, "read_token", lambda: "tok")
+
+    def _boom(token, timeout=15.0):
+        raise ConnectionError("offline")
+    monkeypatch.setattr(pricing_refresh, "fetch_model_registry", _boom)
+
+    assert pricing_refresh.PricingRefresher()._fetch_registry() is None
+
+
+def test_fetch_registry_returns_dict_on_success(monkeypatch):
+    monkeypatch.setattr(pricing_refresh.poller, "read_token", lambda: "tok")
+    monkeypatch.setattr(pricing_refresh, "fetch_model_registry",
+                         lambda token, timeout=15.0: {"Claude Sonnet 5": "claude-sonnet-5"})
+
+    assert pricing_refresh.PricingRefresher()._fetch_registry() == {"Claude Sonnet 5": "claude-sonnet-5"}
+
+
+def test_refresh_once_uses_registry_id_when_available(monkeypatch, tmp_path, sample_md):
+    cache_file = tmp_path / "price_map.json"
+    monkeypatch.setattr(pricing_refresh, "cache_path", lambda: cache_file)
+    monkeypatch.setattr(pricing_updater, "fetch_rate_card", lambda: sample_md)
+    monkeypatch.setattr(app_settings, "get_last_pricing_refresh", lambda: 0.0)
+    monkeypatch.setattr(app_settings, "set_last_pricing_refresh", lambda ts: None)
+    monkeypatch.setattr(pricing_refresh.poller, "read_token", lambda: "tok")
+    monkeypatch.setattr(pricing_refresh, "fetch_model_registry",
+                         lambda token, timeout=15.0: {"Claude Opus 4.8": "claude-opus-4-8-20991231"})
+
+    pricing_refresh.PricingRefresher()._refresh_once()
+
+    written = pricing_updater.load_existing(cache_file)
+    assert "claude-opus-4-8-20991231" in written["models"]
+    assert "claude-opus-4-8" not in written["models"]
+
+
+def test_refresh_once_falls_back_when_no_token(monkeypatch, tmp_path, sample_md):
+    cache_file = tmp_path / "price_map.json"
+    monkeypatch.setattr(pricing_refresh, "cache_path", lambda: cache_file)
+    monkeypatch.setattr(pricing_updater, "fetch_rate_card", lambda: sample_md)
+    monkeypatch.setattr(app_settings, "get_last_pricing_refresh", lambda: 0.0)
+    monkeypatch.setattr(app_settings, "set_last_pricing_refresh", lambda ts: None)
+    monkeypatch.setattr(pricing_refresh.poller, "read_token", lambda: None)
+
+    pricing_refresh.PricingRefresher()._refresh_once()   # must not raise
+
+    written = pricing_updater.load_existing(cache_file)
+    assert "claude-opus-4-8" in written["models"]   # NAME_TO_ID's guess, unchanged
 
 
 if __name__ == "__main__":

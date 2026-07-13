@@ -339,8 +339,20 @@ def _slugify(name: str) -> str:
     return f"unmapped-{slug}" if slug else "unmapped-model"
 
 
-def map_name_to_id(display_name: str) -> str:
-    """Map a display name to its API model ID, or a slugified fallback (logged)."""
+def map_name_to_id(display_name: str, registry: dict[str, str] | None = None) -> str:
+    """Map a display name to its API model ID.
+
+    ``registry`` -- {display_name: api_id} straight from Anthropic's own Models
+    API (see pricing_refresh.fetch_model_registry) -- wins when it has this
+    name, since that's a first-party fact, not a guess: it also carries the
+    exact dated ID (``claude-opus-4-5-20251101``) real usage/billing reports,
+    which NAME_TO_ID's hand-maintained undated guesses (``claude-opus-4-5``)
+    have historically gotten wrong. Falls back to NAME_TO_ID, then to a
+    slugified, logged placeholder -- unchanged, for CI/offline runs and tests
+    that have no registry (no OAuth session) to pass.
+    """
+    if registry and display_name in registry:
+        return registry[display_name]
     api_id = NAME_TO_ID.get(display_name)
     if api_id is None:
         api_id = _slugify(display_name)
@@ -401,7 +413,8 @@ def _ordered_model_fields(api_id: str, parsed: dict[str, Any]) -> dict[str, Any]
 
 
 def build_price_map(parsed: dict[str, dict[str, Any]], *,
-                    fetched_at: str | None = None) -> dict[str, Any]:
+                    fetched_at: str | None = None,
+                    registry: dict[str, str] | None = None) -> dict[str, Any]:
     """Assemble a complete, validated price map from parsed rows.
 
     Raises ``ValueError`` if the parse yields zero models or any required field is
@@ -409,7 +422,10 @@ def build_price_map(parsed: dict[str, dict[str, Any]], *,
     the bundled map. ``fetched_at`` defaults to today's UTC date, and also serves
     as "today" for resolving any time-boxed variants (see
     ``resolve_time_boxed_variants``) so a fixed ``fetched_at`` in tests makes the
-    whole resolution deterministic too.
+    whole resolution deterministic too. ``registry`` -- Anthropic's own
+    {display_name: api_id} map, when the live caller has one -- takes priority
+    over NAME_TO_ID in ``map_name_to_id``; omitted (as CI/tests do), behavior is
+    unchanged.
     """
     if fetched_at is None:
         fetched_at = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
@@ -418,7 +434,7 @@ def build_price_map(parsed: dict[str, dict[str, Any]], *,
 
     by_id: dict[str, dict[str, Any]] = {}
     for display_name, fields in parsed.items():
-        by_id[map_name_to_id(display_name)] = fields
+        by_id[map_name_to_id(display_name, registry)] = fields
 
     if not by_id:
         raise ValueError("parsed zero models from the rate card — refusing to write")
