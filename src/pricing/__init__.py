@@ -18,6 +18,7 @@ running app is never stuck with whatever shipped in its exe.
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import sys
 from functools import lru_cache
@@ -76,5 +77,25 @@ def model_rates(model_id: str) -> dict[str, Any] | None:
     Returns None (rather than raising) for an unknown model so callers joining
     against live usage data can degrade gracefully — usage may reference a model
     that isn't in the map yet, just as the poller tolerates missing fields.
+
+    A model may carry ``rate_changes``: scheduled repricings that weren't yet
+    in effect when the map was written (see
+    ``pricing.updater.resolve_time_boxed_variants``). If the *latest* one whose
+    ``effective_from`` is today-or-earlier exists, its fields override the
+    entry's own — so a scheduled price change applies itself the day it takes
+    effect, purely from wall-clock time, with no re-fetch required.
     """
-    return load_price_map().get("models", {}).get(model_id)
+    entry = load_price_map().get("models", {}).get(model_id)
+    if entry is None:
+        return None
+    changes = entry.get("rate_changes")
+    if not changes:
+        return entry
+    today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+    due = [c for c in changes if c.get("effective_from", "") <= today]
+    if not due:
+        return entry
+    latest = max(due, key=lambda c: c["effective_from"])
+    merged = {**entry, **latest}
+    merged.pop("rate_changes", None)
+    return merged
