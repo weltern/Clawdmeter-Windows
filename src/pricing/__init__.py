@@ -10,7 +10,10 @@ This module is the loader/accessor: ``load_price_map()`` reads the JSON (locatin
 it whether running from source or a PyInstaller bundle, mirroring
 ``sprite_player.assets_root``), and ``model_rates(model_id)`` is a thin per-model
 lookup. A full cost calculator is intentionally out of scope; ``updater.py`` keeps
-the map current from Anthropic's published rate card.
+the map current from Anthropic's published rate card — offline via CI, and live
+via ``pricing_refresh.PricingRefresher`` (see that module), which calls
+``set_override_path()`` once it has fetched and validated a fresher map, so a
+running app is never stuck with whatever shipped in its exe.
 """
 
 from __future__ import annotations
@@ -22,6 +25,10 @@ from pathlib import Path
 from typing import Any
 
 PRICE_MAP_FILENAME = "price_map.json"
+
+# Runtime override, set by pricing_refresh once a live-fetched map has passed
+# the same validation the CI updater enforces. None = use the bundled map.
+_override_path: Path | None = None
 
 
 def price_map_path() -> Path:
@@ -37,17 +44,30 @@ def price_map_path() -> Path:
     return Path(__file__).resolve().parent / PRICE_MAP_FILENAME
 
 
+def set_override_path(path: Path | None) -> None:
+    """Point the loader at a runtime-refreshed cache file, or clear the override
+    (``None``) to fall back to the bundled map. The caller is trusted to have
+    already validated ``path`` — this module never fetches or parses anything
+    itself. Thread-safe: ``lru_cache`` serializes concurrent readers/clearers."""
+    global _override_path
+    _override_path = path
+    load_price_map.cache_clear()
+
+
 @lru_cache(maxsize=1)
 def load_price_map() -> dict[str, Any]:
-    """Load and cache the bundled price map as a dict.
+    """Load and cache the active price map as a dict — the override file set by
+    ``set_override_path()`` if one is live, else the bundled map.
 
-    Cached because the bundled map is immutable at runtime (the updater rewrites
-    the file offline, not in a live app). Raises ``FileNotFoundError`` if the map
-    is missing and ``json.JSONDecodeError`` if it's corrupt — both are programmer
-    errors (a broken build), not the swallow-and-continue network failures the
-    poller guards against, so they're surfaced loudly.
+    Cached because the map in use is immutable between refreshes (nothing
+    mutates the file out from under a cached read; a new fetch instead writes a
+    new override and clears this cache). Raises ``FileNotFoundError`` if the
+    bundled map is missing and ``json.JSONDecodeError`` if it's corrupt — both
+    are programmer errors (a broken build), not the swallow-and-continue network
+    failures the poller guards against, so they're surfaced loudly.
     """
-    return json.loads(price_map_path().read_text(encoding="utf-8"))
+    path = _override_path if _override_path and _override_path.exists() else price_map_path()
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def model_rates(model_id: str) -> dict[str, Any] | None:

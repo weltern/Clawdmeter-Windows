@@ -9,6 +9,7 @@ from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication
 
 import app_settings
+import pricing_refresh
 import run_at_startup
 import single_instance
 from dashboard import Dashboard
@@ -32,6 +33,10 @@ def main() -> int:
     cred = app_settings.get_credentials_override()
     if cred:
         os.environ["CLAUDE_CREDENTIALS_PATH"] = cred
+
+    # Prefer a prior session's live pricing refresh over the build-time bundled
+    # map, before Dashboard (and Stats) ever reads pricing.
+    pricing_refresh.apply_cached_override()
 
     icon_path = assets_root() / "icon.png"
     if icon_path.exists():

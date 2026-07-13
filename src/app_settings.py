@@ -46,6 +46,7 @@ KEY_OVERAGE_ALERT_ENABLED = "notify/overage_alert_enabled"
 KEY_AUTO_CHECK_UPDATES = "updates/auto_check"
 KEY_LAST_UPDATE_CHECK = "updates/last_check"
 KEY_SKIP_VERSION = "updates/skip_version"
+KEY_LAST_PRICING_REFRESH = "pricing/last_refresh"
 
 PUSH_PROVIDERS = ("ntfy", "telegram", "discord", "slack", "pushover", "gotify",
                   "webhook")
@@ -502,6 +503,19 @@ def get_last_update_check() -> float:
 
 def set_last_update_check(ts: float) -> None:
     _settings().setValue(KEY_LAST_UPDATE_CHECK, float(ts))
+
+
+def get_last_pricing_refresh() -> float:
+    """Unix timestamp of the last completed live pricing refresh (0.0 if never).
+    Used to throttle PricingRefresher to roughly once a day."""
+    try:
+        return float(_settings().value(KEY_LAST_PRICING_REFRESH, 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def set_last_pricing_refresh(ts: float) -> None:
+    _settings().setValue(KEY_LAST_PRICING_REFRESH, float(ts))
 
 
 def get_skip_version() -> str:

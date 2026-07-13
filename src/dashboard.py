@@ -82,6 +82,7 @@ from approaching_notify import ApproachingNotifier
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
 from update_check import UpdateChecker
+from pricing_refresh import PricingRefresher
 from session_shelf import (
     CompactView, SessionShelf, UsageBar, apply_overage_bar,
 )
@@ -2283,6 +2284,7 @@ class Dashboard(QMainWindow):
         else:
             self._start_poller()
             self._start_update_checker()
+            self._start_pricing_refresh()
             # Now that self.mini / self.sprite / self.shelf exist, the
             # watcher's initial synchronous poll can safely drive the shelf.
             self._transcript.start()
@@ -2797,6 +2799,13 @@ class Dashboard(QMainWindow):
         self._update_checker.update_available.connect(self._on_update_available)
         self._update_checker.check_finished.connect(self._on_update_check_finished)
         self._update_checker.start()
+
+    def _start_pricing_refresh(self) -> None:
+        # Keeps USD rates current without a new release — see pricing_refresh.
+        # No UI hookup needed: a change clears pricing's cache, so the next
+        # _refresh_stats() tick (already running every 10 min) just picks it up.
+        self._pricing_refresh = PricingRefresher()
+        self._pricing_refresh.start()
 
     def _on_update_available(self, info) -> None:
         """A newer release was found (background or manual check)."""
@@ -3644,6 +3653,9 @@ class Dashboard(QMainWindow):
         if hasattr(self, "_update_checker"):
             self._update_checker.stop()
             self._update_checker.wait(2000)
+        if hasattr(self, "_pricing_refresh"):
+            self._pricing_refresh.stop()
+            self._pricing_refresh.wait(2000)
         worker = getattr(self, "_stats_worker", None)
         if worker is not None:
             worker.wait(2000)   # don't destroy a QThread mid-scan
