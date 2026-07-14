@@ -322,8 +322,16 @@ def resolve_time_boxed_variants(parsed: dict[str, dict[str, Any]], *,
         row = dict(current[1])
         row["display_name"] = base
         if upcoming:
+            # display_name/status belong to the model as a whole, not to an
+            # individual scheduled change -- an upcoming row's raw, still-
+            # qualified name ("Claude Sonnet 5 starting September 1, 2026")
+            # must never ride along, or it clobbers the clean name the moment
+            # pricing.model_rates() promotes this change (see that function's
+            # own belt-and-suspenders filter for the same reason).
             row["rate_changes"] = [
-                {"effective_from": eff, **fields} for eff, fields in upcoming
+                {"effective_from": eff,
+                 **{k: v for k, v in fields.items() if k not in ("display_name", "status")}}
+                for eff, fields in upcoming
             ]
         out[base] = row   # a same-named unqualified row, if any, loses to this
 
@@ -515,11 +523,14 @@ def format_diff(diff: dict[str, Any]) -> str:
 # --- file I/O --------------------------------------------------------------
 
 def load_existing(path: Path | None = None) -> dict[str, Any]:
-    """Load the bundled price map, or {} if it doesn't exist yet."""
+    """Load the bundled price map, or {} if it doesn't exist yet or is corrupt
+    (e.g. a live cache file truncated by a crash mid-write) -- callers treat
+    the "existing" map as a diff baseline, so {} (== "everything looks new")
+    is always a safe degrade, never a crash."""
     path = path or price_map_path()
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 

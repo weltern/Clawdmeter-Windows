@@ -62,13 +62,19 @@ def load_price_map() -> dict[str, Any]:
 
     Cached because the map in use is immutable between refreshes (nothing
     mutates the file out from under a cached read; a new fetch instead writes a
-    new override and clears this cache). Raises ``FileNotFoundError`` if the
-    bundled map is missing and ``json.JSONDecodeError`` if it's corrupt — both
-    are programmer errors (a broken build), not the swallow-and-continue network
-    failures the poller guards against, so they're surfaced loudly.
+    new override and clears this cache). The BUNDLED map raises
+    ``FileNotFoundError``/``json.JSONDecodeError`` loudly if missing/corrupt —
+    that's a broken build, a programmer error. The OVERRIDE file is different:
+    it's written by a live background fetch that can be interrupted mid-write,
+    so a corrupt override degrades to the bundled map instead of crashing —
+    a bad live refresh must never be worse than no live refresh at all.
     """
-    path = _override_path if _override_path and _override_path.exists() else price_map_path()
-    return json.loads(path.read_text(encoding="utf-8"))
+    if _override_path and _override_path.exists():
+        try:
+            return json.loads(_override_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass   # corrupt/unreadable override -- fall back to the bundled map
+    return json.loads(price_map_path().read_text(encoding="utf-8"))
 
 
 def model_rates(model_id: str) -> dict[str, Any] | None:
@@ -96,6 +102,10 @@ def model_rates(model_id: str) -> dict[str, Any] | None:
     if not due:
         return entry
     latest = max(due, key=lambda c: c["effective_from"])
-    merged = {**entry, **latest}
+    # display_name/status are the model's own identity, not a per-change
+    # field -- never let a promoted change override them (belt-and-suspenders:
+    # resolve_time_boxed_variants already keeps them out of rate_changes at
+    # the source, but this merge must stay safe even if that ever changes).
+    merged = {**entry, **{k: v for k, v in latest.items() if k not in ("display_name", "status")}}
     merged.pop("rate_changes", None)
     return merged

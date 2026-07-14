@@ -150,7 +150,9 @@ def test_resolve_collapses_through_and_starting_variants_before_transition():
     assert list(resolved.keys()) == ["Claude Sonnet 5"]
     row = resolved["Claude Sonnet 5"]
     assert row["input"] == 2.0                       # today's rate stays active
-    assert row["rate_changes"] == [{"effective_from": "2026-09-01", **_rates(3.0)}]
+    expected = _rates(3.0)
+    del expected["display_name"], expected["status"]   # parent-level fields, not per-change
+    assert row["rate_changes"] == [{"effective_from": "2026-09-01", **expected}]
 
 
 def test_resolve_promotes_variant_once_its_date_arrives():
@@ -188,6 +190,21 @@ def test_build_price_map_carries_rate_changes_through(monkeypatch):
     assert model["input"] == 2.0
     assert model["rate_changes"][0]["effective_from"] == "2026-09-01"
     assert updater._validate_model("claude-sonnet-5", model) == []
+
+
+def test_rate_changes_entries_never_carry_display_name_or_status():
+    # A scheduled change's own raw, still-qualified name ("... starting
+    # September 1, 2026") must never ride along -- it belongs to the parent
+    # model, not to an individual future rate (regression test for the bug
+    # where model_rates() promoting a change clobbered the clean model name).
+    parsed = {
+        "Claude Sonnet 5 through August 31, 2026": _rates(2.0),
+        "Claude Sonnet 5 starting September 1, 2026": _rates(3.0),
+    }
+    pm = updater.build_price_map(parsed, fetched_at="2026-07-12")
+    change = pm["models"]["claude-sonnet-5"]["rate_changes"][0]
+    assert "display_name" not in change
+    assert "status" not in change
 
 
 def test_build_price_map_uses_registry_id_when_given():
@@ -352,6 +369,45 @@ def test_model_rates_picks_latest_of_multiple_effective_changes(tmp_path):
     pricing.set_override_path(cache)
     try:
         assert pricing.model_rates("claude-sonnet-5")["input"] == 1.5
+    finally:
+        pricing.set_override_path(None)
+
+
+def test_model_rates_promotion_never_overrides_display_name_or_status(tmp_path):
+    # Defense in depth: even if a rate_changes entry somehow carries a stray
+    # display_name/status (malformed data, a future regression upstream),
+    # promoting it must not let those fields override the model's own.
+    cache = tmp_path / "price_map.json"
+    updater.write_price_map(_price_map_with_rate_changes(
+        {"effective_from": "2020-01-01", "display_name": "should not win",
+         "status": "should not win either", "input": 1.0, "output": 5.0,
+         "cache_write_5m": 1.25, "cache_write_1h": 2.0, "cache_read": 0.1,
+         "batch_input": 0.5, "batch_output": 2.5},
+    ), cache)
+    pricing.set_override_path(cache)
+    try:
+        rates = pricing.model_rates("claude-sonnet-5")
+        assert rates["display_name"] == "Claude Sonnet 5"
+        assert rates["status"] == "active"
+        assert rates["input"] == 1.0   # the rate itself still promotes correctly
+    finally:
+        pricing.set_override_path(None)
+
+
+def test_load_existing_corrupt_file_returns_empty(tmp_path):
+    path = tmp_path / "price_map.json"
+    path.write_text("{not valid json", encoding="utf-8")
+    assert updater.load_existing(path) == {}
+
+
+def test_load_price_map_falls_back_when_override_is_corrupt(tmp_path):
+    corrupt = tmp_path / "price_map.json"
+    corrupt.write_text("{not valid json", encoding="utf-8")
+    pricing.set_override_path(corrupt)
+    try:
+        pm = pricing.load_price_map()
+        assert pm["currency"] == "USD"
+        assert "claude-opus-4-8" in pm["models"]   # the bundled map, not the corrupt override
     finally:
         pricing.set_override_path(None)
 
