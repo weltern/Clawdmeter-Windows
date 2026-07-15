@@ -1251,9 +1251,13 @@ class CompactView(QWidget):
     def mouseMoveEvent(self, e) -> None:
         if (e.buttons() & Qt.LeftButton) and self._press_pos is not None:
             moved = (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
-            if moved >= QApplication.startDragDistance():
-                self._press_pos = None
-                winutil.start_native_move(int(self.winId()))
+            if winutil.native_move_supported():
+                if moved >= QApplication.startDragDistance():
+                    self._press_pos = None
+                    winutil.start_native_move(int(self.winId()))
+            else:  # macOS/Linux: no OS move loop — drag the window ourselves.
+                self._press_pos = winutil.manual_move(
+                    self.window(), self._press_pos, e.globalPosition().toPoint())
             e.accept()
 
     def mouseReleaseEvent(self, e) -> None:

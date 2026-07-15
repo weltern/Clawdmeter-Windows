@@ -29,7 +29,7 @@ STARTUP_FLAG = "--startup"
 
 def is_supported() -> bool:
     """True on Windows, where the Run key exists."""
-    return winreg is not None
+    return winreg is not None and sys.platform == "win32"
 
 
 def launch_command() -> str:
