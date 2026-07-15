@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import ctypes
-import ctypes.wintypes as wt
 import sys
+
+# ctypes.wintypes only exists on Windows; importing it elsewhere (macOS/Linux)
+# raises. Guard it so the module still imports on those platforms — the Win32
+# helpers below are all no-ops off Windows anyway (see is_windows()).
+if sys.platform == "win32":
+    import ctypes.wintypes as wt
+else:  # pragma: no cover - exercised only on non-Windows
+    wt = None  # type: ignore[assignment]
 
 
 # WM_NCHITTEST result codes.
@@ -33,19 +40,36 @@ SWP_NOACTIVATE = 0x0010
 RESIZE_BORDER_PX = 6
 
 
-class _MSG(ctypes.Structure):
-    _fields_ = [
-        ("hwnd", wt.HWND),
-        ("message", wt.UINT),
-        ("wParam", wt.WPARAM),
-        ("lParam", wt.LPARAM),
-        ("time", wt.DWORD),
-        ("pt", wt.POINT),
-    ]
-
-
 def is_windows() -> bool:
     return sys.platform == "win32"
+
+
+if is_windows():
+    class _MSG(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", wt.HWND),
+            ("message", wt.UINT),
+            ("wParam", wt.WPARAM),
+            ("lParam", wt.LPARAM),
+            ("time", wt.DWORD),
+            ("pt", wt.POINT),
+        ]
+else:  # pragma: no cover - non-Windows placeholder so references still resolve
+    _MSG = None  # type: ignore[assignment,misc]
+
+
+def native_move_supported() -> bool:
+    """True when start_native_move() can hand the drag to the OS (Windows only).
+    Elsewhere, callers should fall back to manual_move()."""
+    return is_windows()
+
+
+def manual_move(window, anchor, current):
+    """Frameless-window drag fallback for non-Windows: shift `window` by the
+    pointer delta since `anchor` and return the new anchor (the current point),
+    so the next move continues smoothly. `anchor`/`current` are QPoints."""
+    window.move(window.pos() + (current - anchor))
+    return current
 
 
 def set_topmost(hwnd: int, on: bool) -> None:

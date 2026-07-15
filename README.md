@@ -295,8 +295,24 @@ exits.
 
 ## Requirements
 
-- Windows 10 or 11
+- Windows 10 or 11 (primary target — prebuilt `.exe`)
 - Python 3.10 or newer (the code uses 3.10+ syntax)
+
+### Running on macOS / Linux
+
+The app also runs from source on macOS and Linux via PySide6/Qt. Windows-only
+features degrade gracefully:
+
+- **Run-at-sign-in** and the **Start-menu shortcut** are disabled (they rely on
+  the Windows registry / Start menu).
+- Frameless windows are dragged with a Qt fallback instead of the Win32 native
+  move loop; edge-resize (WM_NCHITTEST) is Windows-only.
+- Usage and transcripts are read from `~/.claude` just like on Windows. (Note:
+  if your Claude Code stores credentials in the macOS Keychain rather than
+  `~/.claude/.credentials.json`, set `CLAUDE_CREDENTIALS_PATH` to a readable
+  credentials file.)
+
+No prebuilt macOS/Linux binary is shipped yet — run from source (below).
 
 ## Run from source
 
@@ -304,6 +320,14 @@ exits.
 py -3 -m venv .venv
 .\.venv\Scripts\pip install -r requirements.txt
 .\.venv\Scripts\python src\main.py
+```
+
+On macOS / Linux:
+
+```bash
+python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt
+./.venv/bin/python src/main.py
 ```
 
 Add `--mock` to drive the UI with synthetic data (no API calls):

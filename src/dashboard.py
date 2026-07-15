@@ -603,9 +603,13 @@ class MiniWidget(QWidget):
         # alone so double-click-to-expand still registers.
         if (e.buttons() & Qt.LeftButton) and self._press_pos is not None:
             moved = (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
-            if moved >= QApplication.startDragDistance():
-                self._press_pos = None
-                winutil.start_native_move(int(self.winId()))
+            if winutil.native_move_supported():
+                if moved >= QApplication.startDragDistance():
+                    self._press_pos = None
+                    winutil.start_native_move(int(self.winId()))
+            else:  # macOS/Linux: no OS move loop — drag the window ourselves.
+                self._press_pos = winutil.manual_move(
+                    self.window(), self._press_pos, e.globalPosition().toPoint())
             e.accept()
 
     def mouseReleaseEvent(self, e) -> None:
@@ -842,6 +846,15 @@ class TitleBar(QWidget):
         if not (e.buttons() & Qt.LeftButton) or self._press_pos is None:
             return
         moved = (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
+        if not winutil.native_move_supported():
+            # macOS/Linux: no OS move loop — drag the window ourselves, tracking
+            # the pointer delta since the last event.
+            if self._win.isMaximized():
+                self._win.showNormal()
+            self._press_pos = winutil.manual_move(
+                self._win, self._press_pos, e.globalPosition().toPoint())
+            e.accept()
+            return
         if moved < QApplication.startDragDistance():
             return
         self._press_pos = None
@@ -1816,6 +1829,11 @@ class SettingsPanel(QWidget):
             self.startup_check.blockSignals(False)
 
     def _refresh_start_menu_btn(self) -> None:
+        if not start_menu.is_supported():
+            # Start-menu shortcuts are a Windows concept; disable off Windows.
+            self.start_btn.setText("Only available on Windows")
+            self.start_btn.setEnabled(False)
+            return
         if start_menu.has_shortcut():
             self.start_btn.setText("Remove from Start menu")
         else:
