@@ -76,7 +76,7 @@ from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
 import stats
-from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, WeekBars
+from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, PercentBars, WeekBars
 from usage_history import UsageHistory
 from approaching_notify import ApproachingNotifier
 from reset_notify import ResetDecision, ResetNotifier
@@ -2451,6 +2451,12 @@ class Dashboard(QMainWindow):
         wl.addWidget(self.stat_wrap)
         v.addWidget(wrap)
 
+        # Per-model usage windows the API reports (e.g. Weekly · Fable 5). The
+        # overall 5h/7d windows aren't repeated here — they live on the
+        # Dashboard. Kept at the very bottom.
+        self.stat_windows = PercentBars(empty_text="No per-model windows reported")
+        viz_card("USAGE WINDOWS", self.stat_windows)
+
         v.addStretch(1)
         return scroll
 
@@ -2607,6 +2613,11 @@ class Dashboard(QMainWindow):
             self.stat_spend.setText("$0.00")
             self.stat_spend_sub.setText("Pay-as-you-go off")
         self._render_roi()
+        # Per-model usage windows the API reports (e.g. Weekly · Fable 5). The
+        # overall 5h/7d windows aren't repeated — they're on the Dashboard.
+        # Insertion order (don't sort) keeps rows from reshuffling per poll.
+        windows = [(f"Weekly · {m}", p) for m, p in s.model_windows.items()]
+        self.stat_windows.set_data(windows, sort=False)
         self._update_burn(s)
 
     def _update_burn(self, s: UsageSample) -> None:
@@ -2940,7 +2951,7 @@ class Dashboard(QMainWindow):
                 plan_tier="default_claude_max_5x",
                 extra_usage_enabled=True,
                 extra_usage_used_usd=round(self._mock_pct * 0.3, 2),
-                model_windows={"Opus": 62, "Sonnet": 18},
+                model_windows={"Opus": 62, "Sonnet": 18, "Fable 5": 41},
             ))
         self._mock_sample_timer.timeout.connect(sample_tick)
         self._mock_sample_timer.start(800)
