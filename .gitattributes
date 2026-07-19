@@ -6,9 +6,13 @@
 *.bat   text eol=crlf
 *.cmd   text eol=crlf
 
-# Keep these LF regardless of platform.
-*.py    text eol=lf
-*.sh    text eol=lf
+# Keep these LF regardless of platform. YAML/.desktop/.sh run on Linux, where a
+# stray CR breaks embedded shell in CI run-blocks and confuses .desktop parsers.
+*.py       text eol=lf
+*.sh       text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.desktop  text eol=lf
 
 # Treat binary assets as binary (no EOL conversion, no diff noise).
 *.png   binary
