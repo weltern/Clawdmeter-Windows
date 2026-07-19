@@ -46,8 +46,11 @@ def test_launch_command_quotes_and_flags():
     assert cmd.lstrip().startswith('"')  # ...even if it has spaces
 
 
-def test_is_supported_is_true_on_windows():
-    assert run_at_startup.is_supported() is (winreg is not None)
+def test_is_supported_true_on_windows_and_linux():
+    # Supported wherever there's an autostart mechanism: Windows (Run key) and
+    # Linux (XDG autostart). Not on other platforms (e.g. macOS — deferred).
+    expected = sys.platform == "win32" or sys.platform.startswith("linux")
+    assert run_at_startup.is_supported() is expected
 
 
 @requires_winreg

@@ -19,6 +19,16 @@ from pathlib import Path
 SHORTCUT_NAME = "Clawdmeter.lnk"
 
 
+def is_supported() -> bool:
+    """True only on Windows — a Start Menu ``.lnk`` is a Windows-only concept.
+
+    Off Windows the shortcut path resolves to a bogus ``~/AppData/...`` tree and
+    the PowerShell/WScript.Shell call can't run, so the Settings control that
+    drives this must gate itself on this the way ``run_at_startup`` does.
+    """
+    return sys.platform == "win32"
+
+
 def _start_menu_dir() -> Path:
     appdata = os.environ.get("APPDATA")
     base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
