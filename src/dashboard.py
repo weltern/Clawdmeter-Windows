@@ -3721,9 +3721,12 @@ class Dashboard(QMainWindow):
         self._restore_view()
 
     def closeEvent(self, event) -> None:
-        # Minimize to tray unless the user opted into quit-on-close (or the tray
-        # isn't available, in which case closing must actually exit).
-        if app_settings.get_quit_on_close() or not self._tray.isVisible():
+        # Minimize to tray unless the user opted into quit-on-close (or there is
+        # no system tray to minimize to — e.g. some Linux DEs — in which case
+        # closing must actually exit, not hide the window into nowhere).
+        # isVisible() reports the icon's requested state, not whether a tray host
+        # exists, so gate on the authoritative isSystemTrayAvailable() flag.
+        if app_settings.get_quit_on_close() or not getattr(self, "tray_available", True):
             event.accept()
             self._real_quit()
         else:
