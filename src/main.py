@@ -22,6 +22,9 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Clawdmeter")
     app.setOrganizationName(app_settings.ORG)
+    # Ties the app to packaging/clawdmeter.desktop so Wayland uses its icon
+    # (the app_id must match the .desktop basename). No-op on Windows.
+    app.setDesktopFileName("clawdmeter")
     app.setQuitOnLastWindowClosed(False)  # tray keeps app alive
 
     # Single instance: if a copy is already running, surface its window and

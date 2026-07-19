@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Clawdmeter
+GenericName=Claude usage monitor
+Comment=Claude Code usage dashboard in your system tray
+Exec=Clawdmeter
+Icon=clawdmeter
+Terminal=false
+Categories=Utility;Monitor;
+Keywords=Claude;Anthropic;usage;tokens;monitor;
+StartupWMClass=Clawdmeter
