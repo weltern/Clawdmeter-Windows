@@ -2,7 +2,7 @@
   "currency": "USD",
   "unit": "per_mtok",
   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-  "fetched_at": "2026-06-16",
+  "fetched_at": "2026-07-20",
   "models": {
     "claude-fable-5": {
       "display_name": "Claude Fable 5",
@@ -25,6 +25,29 @@
       "cache_read": 1.0,
       "batch_input": 5.0,
       "batch_output": 25.0
+    },
+    "claude-sonnet-5": {
+      "display_name": "Claude Sonnet 5",
+      "status": "active",
+      "input": 2.0,
+      "output": 10.0,
+      "cache_write_5m": 2.5,
+      "cache_write_1h": 4.0,
+      "cache_read": 0.2,
+      "batch_input": 1.0,
+      "batch_output": 5.0,
+      "rate_changes": [
+        {
+          "effective_from": "2026-09-01",
+          "input": 3.0,
+          "cache_write_5m": 3.75,
+          "cache_write_1h": 6.0,
+          "cache_read": 0.3,
+          "output": 15.0,
+          "batch_input": 1.5,
+          "batch_output": 7.5
+        }
+      ]
     },
     "claude-opus-4-8": {
       "display_name": "Claude Opus 4.8",
@@ -61,9 +84,7 @@
       "cache_write_1h": 10.0,
       "cache_read": 0.5,
       "batch_input": 2.5,
-      "batch_output": 12.5,
-      "fast_mode_input": 30.0,
-      "fast_mode_output": 150.0
+      "batch_output": 12.5
     },
     "claude-opus-4-5": {
       "display_name": "Claude Opus 4.5",
