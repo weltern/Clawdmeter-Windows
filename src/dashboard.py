@@ -172,7 +172,7 @@ QLabel#reset { font-size: 12px; color: #9ca3af; }
 QLabel#statusText { font-size: 12px; font-weight: 600; }
 QLabel#statusText[level="warn"] { color: #f59e0b; }
 QLabel#statusText[level="block"] { color: #dc2626; }
-QLabel#statusIcon { font-size: 14px; font-family: "Segoe UI Emoji", "Noto Color Emoji", sans-serif; }
+QLabel#statusIcon { font-size: 14px; font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif; }
 
 QPushButton {
     background-color: #1f2937; color: #e6edf3; border: 1px solid #374151;
@@ -198,7 +198,7 @@ QPushButton#navBtn {
     background: transparent; color: #9ca3af; border: 0;
     border-radius: 6px; padding: 9px 14px;
     text-align: left; font-size: 13px; font-weight: 600;
-    font-family: "Segoe UI", "Noto Sans", "DejaVu Sans", "Font Awesome 6 Free";
+    font-family: "Segoe UI", "Helvetica Neue", "Noto Sans", "DejaVu Sans", "Font Awesome 6 Free", sans-serif;
 }
 QPushButton#navBtn:hover { background-color: #1f2937; color: #e6edf3; }
 QPushButton#navBtn:checked { background-color: #1f2937; color: #CE7D6B; }
@@ -311,7 +311,7 @@ QPushButton#railBtn {
     border-radius: 6px; padding: 9px 0px 9px 8px;  /* no right pad: icon never clips,
                                                        and stays put as the rail widens */
     text-align: left; font-size: 15px; font-weight: 600;
-    font-family: "Segoe UI", "Noto Sans", "DejaVu Sans", "Font Awesome 6 Free";
+    font-family: "Segoe UI", "Helvetica Neue", "Noto Sans", "DejaVu Sans", "Font Awesome 6 Free", sans-serif;
 }
 QPushButton#railBtn:hover { background-color: #1f2937; color: #e6edf3; }
 QPushButton#railBtn:checked { background-color: #1f2937; color: #CE7D6B; }
