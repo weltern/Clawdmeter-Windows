@@ -17,4 +17,5 @@
 # Treat binary assets as binary (no EOL conversion, no diff noise).
 *.png   binary
 *.ico   binary
+*.icns  binary
 *.exe   binary

@@ -140,23 +140,28 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 # prompt) a real File/Product version, name, and copyright. The version is
 # parsed from APP_VERSION in src/app_settings.py so it always matches the in-app
 # About box -- bump it there and rebuild; nothing here needs touching.
+import re
 import sys
+
+# Single source of truth for the build version: APP_VERSION in app_settings.
+# Used by the Windows version resource AND the macOS bundle's CFBundleVersion,
+# so parse it unconditionally (bump it in src/app_settings.py; nothing here).
+with open('src/app_settings.py', encoding='utf-8') as _f:
+    _m = re.search(r'APP_VERSION\s*=\s*["\']([0-9]+(?:\.[0-9]+)*)["\']', _f.read())
+_ver_str = _m.group(1) if _m else '0.0.0'
 
 # The version resource is a Windows-only concept (and its builder lives under
 # PyInstaller.utils.win32, which only imports on Windows). Off Windows the Linux
 # build carries no embedded version resource — the .desktop entry and release
-# metadata cover that instead — so leave it None.
+# metadata cover that instead — so leave it None. (macOS carries its version in
+# the .app Info.plist, built below.)
 version_info = None
 if sys.platform == 'win32':
-    import re
     from PyInstaller.utils.win32.versioninfo import (
         VSVersionInfo, FixedFileInfo, StringFileInfo, StringTable,
         StringStruct, VarFileInfo, VarStruct,
     )
 
-    with open('src/app_settings.py', encoding='utf-8') as _f:
-        _m = re.search(r'APP_VERSION\s*=\s*["\']([0-9]+(?:\.[0-9]+)*)["\']', _f.read())
-    _ver_str = _m.group(1) if _m else '0.0.0'
     _vtuple = tuple(([int(p) for p in _ver_str.split('.')] + [0, 0, 0, 0])[:4])
 
     version_info = VSVersionInfo(
@@ -214,3 +219,31 @@ exe = EXE(
     icon=_ICON,
     version=version_info,
 )
+
+# --- macOS .app bundle ------------------------------------------------------
+# Wrap the one-file executable above into a Clawdmeter.app so it launches like a
+# native menu-bar app. LSUIElement=1 makes it an "agent" — it lives in the menu
+# bar with NO Dock icon and NO app-switcher entry, which is what a tray utility
+# wants. The version comes from APP_VERSION (parsed above). BUNDLE only runs on
+# macOS, so Windows/Linux builds are byte-for-byte unaffected.
+if _IS_MAC:
+    app = BUNDLE(
+        exe,
+        name='Clawdmeter.app',
+        icon=_ICON,
+        bundle_identifier='com.clawdmeter.app',
+        version=_ver_str,
+        info_plist={
+            'LSUIElement': True,                     # menu-bar agent, no Dock icon
+            'CFBundleName': 'Clawdmeter',
+            'CFBundleDisplayName': 'Clawdmeter',
+            'CFBundleShortVersionString': _ver_str,
+            'CFBundleVersion': _ver_str,
+            'NSHighResolutionCapable': True,
+            'LSMinimumSystemVersion': '11.0',
+            'NSHumanReadableCopyright': (
+                '© 2026 Nick Welter · MIT licensed · '
+                'Clawd mascot © Anthropic PBC'
+            ),
+        },
+    )

@@ -73,7 +73,10 @@ import start_menu
 import token_refresh
 import winutil
 from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
-from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
+from poller import (
+    UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH,
+    token_source_description,
+)
 import remote_notify
 import stats
 from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, PercentBars, WeekBars
@@ -1518,7 +1521,9 @@ class SettingsPanel(QWidget):
             self.cred_status.setText(f"Using: {override}")
             self.cred_reset_btn.show()
         else:
-            self.cred_status.setText(f"Default: {DEFAULT_CREDENTIALS_PATH}")
+            # token_source_description() names the login Keychain on macOS and
+            # the default credentials file on Windows/Linux.
+            self.cred_status.setText(f"Default: {token_source_description()}")
             self.cred_reset_btn.hide()
 
     def refresh_token_status(self) -> None:
