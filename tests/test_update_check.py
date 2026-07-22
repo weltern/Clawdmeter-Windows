@@ -128,6 +128,15 @@ def _install_fake_httpx(payload, raise_exc=None):
     return lambda: setattr(update_check, "httpx", real)
 
 
+def _force_windows():
+    """Make update_check believe it's NOT macOS (Windows/Linux .exe asset path),
+    so asset resolution is deterministic regardless of the host OS running the
+    suite. Returns a restore fn."""
+    real = update_check._is_macos
+    update_check._is_macos = lambda: False
+    return lambda: setattr(update_check, "_is_macos", real)
+
+
 def test_fetch_latest_parses_release():
     h = "d" * 64
     payload = {
@@ -139,11 +148,13 @@ def test_fetch_latest_parses_release():
              "browser_download_url": "https://example.com/Clawdmeter.exe"},
         ],
     }
+    unwin = _force_windows()   # this test exercises the .exe asset path
     restore = _install_fake_httpx(payload)
     try:
         info = fetch_latest()
     finally:
         restore()
+        unwin()
     assert isinstance(info, UpdateInfo)
     assert info.version == "2.2.0"
     assert info.tag == "v2.2.0"
