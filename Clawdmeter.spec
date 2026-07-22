@@ -198,37 +198,52 @@ elif _IS_MAC:
 else:
     _ICON = None
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name='Clawdmeter',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    runtime_tmpdir=None,
-    console=False,
-    disable_windowed_traceback=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=_ICON,
-    version=version_info,
-)
-
-# --- macOS .app bundle ------------------------------------------------------
-# Wrap the one-file executable above into a Clawdmeter.app so it launches like a
-# native menu-bar app. LSUIElement=1 makes it an "agent" — it lives in the menu
-# bar with NO Dock icon and NO app-switcher entry, which is what a tray utility
-# wants. The version comes from APP_VERSION (parsed above). BUNDLE only runs on
-# macOS, so Windows/Linux builds are byte-for-byte unaffected.
+# --- Packaging --------------------------------------------------------------
+# Windows/Linux ship a single self-contained executable (onefile): binaries,
+# zipfiles, and datas are baked into the EXE. macOS instead builds a onedir
+# bundle — EXE (bootstrap only, exclude_binaries=True) -> COLLECT (the onedir
+# tree) -> BUNDLE (Clawdmeter.app). A onefile EXE wrapped in BUNDLE is deprecated
+# and becomes an ERROR in PyInstaller v7, so the .app must be onedir. The
+# non-macOS EXE below is unchanged from the Windows-only version, so Windows and
+# Linux builds are byte-for-byte identical.
 if _IS_MAC:
-    app = BUNDLE(
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,          # onedir: binaries go into COLLECT below
+        name='Clawdmeter',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=False,
+        disable_windowed_traceback=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=_ICON,
+        version=version_info,           # None off Windows
+    )
+
+    coll = COLLECT(
         exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=False,
+        upx_exclude=[],
+        name='Clawdmeter',
+    )
+
+    # --- macOS .app bundle --------------------------------------------------
+    # Wrap the COLLECT'd onedir tree into a Clawdmeter.app so it launches like a
+    # native menu-bar app. LSUIElement=1 makes it an "agent" — it lives in the
+    # menu bar with NO Dock icon and NO app-switcher entry, which is what a tray
+    # utility wants. The version comes from APP_VERSION (parsed above).
+    app = BUNDLE(
+        coll,
         name='Clawdmeter.app',
         icon=_ICON,
         bundle_identifier='com.clawdmeter.app',
@@ -246,4 +261,26 @@ if _IS_MAC:
                 'Clawd mascot © Anthropic PBC'
             ),
         },
+    )
+else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        [],
+        name='Clawdmeter',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        runtime_tmpdir=None,
+        console=False,
+        disable_windowed_traceback=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=_ICON,
+        version=version_info,
     )
