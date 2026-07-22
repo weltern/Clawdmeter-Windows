@@ -2905,13 +2905,11 @@ class Dashboard(QMainWindow):
 
     def _open_update_page(self) -> None:
         info = getattr(self, "_update_info", None)
-        url = info.url if info else update_check.RELEASES_PAGE
-        # The URL comes from the GitHub API response; only open it if it's this
-        # repo on github.com, else fall back to the canonical releases page —
-        # so a compromised/unexpected response can't redirect the user anywhere.
-        if not url.startswith(f"https://github.com/{update_check.REPO}/"):
-            url = update_check.RELEASES_PAGE
-        QDesktopServices.openUrl(QUrl(url))
+        # There's no in-app installer on any platform — and macOS can't
+        # self-replace a running .app — so a detected update opens the release
+        # *page* for a manual download. update_check.download_url() picks the
+        # safe URL (only this repo on github.com; see its docstring).
+        QDesktopServices.openUrl(QUrl(update_check.download_url(info)))
 
     def _on_tray_message_clicked(self) -> None:
         # Only act if there's a pending update — other balloons are informational.
