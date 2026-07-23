@@ -1,0 +1,70 @@
+"""Unit tests for the central colour palette + stylesheet builder (theme.py).
+
+Guards the Phase-1 theming invariant that matters most: the default palette
+reproduces the app's historical hardcoded stylesheet byte-for-byte, so wiring
+build_qss() in is a provable no-op. Also checks that a non-default palette
+actually swaps colours, and that the single-pass swap can't alias.
+
+No Qt needed — theme.py is pure Python. Run with `python -m pytest tests/ -q`.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+
+import theme  # noqa: E402
+from theme import MIDNIGHT_SALMON, Palette, build_qss  # noqa: E402
+
+
+def test_default_palette_reproduces_base_qss_exactly():
+    # The default theme swaps every hex for itself -> byte-identical output.
+    assert build_qss(MIDNIGHT_SALMON) == theme._BASE_QSS
+
+
+def test_default_output_carries_the_shipped_colours():
+    qss = build_qss(MIDNIGHT_SALMON)
+    assert "#CE7D6B" in qss            # salmon accent
+    assert "#0e1116" in qss            # base background
+    assert "#ffffff" in qss            # the literal white kept out of the palette
+    assert len(qss) > 5000             # sanity: it's the full sheet, not a stub
+
+
+def test_active_is_the_default_for_now():
+    assert theme.active() is MIDNIGHT_SALMON
+
+
+def test_every_qss_field_is_a_real_palette_attribute():
+    fields = {f.name for f in dataclasses.fields(Palette)}
+    for field in theme._QSS_HEX_TO_FIELD.values():
+        assert field in fields, f"{field} is not a Palette field"
+
+
+def test_a_changed_role_actually_swaps_in_the_output():
+    custom = MIDNIGHT_SALMON.with_overrides(bg="#123456")
+    qss = build_qss(custom)
+    assert "#123456" in qss
+    # Every base-background occurrence became the new colour.
+    assert "#0e1116" not in qss
+
+
+def test_swap_is_single_pass_no_aliasing():
+    # Swap bg <-> surface. A naive sequential .replace() would collapse both to
+    # one colour; a single regex pass keeps them distinct.
+    old_bg, old_surface = MIDNIGHT_SALMON.bg, MIDNIGHT_SALMON.surface
+    swapped = MIDNIGHT_SALMON.with_overrides(bg=old_surface, surface=old_bg)
+    qss = build_qss(swapped)
+    # The root rule: background-color is bg, border is surface. After the swap
+    # they trade values rather than both becoming the same colour.
+    assert f"background-color: {old_surface};" in qss   # bg slot now holds surface's hex
+    assert f"border: 1px solid {old_bg};" in qss         # surface slot now holds bg's hex
+    # Both distinct colours still present (no collapse).
+    assert old_bg in qss and old_surface in qss
+
+
+if __name__ == "__main__":
+    import pytest
+    raise SystemExit(pytest.main([__file__, "-q"]))

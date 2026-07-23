@@ -41,6 +41,7 @@ from PySide6.QtGui import (
     QAction, QColor, QFont, QFontMetrics, QIcon, QPainter,
 )
 
+import theme
 import winutil
 from mood import GROUP_ANIMS
 from sprite_player import SpritePlayer, assets_root
@@ -60,12 +61,13 @@ from transcript import (
 # leads with the sleep expression, matching the dashboard's empty-state mood.
 _IDLE_ANIMS = GROUP_ANIMS[0]
 
-# Local copy of the dashboard's visual tokens. Kept here (rather than imported
-# from dashboard.py) so the shelf has no back-dependency on its host window.
-_BG = "#0e1116"
-_TEXT = "#e6edf3"
-_MUTED = "#9ca3af"
-_IDLE_COLOR = ACTIVITY_COLORS[Activity.IDLE]
+# Chrome tokens from the app palette (Phase 1 theming). Frozen at import for
+# now; Phase 2 adds a refresh hook so a live theme switch restyles the shelf.
+_P = theme.active()
+_BG = _P.bg
+_TEXT = _P.text
+_MUTED = _P.text_dim
+_IDLE_COLOR = ACTIVITY_COLORS[Activity.IDLE]   # meaning-bearing, stays fixed
 
 SHELF_STYLESHEET = f"""
 QWidget#shelfRoot {{ background-color: {_BG}; }}
@@ -81,9 +83,9 @@ QLabel#tileActivity {{
 QLabel#tileDot {{ font-size: 11px; }}
 QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 0 2px; }}
 QScrollBar::handle:horizontal {{
-    background: #374151; border-radius: 4px; min-width: 24px;
+    background: {_P.border}; border-radius: 4px; min-width: 24px;
 }}
-QScrollBar::handle:horizontal:hover {{ background: #4b5563; }}
+QScrollBar::handle:horizontal:hover {{ background: {_P.border_dim}; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
 """
@@ -298,9 +300,9 @@ class ScrollingLabel(QWidget):
 
 # Usage-bar palette (was QProgressBar QSS; now painted so the bar can render
 # past 100% with a distinct overage colour).
-_BAR_TRACK = "#1f2937"
-_BAR_BORDER = "#374151"
-_BAR_OVERAGE = "#A50F1A"   # deep fire-truck red — the overage overflow
+_BAR_TRACK = _P.surface
+_BAR_BORDER = _P.border
+_BAR_OVERAGE = "#A50F1A"   # deep fire-truck red — the overage overflow (fixed)
 _BAR_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
 
 
@@ -922,13 +924,13 @@ COMPACT_MASCOT = 38
 
 COMPACT_STYLESHEET = f"""
 QWidget#compactRoot {{ background: {_BG}; }}
-QWidget#compactTitleBar {{ background: #0b0e13; }}
+QWidget#compactTitleBar {{ background: {_P.bg_deepest}; }}
 QLabel#compactTitle {{ font-size: 12px; font-weight: 700; color: {_TEXT};
                        letter-spacing: 1.5px; }}
-QToolButton#compactBtn {{ background: transparent; color: #CE7D6B; border: none;
+QToolButton#compactBtn {{ background: transparent; color: {_P.accent}; border: none;
                           font-size: 13px; padding: 2px 7px; }}
-QToolButton#compactBtn:hover {{ background: #1f2937; }}
-QWidget#compactRow:hover {{ background: #161b22; }}
+QToolButton#compactBtn:hover {{ background: {_P.surface}; }}
+QWidget#compactRow:hover {{ background: {_P.surface_dim}; }}
 QLabel#compactBarLabel {{ font-size: 10px; font-weight: 600; color: {_MUTED};
                           letter-spacing: 1px; }}
 QLabel#compactPctLbl {{ font-size: 11px; font-weight: 700; color: {_TEXT}; }}
@@ -939,7 +941,7 @@ QLabel#compactRowActivity {{ font-size: 10px; font-weight: 600; letter-spacing: 
 QLabel#compactRowAgents {{ font-size: 10px; font-weight: 700; color: {_MUTED}; }}
 QScrollArea#compactScroll {{ background: transparent; border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px 0; }}
-QScrollBar::handle:vertical {{ background: #374151; border-radius: 4px; min-height: 24px; }}
+QScrollBar::handle:vertical {{ background: {_P.border}; border-radius: 4px; min-height: 24px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """
 

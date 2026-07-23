@@ -80,6 +80,7 @@ from poller import (
 import remote_notify
 import stats
 from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, PercentBars, WeekBars
+import theme
 from usage_history import UsageHistory
 from approaching_notify import ApproachingNotifier
 from reset_notify import ResetDecision, ResetNotifier
@@ -147,218 +148,7 @@ def _should_release_autofit(height_changed, fitting, armed, max_involved, titleb
 VIEW_ORDER = ("full", "compact", "mini")
 
 
-STYLESHEET = """
-QWidget#root {
-    background-color: #0e1116;
-    border: 1px solid #1f2937;
-}
-
-QWidget#titleBar { background-color: #0a0d12; }
-QLabel#titleAppName {
-    font-size: 12px; color: #e6edf3; font-weight: 600; letter-spacing: 1px;
-}
-QToolButton#titleBtn, QToolButton#closeBtn, QToolButton#settingsBtn {
-    background: transparent; color: #CE7D6B; border: 0;
-    min-width: 38px; min-height: 30px;
-    font-family: "Font Awesome 6 Free"; font-weight: 900;
-}
-QToolButton#titleBtn, QToolButton#closeBtn { font-size: 13px; }
-QToolButton#settingsBtn { font-size: 15px; }
-QToolButton#titleBtn:hover, QToolButton#settingsBtn:hover { background-color: #1f2937; color: #CE7D6B; }
-QToolButton#closeBtn:hover { background-color: #c13434; color: #ffffff; }
-
-QLabel#title { font-size: 22px; font-weight: 700; letter-spacing: 1px; color: #e6edf3; }
-QLabel#group { font-size: 13px; font-weight: 600; color: #9ca3af; letter-spacing: 2px; }
-QLabel#rowLabel { font-size: 14px; color: #9ca3af; }
-QLabel#pct { font-size: 40px; font-weight: 700; color: #e6edf3; }
-QLabel#reset { font-size: 12px; color: #9ca3af; }
-QLabel#statusText { font-size: 12px; font-weight: 600; }
-QLabel#statusText[level="warn"] { color: #f59e0b; }
-QLabel#statusText[level="block"] { color: #dc2626; }
-QLabel#statusIcon { font-size: 14px; font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif; }
-
-QPushButton {
-    background-color: #1f2937; color: #e6edf3; border: 1px solid #374151;
-    padding: 6px 12px; border-radius: 6px;
-}
-QPushButton:hover { background-color: #374151; }
-QPushButton:disabled { background-color: #161b22; color: #4b5563; border-color: #21262d; }
-
-QWidget#settingsPanel {
-    background-color: #0a0d12;
-}
-/* Left tab rail in the settings page (sits right of the app nav rail). */
-QWidget#settingsNav {
-    background-color: #0e1116;
-    border-right: 1px solid #1f2937;
-}
-/* QPushButton (not QToolButton) so QSS text-align actually left-aligns the
-   glyph+label. Segoe UI is primary so the Latin label stays crisp — FA Free
-   ships its own (ugly) Latin, so listing it first would hijack the words. The
-   leading FA glyph isn't in Segoe UI, so Qt falls back to Font Awesome for it.
-   FA is registered at startup in main.py via QFontDatabase. */
-QPushButton#navBtn {
-    background: transparent; color: #9ca3af; border: 0;
-    border-radius: 6px; padding: 9px 14px;
-    text-align: left; font-size: 13px; font-weight: 600;
-    font-family: "Segoe UI", "Helvetica Neue", "Noto Sans", "DejaVu Sans", "Font Awesome 6 Free", sans-serif;
-}
-QPushButton#navBtn:hover { background-color: #1f2937; color: #e6edf3; }
-QPushButton#navBtn:checked { background-color: #1f2937; color: #CE7D6B; }
-QScrollArea#settingsScroll, QWidget#settingsBody { background: transparent; border: none; }
-QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 0; }
-QScrollBar::handle:vertical { background: #374151; border-radius: 4px; min-height: 24px; }
-QScrollBar::handle:vertical:hover { background: #4b5563; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-QLabel#settingsTitle {
-    font-size: 16px; font-weight: 700; color: #e6edf3; letter-spacing: 2px;
-}
-QLabel#sectionLabel {
-    font-size: 10px; color: #6b7280; letter-spacing: 2px; font-weight: 600;
-}
-QLabel#pathDisplay {
-    font-size: 10px; color: #9ca3af;
-    background: #0e1116; border: 1px solid #1f2937; border-radius: 4px;
-    padding: 8px;
-}
-QLabel#credStatus { font-size: 10px; color: #6b7280; }
-QLabel#sectionHint { font-size: 10px; color: #6b7280; }
-QLabel#pollNote { font-size: 10px; color: #f59e0b; font-weight: 600; }
-
-/* Stats page cards */
-QFrame#statCard {
-    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 8px;
-}
-QLabel#statLabel { font-size: 10px; color: #6b7280; letter-spacing: 2px; font-weight: 600; }
-QLabel#statBig { font-size: 32px; font-weight: 700; color: #e6edf3; }
-QLabel#statMid { font-size: 18px; font-weight: 700; color: #e6edf3; }
-QLabel#statPlan { font-size: 12px; color: #CE7D6B; font-weight: 600; letter-spacing: 1px; }
-QLabel#statDelta { font-size: 12px; font-weight: 700; }
-QLabel#statCount { font-size: 11px; color: #6b7280; font-weight: 600; }
-QFrame#statDivider { background: #1f2937; max-height: 1px; min-height: 1px; border: 0; }
-QPushButton#resetLink {
-    background: transparent; color: #9ca3af; border: 0; padding: 2px 4px;
-    text-decoration: underline; font-size: 10px;
-}
-QPushButton#resetLink:hover { color: #e6edf3; }
-QCheckBox { color: #e6edf3; font-size: 12px; spacing: 8px; padding: 3px 0; }
-QCheckBox::indicator {
-    width: 16px; height: 16px; border: 1px solid #374151;
-    background-color: #1f2937; border-radius: 2px;
-}
-QCheckBox::indicator:hover { border-color: #6b7280; }
-QCheckBox::indicator:checked {
-    background-color: #CE7D6B; border-color: #CE7D6B;
-    image: none;
-}
-
-/* Text/number inputs — the app had no input styling, so these fell back to the
-   native light Windows look. Theme them to match the dark surface: poll-interval
-   field, push-channel editors, and the threshold / idle spinners. */
-QLineEdit, QSpinBox {
-    background-color: #0e1116; color: #e6edf3;
-    border: 1px solid #374151; border-radius: 6px;
-    padding: 4px 8px;
-    selection-background-color: #CE7D6B; selection-color: #0a0d12;
-}
-QLineEdit:focus, QSpinBox:focus { border-color: #CE7D6B; }
-QLineEdit:disabled, QSpinBox:disabled {
-    color: #4b5563; background-color: #161b22; border-color: #21262d;
-}
-QSpinBox::up-button, QSpinBox::down-button {
-    subcontrol-origin: border; width: 15px; background: #1f2937;
-    border-left: 1px solid #374151;
-}
-QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 6px; }
-QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 6px; }
-QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #374151; }
-QSpinBox::up-arrow {
-    width: 0; height: 0; image: none;
-    border-left: 4px solid transparent; border-right: 4px solid transparent;
-    border-bottom: 5px solid #9ca3af;
-}
-QSpinBox::down-arrow {
-    width: 0; height: 0; image: none;
-    border-left: 4px solid transparent; border-right: 4px solid transparent;
-    border-top: 5px solid #9ca3af;
-}
-QSpinBox::up-arrow:hover { border-bottom-color: #e6edf3; }
-QSpinBox::down-arrow:hover { border-top-color: #e6edf3; }
-
-/* Approaching-limit threshold sliders: dark groove, salmon fill up to the
-   handle, salmon handle, with a value pill beside it. */
-QSlider#threshold::groove:horizontal { height: 4px; border-radius: 2px; background: #1f2937; }
-QSlider#threshold::add-page:horizontal { background: #1f2937; border-radius: 2px; }
-QSlider#threshold::sub-page:horizontal { background: #CE7D6B; border-radius: 2px; }
-QSlider#threshold::handle:horizontal {
-    width: 13px; height: 13px; margin: -5px 0; border-radius: 7px;
-    background: #CE7D6B; border: 2px solid #0a0d12;
-}
-QSlider#threshold::handle:horizontal:hover { background: #d98f7e; }
-/* Editable value field beside the slider — looks like a pill, but click + type.
-   It lights up with the salmon focus border both when focused and while its
-   slider is being dragged ([sliding="true"]). */
-QSpinBox#thresholdField { padding: 3px 4px; font-weight: 600; }
-QSpinBox#thresholdField[sliding="true"] { border-color: #CE7D6B; }
-
-/* Slim left nav rail (overlay). Same icon+label language as the settings tabs:
-   Segoe UI primary so labels stay crisp; the leading FA glyph falls back to FA.
-   Labels are clipped while the rail is collapsed and revealed as it expands. */
-QWidget#navRail {
-    background-color: #0e1116;
-    border-right: 1px solid #1f2937;
-}
-QPushButton#railBtn {
-    background: transparent; color: #9ca3af; border: 0;
-    border-radius: 6px; padding: 9px 0px 9px 8px;  /* no right pad: icon never clips,
-                                                       and stays put as the rail widens */
-    text-align: left; font-size: 15px; font-weight: 600;
-    font-family: "Segoe UI", "Helvetica Neue", "Noto Sans", "DejaVu Sans", "Font Awesome 6 Free", sans-serif;
-}
-QPushButton#railBtn:hover { background-color: #1f2937; color: #e6edf3; }
-QPushButton#railBtn:checked { background-color: #1f2937; color: #CE7D6B; }
-
-/* Push-notification channel cards (Settings -> Notifications). */
-QWidget#pushCard {
-    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 6px;
-}
-QLabel#pushSummary { font-size: 12px; }
-QToolButton#pushEditBtn {
-    background: transparent; color: #9ca3af; border: 0;
-    padding: 2px 6px; border-radius: 4px; font-size: 11px;
-}
-QToolButton#pushEditBtn:hover { color: #CE7D6B; background-color: #1f2937; }
-QToolButton#pushRemoveBtn {
-    background: transparent; color: #6b7280; border: 0;
-    padding: 2px 7px; border-radius: 4px; font-size: 12px;
-}
-QToolButton#pushRemoveBtn:hover { color: #ffffff; background-color: #c13434; }
-QToolButton#addChannelBtn {
-    background: transparent; color: #CE7D6B; border: 1px dashed #374151;
-    padding: 5px 12px; border-radius: 6px; font-size: 11px;
-}
-QToolButton#addChannelBtn:hover { background-color: #1f2937; border-color: #CE7D6B; }
-QToolButton#addChannelBtn:disabled { color: #4b5563; border-color: #21262d; }
-QToolButton#addChannelBtn::menu-indicator { image: none; width: 0; }
-
-QWidget#miniRoot {
-    background-color: #0e1116;
-    border: 1px solid #CE7D6B;
-}
-QLabel#miniPct { font-size: 17px; font-weight: 700; color: #e6edf3; }
-QLabel#miniPctSub { font-size: 13px; font-weight: 700; color: #9ca3af; }
-QLabel#miniReset { font-size: 12px; color: #9ca3af; }
-
-QWidget#toastRoot {
-    background-color: #0e1116;
-    border: 1px solid #CE7D6B;
-}
-QLabel#toastTitle {
-    font-size: 14px; font-weight: 700; color: #e6edf3; letter-spacing: 0.5px;
-}
-QLabel#toastBody { font-size: 12px; color: #9ca3af; }
-"""
+STYLESHEET = theme.build_qss(theme.active())
 
 
 def _tray_pixmap(pct: int) -> QPixmap:
@@ -1040,14 +830,15 @@ class _PushChannelRow(QWidget):
 
     def _refresh(self) -> None:
         configured = app_settings.push_channel_configured(self._provider)
-        dot = "#CE7D6B" if configured else "#4b5563"
+        p = theme.active()
+        dot = p.accent if configured else p.border_dim
         summary = _push_channel_summary(self._provider)
         summary = (summary.replace("&", "&amp;").replace("<", "&lt;")
                    .replace(">", "&gt;"))  # the ntfy topic is user-supplied
         self._summary.setText(
             f"<span style='color:{dot}'>●</span>&nbsp;&nbsp;"
-            f"<span style='color:#e6edf3'>{self._name}</span>&nbsp;&nbsp;"
-            f"<span style='color:#6b7280'>· {summary}</span>")
+            f"<span style='color:{p.text}'>{self._name}</span>&nbsp;&nbsp;"
+            f"<span style='color:{p.text_muted}'>· {summary}</span>")
 
 
 class SettingsPanel(QWidget):
@@ -2558,7 +2349,8 @@ class Dashboard(QMainWindow):
                 except ValueError:
                     continue
                 rows.append((ACTIVITY_LABELS.get(act, key.upper()),
-                             n / total * 100.0, ACTIVITY_COLORS.get(act, "#6b7280")))
+                             n / total * 100.0,
+                             ACTIVITY_COLORS.get(act, theme.active().text_muted)))
             rows.sort(key=lambda r: r[1], reverse=True)
         self.stat_activity.set_data(rows)
 
@@ -2571,10 +2363,10 @@ class Dashboard(QMainWindow):
             up = pct >= 0
             self.stat_week_delta.setText(f"{'+' if up else '−'}{abs(pct):.0f}%")
             self.stat_week_delta.setStyleSheet(
-                f"color: {'#5FB3A1' if up else '#c13434'};")
+                f"color: {theme.active().positive if up else theme.active().danger_strong};")
         elif wt > 0:
             self.stat_week_delta.setText("new")
-            self.stat_week_delta.setStyleSheet("color: #5FB3A1;")
+            self.stat_week_delta.setStyleSheet(f"color: {theme.active().positive};")
         else:
             self.stat_week_delta.setText("")
 
