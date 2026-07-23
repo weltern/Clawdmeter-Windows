@@ -263,15 +263,16 @@ RIPTIDE = Palette(
     idle="#747d86",
 )
 
-# Riptide Light — light grey with deep teal / cyan accents.
+# Riptide Light — muted light grey (deeper than most lights) with deep teal /
+# cyan accents.
 RIPTIDE_LIGHT = Palette(
-    bg="#eef1f3", bg_deep="#e5e9ec", bg_deepest="#dfe4e8",
-    surface="#e3e7ea", surface_dim="#d9dee2", surface_sunken="#cbd2d8",
-    border="#cfd5da", border_dim="#a8b1b9",
-    text="#1a1f24", text_dim="#444d55", text_muted="#626c75",
-    accent="#0f766e", accent_hover="#0891b2",
-    warn="#af5109", danger="#c81e1e", danger_strong="#a81717", positive="#147c3b",
-    idle="#6a747d",
+    bg="#cacdcf", bg_deep="#c3c6c9", bg_deepest="#bec2c5",
+    surface="#c1c4c7", surface_dim="#b8bdc0", surface_sunken="#adb2b8",
+    border="#b0b5b9", border_dim="#8f969d",
+    text="#1a1f24", text_dim="#444d55", text_muted="#4e565e",
+    accent="#0c6059", accent_hover="#077b97",
+    warn="#8a4007", danger="#a81919", danger_strong="#8c1414", positive="#10632f",
+    idle="#545c63",
 )
 
 
