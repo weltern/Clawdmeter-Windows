@@ -1013,11 +1013,29 @@ class _PresetRow(QFrame):
         row.addStretch(1)
         self.combo = QComboBox()
         self.combo.setFocusPolicy(Qt.StrongFocus)
+        self.combo.setIconSize(QSize(60, 16))
         for name in theme.names():
-            self.combo.addItem(name)
+            self.combo.addItem(self._swatch_icon(name), name)
         self.combo.currentTextChanged.connect(self._on_combo)
         row.addWidget(self.combo)
         self._paint(self.combo.currentText())
+
+    @staticmethod
+    def _swatch_icon(name: str) -> QIcon:
+        """A 4-chip (bg/surface/accent/text) preview icon for a preset, shown
+        beside its name in the dropdown and the collapsed field."""
+        p = theme.get(name)
+        w, h, gap = 13, 16, 2
+        pm = QPixmap((w + gap) * 4 - gap, h)
+        pm.fill(Qt.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.Antialiasing)
+        for i, role in enumerate(("bg", "surface", "accent", "text")):
+            painter.setPen(QColor(0, 0, 0, 90))
+            painter.setBrush(QColor(getattr(p, role)))
+            painter.drawRoundedRect(QRect(i * (w + gap), 0, w, h), 3, 3)
+        painter.end()
+        return QIcon(pm)
 
     def _on_combo(self, name: str) -> None:
         self._paint(name)

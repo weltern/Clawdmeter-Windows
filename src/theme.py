@@ -666,13 +666,13 @@ QSpinBox::down-arrow {
 QSpinBox::up-arrow:hover { border-bottom-color: #e6edf3; }
 QSpinBox::down-arrow:hover { border-top-color: #e6edf3; }
 
-/* Preset dropdown (Appearance page). */
+/* Preset dropdown (Appearance page) — swatch icon + name per item. */
 QComboBox {
     background-color: #1f2937; color: #e6edf3; border: 1px solid #374151;
-    border-radius: 6px; padding: 4px 10px; min-width: 128px;
+    border-radius: 6px; padding: 4px 8px 4px 10px; min-width: 190px;
 }
 QComboBox:hover { border-color: #4b5563; }
-QComboBox:focus { border-color: #CE7D6B; }
+QComboBox:focus, QComboBox:on { border-color: #CE7D6B; }
 QComboBox::drop-down { border: 0; width: 22px; }
 QComboBox::down-arrow {
     image: none; width: 0; height: 0; margin-right: 8px;
@@ -681,9 +681,13 @@ QComboBox::down-arrow {
 }
 QComboBox QAbstractItemView {
     background-color: #161b22; color: #e6edf3;
-    border: 1px solid #374151; border-radius: 6px; padding: 4px;
-    selection-background-color: #1f2937; selection-color: #CE7D6B; outline: none;
+    border: 1px solid #374151; border-radius: 8px; padding: 5px; outline: none;
 }
+QComboBox QAbstractItemView::item {
+    padding: 5px 8px; min-height: 22px; border-radius: 5px; color: #e6edf3;
+}
+QComboBox QAbstractItemView::item:hover { background-color: #1f2937; }
+QComboBox QAbstractItemView::item:selected { background-color: #1f2937; color: #CE7D6B; }
 
 /* Approaching-limit threshold sliders: dark groove, salmon fill up to the
    handle, salmon handle, with a value pill beside it. */
