@@ -169,7 +169,7 @@ class ColorPicker(QWidget):
         self.hex.editingFinished.connect(self._from_hex)
 
     def _launch_eyedropper(self) -> None:
-        self._eyedrop = EyedropperOverlay()
+        self._eyedrop = EyedropperOverlay(self)   # owned by the picker (modal-safe)
         self._eyedrop.picked.connect(self._on_eyedropped)
         self._eyedrop.show()
         self._eyedrop.raise_()
@@ -227,8 +227,12 @@ class EyedropperOverlay(QWidget):
 
     picked = Signal(str)
 
-    def __init__(self) -> None:
-        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+    def __init__(self, parent=None) -> None:
+        # Owned by `parent` (the picker) so a modal editor dialog doesn't block
+        # its input; a plain frameless top-level Window (not a Tool, which can
+        # auto-hide when the app loses focus).
+        super().__init__(parent, Qt.Window | Qt.FramelessWindowHint
+                         | Qt.WindowStaysOnTopHint)
         self.setCursor(Qt.CrossCursor)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -253,6 +257,19 @@ class EyedropperOverlay(QWidget):
         y = min(self._img.height() - 1, max(0, y))
         return QColor(self._img.pixelColor(x, y))
 
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        # Grab so we get mouse/keyboard even under a modal dialog and even when
+        # the pointer is over another application's window.
+        self.grabMouse()
+        self.grabKeyboard()
+
+    def _finish(self, hexv: str) -> None:
+        self.releaseMouse()
+        self.releaseKeyboard()
+        self.picked.emit(hexv)
+        self.close()
+
     def mouseMoveEvent(self, e) -> None:
         self._gpos = e.globalPosition().toPoint()
         self._hex = self._sample(self._gpos).name()
@@ -260,15 +277,13 @@ class EyedropperOverlay(QWidget):
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
-            self.picked.emit(self._sample(e.globalPosition().toPoint()).name())
+            self._finish(self._sample(e.globalPosition().toPoint()).name())
         else:
-            self.picked.emit("")
-        self.close()
+            self._finish("")
 
     def keyPressEvent(self, e) -> None:
         if e.key() == Qt.Key_Escape:
-            self.picked.emit("")
-            self.close()
+            self._finish("")
 
     def paintEvent(self, e) -> None:
         p = QPainter(self)
