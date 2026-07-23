@@ -986,6 +986,30 @@ class _ThemeOption(QFrame):
         super().mousePressEvent(e)
 
 
+class _ThemedCombo(QComboBox):
+    """A combo whose popup is themed to the LIVE palette each time it opens.
+
+    The popup is a separate top-level window: the app stylesheet reaches the
+    item view but not the container frame behind it, which otherwise shows a
+    native (light) background. So on every open we restyle the view and paint
+    the container's background to match — read from theme.active() so it always
+    matches the current theme."""
+
+    def showPopup(self) -> None:
+        p = theme.active()
+        self.view().setStyleSheet(
+            f"QAbstractItemView{{background:{p.surface_dim};color:{p.text};"
+            f"border:1px solid {p.border};border-radius:8px;padding:5px;outline:none;}}"
+            f"QAbstractItemView::item{{padding:5px 8px;min-height:22px;"
+            f"border-radius:5px;color:{p.text};}}"
+            f"QAbstractItemView::item:selected{{background:{p.surface};color:{p.accent};}}"
+            f"QAbstractItemView::item:hover{{background:{p.surface};}}")
+        super().showPopup()
+        win = self.view().window()
+        if win is not None:   # the popup container — paint it the theme colour
+            win.setStyleSheet(f"background:{p.surface_dim};")
+
+
 class _PresetRow(QFrame):
     """The 'Preset theme' Appearance option — a selectable row whose dropdown
     chooses which built-in preset to use."""
@@ -1011,7 +1035,7 @@ class _PresetRow(QFrame):
         row.addLayout(sw)
         row.addWidget(QLabel("Preset", objectName="themeName"))
         row.addStretch(1)
-        self.combo = QComboBox()
+        self.combo = _ThemedCombo()
         self.combo.setFocusPolicy(Qt.StrongFocus)
         self.combo.setIconSize(QSize(60, 16))
         for name in theme.names():
