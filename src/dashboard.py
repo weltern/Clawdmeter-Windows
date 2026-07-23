@@ -951,14 +951,14 @@ class _ThemeOption(QFrame):
         self._chips = []
         for _role in self._SWATCH_ROLES:
             chip = QFrame()
-            chip.setFixedSize(13, 22)
+            chip.setFixedSize(11, 19)
             self._chips.append(chip)
             swatches.addWidget(chip)
         row.addLayout(swatches)
         self.refresh_swatches(palette)
         row.addWidget(QLabel(name, objectName="themeName"))
         row.addStretch(1)
-        self._tag = QLabel("● ACTIVE", objectName="themeTag")
+        self._tag = QLabel("ACTIVE", objectName="themeTag")
         self._tag.setVisible(False)
         row.addWidget(self._tag)
         if editable:
@@ -993,7 +993,20 @@ class _ThemedCombo(QComboBox):
     item view but not the container frame behind it, which otherwise shows a
     native (light) background. So on every open we restyle the view and paint
     the container's background to match — read from theme.active() so it always
-    matches the current theme."""
+    matches the current theme.
+
+    Sizes to a fixed character budget (not the widest item), so a long preset
+    name can't blow out the narrow settings column — it elides in the field and
+    shows in full in the popup."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(10)
+        # Hard cap so a long preset name can't force the narrow settings column
+        # wider than it is (the name elides in the field, shows full in popup).
+        self.setMaximumWidth(166)
 
     def showPopup(self) -> None:
         p = theme.active()
@@ -1012,7 +1025,7 @@ class _ThemedCombo(QComboBox):
 
 class _PresetRow(QFrame):
     """The 'Preset theme' Appearance option — a selectable row whose dropdown
-    chooses which built-in preset to use."""
+    (with per-preset swatch previews) chooses which built-in preset to use."""
 
     selected = Signal(str)   # emits the chosen preset name
 
@@ -1024,32 +1037,22 @@ class _PresetRow(QFrame):
         row = QHBoxLayout(self)
         row.setContentsMargins(12, 8, 12, 8)
         row.setSpacing(11)
-        sw = QHBoxLayout()
-        sw.setSpacing(3)
-        self._chips = []
-        for _ in range(4):
-            chip = QFrame()
-            chip.setFixedSize(13, 22)
-            self._chips.append(chip)
-            sw.addWidget(chip)
-        row.addLayout(sw)
         row.addWidget(QLabel("Preset", objectName="themeName"))
         row.addStretch(1)
         self.combo = _ThemedCombo()
         self.combo.setFocusPolicy(Qt.StrongFocus)
-        self.combo.setIconSize(QSize(60, 16))
+        self.combo.setIconSize(QSize(46, 15))
         for name in theme.names():
             self.combo.addItem(self._swatch_icon(name), name)
         self.combo.currentTextChanged.connect(self._on_combo)
         row.addWidget(self.combo)
-        self._paint(self.combo.currentText())
 
     @staticmethod
     def _swatch_icon(name: str) -> QIcon:
         """A 4-chip (bg/surface/accent/text) preview icon for a preset, shown
-        beside its name in the dropdown and the collapsed field."""
+        beside its name in the dropdown field and the popup list."""
         p = theme.get(name)
-        w, h, gap = 13, 16, 2
+        w, h, gap = 10, 15, 2
         pm = QPixmap((w + gap) * 4 - gap, h)
         pm.fill(Qt.transparent)
         painter = QPainter(pm)
@@ -1057,26 +1060,17 @@ class _PresetRow(QFrame):
         for i, role in enumerate(("bg", "surface", "accent", "text")):
             painter.setPen(QColor(0, 0, 0, 90))
             painter.setBrush(QColor(getattr(p, role)))
-            painter.drawRoundedRect(QRect(i * (w + gap), 0, w, h), 3, 3)
+            painter.drawRoundedRect(QRect(i * (w + gap), 0, w, h), 2, 2)
         painter.end()
         return QIcon(pm)
 
     def _on_combo(self, name: str) -> None:
-        self._paint(name)
         self.selected.emit(name)
 
     def set_current(self, name: str) -> None:
         self.combo.blockSignals(True)
         self.combo.setCurrentText(name)
         self.combo.blockSignals(False)
-        self._paint(name)
-
-    def _paint(self, name: str) -> None:
-        p = theme.get(name)
-        for chip, role in zip(self._chips, ("bg", "surface", "accent", "text")):
-            chip.setStyleSheet(
-                f"background:{getattr(p, role)}; border-radius:3px;"
-                " border:1px solid rgba(0,0,0,0.35);")
 
     def set_selected(self, on: bool) -> None:
         self.setProperty("selected", "true" if on else "false")
@@ -1100,7 +1094,7 @@ class _SystemTargets(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(34, 0, 12, 8)   # indent under the Follow System row
+        lay.setContentsMargins(18, 0, 12, 8)   # indent under the Follow System row
         lay.setSpacing(7)
         darks = [n for n in theme.names() if not theme.is_light(theme.get(n))]
         lights = [n for n in theme.names() if theme.is_light(theme.get(n))]
@@ -1111,11 +1105,11 @@ class _SystemTargets(QWidget):
         row = QHBoxLayout()
         row.setSpacing(9)
         lbl = QLabel(label, objectName="sectionHint")
-        lbl.setFixedWidth(66)
+        lbl.setFixedWidth(54)
         row.addWidget(lbl)
         combo = _ThemedCombo()
         combo.setFocusPolicy(Qt.StrongFocus)
-        combo.setIconSize(QSize(60, 16))
+        combo.setIconSize(QSize(46, 15))
         for n in names:
             combo.addItem(_PresetRow._swatch_icon(n), n)
         combo.currentTextChanged.connect(self._on_change)
@@ -1448,7 +1442,7 @@ class SettingsPanel(QWidget):
             page_body = QWidget(objectName="settingsBody")
             page.setWidget(page_body)
             lay = QVBoxLayout(page_body)
-            lay.setContentsMargins(20, 8, 20, 18)
+            lay.setContentsMargins(14, 8, 16, 18)
             lay.setSpacing(12)
             self._nav_group.addButton(btn, self._stack.addWidget(page))
             return lay

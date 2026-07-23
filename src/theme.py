@@ -687,7 +687,7 @@ QSpinBox::down-arrow:hover { border-top-color: #e6edf3; }
 /* Preset dropdown (Appearance page) — swatch icon + name per item. */
 QComboBox {
     background-color: #1f2937; color: #e6edf3; border: 1px solid #374151;
-    border-radius: 6px; padding: 4px 8px 4px 10px; min-width: 190px;
+    border-radius: 6px; padding: 4px 8px 4px 10px; min-width: 96px;
 }
 QComboBox:hover { border-color: #4b5563; }
 QComboBox:focus, QComboBox:on { border-color: #CE7D6B; }
