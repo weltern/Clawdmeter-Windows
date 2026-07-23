@@ -129,12 +129,18 @@ def _install_fake_httpx(payload, raise_exc=None):
 
 
 def _force_windows():
-    """Make update_check believe it's NOT macOS (Windows/Linux .exe asset path),
-    so asset resolution is deterministic regardless of the host OS running the
-    suite. Returns a restore fn."""
-    real = update_check._is_macos
+    """Make update_check believe it's Windows (the .exe asset path) — forcing
+    both platform checks off so asset resolution is deterministic regardless of
+    the host OS running the suite (e.g. the Linux CI runner). Returns a restore
+    fn."""
+    real_mac, real_lin = update_check._is_macos, update_check._is_linux
     update_check._is_macos = lambda: False
-    return lambda: setattr(update_check, "_is_macos", real)
+    update_check._is_linux = lambda: False
+
+    def restore():
+        update_check._is_macos = real_mac
+        update_check._is_linux = real_lin
+    return restore
 
 
 def test_fetch_latest_parses_release():
@@ -244,6 +250,51 @@ def test_fetch_latest_macos_default_asset_name_when_absent():
         unmac()
     assert info.asset_url == ""       # nothing to download from the asset list
     assert info.sha256 == h_mac       # but the mac line's hash is still resolved
+
+
+# --- Linux branch: tarball asset resolution -------------------------------
+
+def _force_linux():
+    """Make update_check believe it's running on Linux (and not macOS, which is
+    checked first). Returns a restore fn."""
+    real_mac, real_lin = update_check._is_macos, update_check._is_linux
+    update_check._is_macos = lambda: False
+    update_check._is_linux = lambda: True
+
+    def restore():
+        update_check._is_macos = real_mac
+        update_check._is_linux = real_lin
+    return restore
+
+
+def test_fetch_latest_linux_picks_tarball_asset():
+    """On Linux the downloadable is the versioned *-linux-x86_64.tar.gz, not the
+    .exe — the asset URL and SHA-256 must come from the Linux line."""
+    h_win = "a" * 64
+    h_lin = "b" * 64
+    payload = {
+        "tag_name": "v3.0.0",
+        "html_url": "https://github.com/weltern/Clawdmeter-Windows/releases/tag/v3.0.0",
+        "body": (f"Clawdmeter.exe  {h_win}\n"
+                 f"Clawdmeter-3.0.0-linux-x86_64.tar.gz  {h_lin}\n"),
+        "assets": [
+            {"name": "Clawdmeter.exe",
+             "browser_download_url": "https://example.com/Clawdmeter.exe"},
+            {"name": "Clawdmeter-3.0.0-linux-x86_64.tar.gz",
+             "browser_download_url":
+                 "https://example.com/Clawdmeter-3.0.0-linux-x86_64.tar.gz"},
+        ],
+    }
+    unlin = _force_linux()
+    restore = _install_fake_httpx(payload)
+    try:
+        info = fetch_latest()
+    finally:
+        restore()
+        unlin()
+    assert isinstance(info, UpdateInfo)
+    assert info.asset_url == "https://example.com/Clawdmeter-3.0.0-linux-x86_64.tar.gz"
+    assert info.sha256 == h_lin
 
 
 def test_download_url_opens_release_page():

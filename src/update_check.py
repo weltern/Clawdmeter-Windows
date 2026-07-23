@@ -38,29 +38,43 @@ def _is_macos() -> bool:
     return sys.platform == "darwin"
 
 
+def _is_linux() -> bool:
+    """True on Linux, where the release ships as a ``*-linux-x86_64.tar.gz``."""
+    return sys.platform.startswith("linux")
+
+
 # The distributable each platform downloads from a GitHub release. Windows ships
 # a loose ``Clawdmeter.exe``; macOS ships a zipped ``.app`` (``Clawdmeter-macos.zip``
-# from build-macos.sh). The name also seeds the SHA-256 lookup in the release
-# notes (extract_sha256 prefers the line that names this file). Linux ships a
-# bare ``Clawdmeter`` binary, but its asset detection is unchanged here (it falls
-# through to the Windows default) — this session scopes the darwin branch only.
+# from build-macos.sh); Linux ships a versioned tarball
+# (``Clawdmeter-<ver>-linux-x86_64.tar.gz`` from build.sh / CI). The name also
+# seeds the SHA-256 lookup in the release notes (extract_sha256 prefers the line
+# that names this file); the Linux seed is a version-agnostic substring that
+# still matches the real asset's hash line.
 _WINDOWS_ASSET_NAME = "Clawdmeter.exe"
 _MACOS_ASSET_NAME = "Clawdmeter-macos.zip"
+_LINUX_ASSET_NAME = "linux-x86_64.tar.gz"
 
 
 def _platform_asset_name() -> str:
-    """Filename of the release asset for the running platform."""
-    return _MACOS_ASSET_NAME if _is_macos() else _WINDOWS_ASSET_NAME
+    """Filename (or matching substring) of the release asset for this platform."""
+    if _is_macos():
+        return _MACOS_ASSET_NAME
+    if _is_linux():
+        return _LINUX_ASSET_NAME
+    return _WINDOWS_ASSET_NAME
 
 
 def _asset_matches(name: str) -> bool:
     """True if a release-asset filename is the downloadable for this platform.
 
-    macOS: the zipped ``.app`` (a ``*mac*.zip``). Everywhere else: the ``.exe``.
+    macOS: the zipped ``.app`` (a ``*mac*.zip``). Linux: the ``*linux*.tar.gz``.
+    Everywhere else: the ``.exe``.
     """
     n = name.lower()
     if _is_macos():
         return n.endswith(".zip") and "mac" in n
+    if _is_linux():
+        return "linux" in n and (n.endswith(".tar.gz") or n.endswith(".tgz"))
     return n.endswith(".exe")
 
 
