@@ -252,10 +252,33 @@ HIGH_CONTRAST_LIGHT = Palette(
     idle="#565656",
 )
 
+# Riptide — cool grey ocean with a teal accent that shifts to cyan on hover.
+RIPTIDE = Palette(
+    bg="#16191d", bg_deep="#101216", bg_deepest="#0c0e11",
+    surface="#22262c", surface_dim="#1b1f24", surface_sunken="#2a2f36",
+    border="#333a42", border_dim="#4a545d",
+    text="#e6ebef", text_dim="#9aa4ad", text_muted="#7b848c",
+    accent="#2dd4bf", accent_hover="#22d3ee",
+    warn="#eab308", danger="#ef4444", danger_strong="#d13636", positive="#4ade80",
+    idle="#747d86",
+)
+
+# Riptide Light — light grey with deep teal / cyan accents.
+RIPTIDE_LIGHT = Palette(
+    bg="#eef1f3", bg_deep="#e5e9ec", bg_deepest="#dfe4e8",
+    surface="#e3e7ea", surface_dim="#d9dee2", surface_sunken="#cbd2d8",
+    border="#cfd5da", border_dim="#a8b1b9",
+    text="#1a1f24", text_dim="#444d55", text_muted="#626c75",
+    accent="#0f766e", accent_hover="#0891b2",
+    warn="#af5109", danger="#c81e1e", danger_strong="#a81717", positive="#147c3b",
+    idle="#6a747d",
+)
+
 
 # Ordered catalogue. First entry is the default. To reorder or add a preset,
 # edit this dict — the Appearance picker and persistence read it directly.
 PRESETS = {
+    # Dark
     "Midnight Salmon": MIDNIGHT_SALMON,
     "Obsidian": OBSIDIAN,
     "High Contrast": HIGH_CONTRAST,
@@ -264,12 +287,15 @@ PRESETS = {
     "Gruvbox": GRUVBOX,
     "Terminal Green": TERMINAL_GREEN,
     "Amber CRT": AMBER_CRT,
+    "Riptide": RIPTIDE,
+    # Light
     "Daybreak": DAYBREAK,
     "Sepia": SEPIA,
     "Solarized Light": SOLARIZED_LIGHT,
     "Nord Light": NORD_LIGHT,
     "Gruvbox Light": GRUVBOX_LIGHT,
     "High Contrast Light": HIGH_CONTRAST_LIGHT,
+    "Riptide Light": RIPTIDE_LIGHT,
 }
 DEFAULT_NAME = "Midnight Salmon"
 
