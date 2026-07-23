@@ -89,6 +89,25 @@ def test_apply_every_preset_without_error():
         _reset()
 
 
+def test_scrolling_labels_follow_theme_on_switch():
+    # Regression: the session-tile name (role="text") and "working on" line
+    # (role="muted") must re-read the palette on a switch, not keep the colour
+    # captured at construction (which made the name invisible on light themes).
+    name = session_shelf.ScrollingLabel()               # role="text" (default)
+    sub = session_shelf.ScrollingLabel(role="muted")
+    try:
+        dashboard.apply_theme("Daybreak")               # walk refreshes both
+        assert name._color.name().lower() == theme.get("Daybreak").text.lower()
+        assert sub._color.name().lower() == theme.get("Daybreak").text_dim.lower()
+        dashboard.apply_theme("Nord")
+        assert name._color.name().lower() == theme.get("Nord").text.lower()
+        assert sub._color.name().lower() == theme.get("Nord").text_dim.lower()
+    finally:
+        _reset()
+        name.deleteLater()
+        sub.deleteLater()
+
+
 def test_apply_follow_system_resolves_and_remembers_selection():
     try:
         dashboard.apply_theme(theme.SYSTEM)

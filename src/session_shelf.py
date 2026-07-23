@@ -171,7 +171,8 @@ class ScrollingLabel(QWidget):
     _END_GAP_PX = 12         # trailing gap so the last glyph isn't flush to edge
 
     def __init__(self, parent=None, *, px: int = 13, bold: bool = True,
-                 color: str = _TEXT, letter_spacing: float = 0.5,
+                 color: str | None = None, role: str = "text",
+                 letter_spacing: float = 0.5,
                  max_w: int = _LABEL_MIN_W, align=Qt.AlignHCenter) -> None:
         super().__init__(parent)
         self._full = ""
@@ -185,11 +186,27 @@ class ScrollingLabel(QWidget):
         if letter_spacing:
             self._font.setLetterSpacing(QFont.AbsoluteSpacing, letter_spacing)
         self._fm = QFontMetrics(self._font)
-        self._color = QColor(color)
+        # A themed role ("text"/"muted") re-reads the live palette on a theme
+        # switch (see refresh_theme_color). An explicit `color` is fixed and
+        # opts out. Default is "text" so a bare ScrollingLabel() follows the
+        # primary text colour rather than baking it at import.
+        self._role = None if color else role
+        self._color = QColor(color if color else self._role_color(role))
         self.setFixedHeight(self._fm.height())
         self.setMaximumWidth(max_w)
         self._anim = QPropertyAnimation(self, b"scrollOffset", self)
         self._anim.setEasingCurve(QEasingCurve.InOutSine)
+
+    @staticmethod
+    def _role_color(role: str) -> str:
+        return _MUTED if role == "muted" else _TEXT
+
+    def refresh_theme_color(self) -> None:
+        """Re-read the palette for this label's role (called on a theme switch).
+        No-op for labels created with an explicit fixed colour."""
+        if self._role is not None:
+            self._color = QColor(self._role_color(self._role))
+            self.update()
 
     # --- public API (QLabel-like) -------------------------------------------
     def setText(self, text: str, tooltip: str | None = None) -> None:
@@ -493,7 +510,7 @@ class SessionTile(QWidget):
         # Secondary line — the target being acted on (file/pattern/…, else the
         # tool name) when live, "last active Nm ago" when idle. Scrolls on hover
         # like the title, since file paths/queries can be long.
-        self.sub_label = ScrollingLabel(px=10, bold=False, color=_MUTED,
+        self.sub_label = ScrollingLabel(px=10, bold=False, role="muted",
                                         letter_spacing=0, max_w=self._label_max_w)
         col.addWidget(self.sub_label, 0, Qt.AlignHCenter)
 
@@ -1027,7 +1044,7 @@ class CompactRow(QWidget):
 
         top = QHBoxLayout()
         top.setSpacing(8)
-        self.title = ScrollingLabel(px=12, bold=True, color=_TEXT, max_w=230,
+        self.title = ScrollingLabel(px=12, bold=True, role="text", max_w=230,
                                     align=Qt.AlignLeft)
         self.tokens = QLabel("", objectName="compactRowTokens")
         self.tokens.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -1040,7 +1057,7 @@ class CompactRow(QWidget):
         self.dot = QLabel(self._DOT, objectName="compactRowDot")
         self.activity = QLabel("", objectName="compactRowActivity")
         self.sep = QLabel("·", objectName="compactRowActivity")
-        self.target = ScrollingLabel(px=10, bold=False, color=_MUTED,
+        self.target = ScrollingLabel(px=10, bold=False, role="muted",
                                      letter_spacing=0, max_w=170, align=Qt.AlignLeft)
         self.agents = QLabel("", objectName="compactRowAgents")
         bot.addWidget(self.dot, 0)

@@ -219,6 +219,10 @@ def apply_theme(selected: str) -> None:
                     if sheet == old:
                         w.setStyleSheet(new)
                         break
+            # Custom-painted labels that cache a themed colour (session/compact
+            # name + "working on" lines) re-read the palette here.
+            if hasattr(w, "refresh_theme_color"):
+                w.refresh_theme_color()
             w.update()  # repaint custom-painted widgets that read module QColors
     finally:
         _applying_theme = False
