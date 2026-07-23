@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -985,6 +986,68 @@ class _ThemeOption(QFrame):
         super().mousePressEvent(e)
 
 
+class _PresetRow(QFrame):
+    """The 'Preset theme' Appearance option — a selectable row whose dropdown
+    chooses which built-in preset to use."""
+
+    selected = Signal(str)   # emits the chosen preset name
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("themeOption")
+        self.setProperty("selected", "false")
+        self.setCursor(Qt.PointingHandCursor)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 8, 12, 8)
+        row.setSpacing(11)
+        sw = QHBoxLayout()
+        sw.setSpacing(3)
+        self._chips = []
+        for _ in range(4):
+            chip = QFrame()
+            chip.setFixedSize(13, 22)
+            self._chips.append(chip)
+            sw.addWidget(chip)
+        row.addLayout(sw)
+        row.addWidget(QLabel("Preset", objectName="themeName"))
+        row.addStretch(1)
+        self.combo = QComboBox()
+        self.combo.setFocusPolicy(Qt.StrongFocus)
+        for name in theme.names():
+            self.combo.addItem(name)
+        self.combo.currentTextChanged.connect(self._on_combo)
+        row.addWidget(self.combo)
+        self._paint(self.combo.currentText())
+
+    def _on_combo(self, name: str) -> None:
+        self._paint(name)
+        self.selected.emit(name)
+
+    def set_current(self, name: str) -> None:
+        self.combo.blockSignals(True)
+        self.combo.setCurrentText(name)
+        self.combo.blockSignals(False)
+        self._paint(name)
+
+    def _paint(self, name: str) -> None:
+        p = theme.get(name)
+        for chip, role in zip(self._chips, ("bg", "surface", "accent", "text")):
+            chip.setStyleSheet(
+                f"background:{getattr(p, role)}; border-radius:3px;"
+                " border:1px solid rgba(0,0,0,0.35);")
+
+    def set_selected(self, on: bool) -> None:
+        self.setProperty("selected", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mousePressEvent(self, e) -> None:
+        # Clicking the row (outside the combo) applies the current preset.
+        if e.button() == Qt.LeftButton:
+            self.selected.emit(self.combo.currentText())
+        super().mousePressEvent(e)
+
+
 class _PvBar(QWidget):
     """A tiny fixed-fill usage bar for the editor's live preview."""
 
@@ -1101,13 +1164,14 @@ class _EditorRow(QFrame):
 
 class CustomThemeEditor(QDialog):
     """Studio-style custom theme editor: a role list on the left; a themed HSV
-    colour picker (with a screen eyedropper) + a live preview on the right. Every
-    edit re-derives the palette and applies it to the whole app. The full-app
-    restyle is debounced so dragging the picker stays smooth; the in-dialog
-    preview updates instantly. Contrast warnings are soft (a 'Fix contrast'
-    button nudges failing colours to AA)."""
+    colour picker (with a screen eyedropper) + a live preview on the right.
 
-    changed = Signal()   # custom palette changed -> refresh the picker swatches
+    Edits update a WORKING copy and the in-dialog preview only — the rest of the
+    app does NOT change until you press Apply. Apply commits the theme to the
+    whole app (and persists it); Close discards any uncommitted edits. Contrast
+    warnings are soft (a 'Fix contrast' button nudges failing colours to AA)."""
+
+    applied = Signal()   # committed to the app -> refresh the Appearance page
 
     _ROLE_LABELS = {
         "bg": "Background", "surface": "Surface / cards", "border": "Borders",
@@ -1116,25 +1180,23 @@ class CustomThemeEditor(QDialog):
     }
     _FG_ROLES = ("text", "accent", "warn", "danger", "positive")
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, seed_base: dict, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Custom theme")
         self.setObjectName("root")
-        self.setStyleSheet(STYLESHEET)
+        self.setStyleSheet(STYLESHEET)   # the current app theme; only the preview shows custom
         self.setMinimumWidth(540)
+        self._working = dict(seed_base)   # edited in place; committed on Apply
         self._active_role = "accent"
-        self._apply_timer = QTimer(self)
-        self._apply_timer.setSingleShot(True)
-        self._apply_timer.setInterval(45)
-        self._apply_timer.timeout.connect(self._apply_now)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 14)
         root.setSpacing(12)
         root.addWidget(QLabel("CUSTOM THEME", objectName="settingsTitle"))
         hint = QLabel("Pick a role, then set its colour — or grab one off the "
-                      "screen with the eyedropper. Shades derive automatically; "
-                      "changes apply live.", objectName="sectionHint")
+                      "screen with the eyedropper. Shades derive automatically. "
+                      "The preview updates live; press Apply to use it.",
+                      objectName="sectionHint")
         hint.setWordWrap(True)
         root.addWidget(hint)
 
@@ -1170,9 +1232,12 @@ class CustomThemeEditor(QDialog):
         fix.clicked.connect(self._fix_contrast)
         foot.addWidget(fix)
         foot.addStretch(1)
-        done = QPushButton("Done")
-        done.clicked.connect(self.accept)
-        foot.addWidget(done)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.reject)
+        foot.addWidget(close_btn)
+        apply_btn = QPushButton("Apply", objectName="applyBtn")
+        apply_btn.clicked.connect(self._apply)
+        foot.addWidget(apply_btn)
         root.addLayout(foot)
 
         self._refresh_all()
@@ -1182,37 +1247,32 @@ class CustomThemeEditor(QDialog):
         self._active_role = role
         for r, row in self._rows.items():
             row.set_selected(r == role)
-        self.picker.set_color(theme.custom_base()[role])
+        self.picker.set_color(self._working[role])
 
     def _on_color(self, hexv: str) -> None:
-        base = theme.custom_base()
-        base[self._active_role] = hexv
-        theme.set_custom_base(base)
-        self._refresh_all()          # instant in-dialog feedback
-        self._apply_timer.start()    # debounced full-app restyle
-
-    def _apply_now(self) -> None:
-        app_settings.set_custom_base(theme.custom_base())
-        apply_theme(theme.CUSTOM)
-        self.setStyleSheet(STYLESHEET)   # keep the dialog itself themed
-        self.changed.emit()
+        # Working copy + in-dialog preview only; the app is untouched until Apply.
+        self._working[self._active_role] = hexv
+        self._refresh_all()
 
     def _fix_contrast(self) -> None:
-        base = theme.custom_base()
-        bg = base["bg"]
+        bg = self._working["bg"]
         for role in self._FG_ROLES:
-            base[role] = theme.ensure_contrast(base[role], bg, 4.5)
-        theme.set_custom_base(base)
-        self.picker.set_color(base[self._active_role])
+            self._working[role] = theme.ensure_contrast(self._working[role], bg, 4.5)
+        self.picker.set_color(self._working[self._active_role])
         self._refresh_all()
-        self._apply_now()
+
+    def _apply(self) -> None:
+        theme.set_custom_base(self._working)
+        app_settings.set_custom_base(theme.custom_base())
+        apply_theme(theme.CUSTOM)        # now the whole app changes
+        self.setStyleSheet(STYLESHEET)   # re-theme the dialog to the committed look
+        self.applied.emit()
 
     def _refresh_all(self) -> None:
-        base = theme.custom_base()
-        bg = base["bg"]
-        pal = theme.custom_palette()
+        bg = self._working["bg"]
+        pal = theme.derive_palette(self._working)   # preview reflects the working copy
         for role, row in self._rows.items():
-            col = base[role]
+            col = self._working[role]
             row.set_swatch(col)
             if role in self._FG_ROLES:
                 c = theme.contrast(col, bg)
@@ -1317,35 +1377,32 @@ class SettingsPanel(QWidget):
         self._nav_group.idClicked.connect(self._stack.setCurrentIndex)
         self._nav_group.button(0).setChecked(True)
 
-        # ── Appearance: theme picker ──────────────────────────────────────────
+        # ── Appearance: three options — Follow System / Custom / Preset ──
         appearance_layout.addWidget(QLabel("THEME", objectName="sectionLabel"))
         _theme_hint = QLabel(
-            "Pick a look — it applies instantly across the whole app.",
+            "Follow your system, build your own, or pick a preset.",
             objectName="sectionHint")
         _theme_hint.setWordWrap(True)
         appearance_layout.addWidget(_theme_hint)
         self._theme_options = []
-        for _tname in theme.names():
-            opt = _ThemeOption(_tname, theme.get(_tname))
-            opt.selected.connect(self._on_theme_selected)
-            opt.set_selected(_tname == theme.selected())
-            appearance_layout.addWidget(opt)
-            self._theme_options.append(opt)
-        # Custom — user-editable; its swatches track the live custom palette.
+        # 1. Follow System — resolves to a dark/light preset per the OS scheme.
+        self._sys_option = _ThemeOption(theme.SYSTEM, theme.active())
+        self._sys_option.selected.connect(self._on_theme_selected)
+        appearance_layout.addWidget(self._sys_option)
+        self._theme_options.append(self._sys_option)
+        # 2. Custom theme — user-editable; swatches track the custom palette.
         self._custom_option = _ThemeOption(theme.CUSTOM, theme.custom_palette(),
                                            editable=True)
         self._custom_option.selected.connect(self._on_theme_selected)
         self._custom_option.edit_requested.connect(self._open_custom_editor)
-        self._custom_option.set_selected(theme.selected() == theme.CUSTOM)
         appearance_layout.addWidget(self._custom_option)
         self._theme_options.append(self._custom_option)
-        # Follow System resolves to a dark/light preset per the OS scheme; its
-        # swatches show whatever it currently resolves to.
-        sys_opt = _ThemeOption(theme.SYSTEM, theme.active())
-        sys_opt.selected.connect(self._on_theme_selected)
-        sys_opt.set_selected(theme.selected() == theme.SYSTEM)
-        appearance_layout.addWidget(sys_opt)
-        self._theme_options.append(sys_opt)
+        # 3. Preset theme — a dropdown of the built-in presets.
+        self._preset_row = _PresetRow()
+        self._preset_row.selected.connect(self._on_theme_selected)
+        appearance_layout.addWidget(self._preset_row)
+        self._theme_options.append(self._preset_row)
+        self._sync_theme_selection()
 
         # `layout` is a moving cursor: each section appends to whichever tab page
         # it currently points at, reassigned at the section boundaries below.
@@ -1734,19 +1791,24 @@ class SettingsPanel(QWidget):
             app_settings.set_custom_base(theme.custom_base())
 
     def _open_custom_editor(self) -> None:
-        self._ensure_custom_seeded()
-        apply_theme(theme.CUSTOM)
-        self._sync_theme_selection()
-        dlg = CustomThemeEditor(self.window())
-        dlg.changed.connect(self._sync_theme_selection)
+        # Seed from the saved custom theme, or from the current theme the first
+        # time ("copy the current theme"). Editing previews in the dialog only;
+        # the app changes when the user presses Apply.
+        seed = app_settings.get_custom_base() or theme.custom_base_from(theme.active())
+        dlg = CustomThemeEditor(seed, self.window())
+        dlg.applied.connect(self._sync_theme_selection)
         dlg.exec()
+        self._sync_theme_selection()
 
     def _sync_theme_selection(self) -> None:
-        # Refresh the selection highlight and the Custom row's swatches (which
-        # track the live custom palette).
+        sel = theme.selected()
         self._custom_option.refresh_swatches(theme.custom_palette())
-        for opt in self._theme_options:
-            opt.set_selected(opt._name == theme.selected())
+        self._sys_option.set_selected(sel == theme.SYSTEM)
+        self._custom_option.set_selected(sel == theme.CUSTOM)
+        is_preset = sel in theme.PRESETS
+        self._preset_row.set_selected(is_preset)
+        if is_preset:
+            self._preset_row.set_current(sel)
 
     def _refresh_cred_status(self) -> None:
         override = app_settings.get_credentials_override()

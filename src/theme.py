@@ -666,6 +666,25 @@ QSpinBox::down-arrow {
 QSpinBox::up-arrow:hover { border-bottom-color: #e6edf3; }
 QSpinBox::down-arrow:hover { border-top-color: #e6edf3; }
 
+/* Preset dropdown (Appearance page). */
+QComboBox {
+    background-color: #1f2937; color: #e6edf3; border: 1px solid #374151;
+    border-radius: 6px; padding: 4px 10px; min-width: 128px;
+}
+QComboBox:hover { border-color: #4b5563; }
+QComboBox:focus { border-color: #CE7D6B; }
+QComboBox::drop-down { border: 0; width: 22px; }
+QComboBox::down-arrow {
+    image: none; width: 0; height: 0; margin-right: 8px;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-top: 5px solid #9ca3af;
+}
+QComboBox QAbstractItemView {
+    background-color: #161b22; color: #e6edf3;
+    border: 1px solid #374151; border-radius: 6px; padding: 4px;
+    selection-background-color: #1f2937; selection-color: #CE7D6B; outline: none;
+}
+
 /* Approaching-limit threshold sliders: dark groove, salmon fill up to the
    handle, salmon handle, with a value pill beside it. */
 QSlider#threshold::groove:horizontal { height: 4px; border-radius: 2px; background: #1f2937; }
@@ -757,6 +776,10 @@ QFrame#editorRow[selected="true"] { background: #1f2937; }
 QLabel#roleName { font-size: 13px; color: #e6edf3; }
 QFrame#editorRow[selected="true"] QLabel#roleName { color: #CE7D6B; font-weight: 600; }
 QPushButton#eyedropBtn { font-size: 13px; padding: 6px 0; }
+QPushButton#applyBtn {
+    background-color: #CE7D6B; border-color: #CE7D6B; color: #0a0d12; font-weight: 600;
+}
+QPushButton#applyBtn:hover { background-color: #d98f7e; border-color: #d98f7e; }
 """
 
 
