@@ -63,6 +63,19 @@ def test_apply_refreshes_custom_paint_caches():
         gruv = theme.get("Gruvbox")
         assert statviz._ACCENT.name().lower() == gruv.accent.lower()
         assert gruv.bg.lower() in session_shelf.SHELF_STYLESHEET.lower()
+        # The usage-bar fill tracks the accent off the default theme.
+        assert session_shelf._BAR_HEAT["cool"] == gruv.accent
+        assert session_shelf._BAR_OVERAGE == gruv.danger
+    finally:
+        _reset()
+
+
+def test_default_bar_ramp_is_preserved_exactly():
+    try:
+        dashboard.apply_theme("Midnight Salmon")
+        assert session_shelf._BAR_HEAT == {
+            "cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
+        assert session_shelf._BAR_OVERAGE == "#A50F1A"
     finally:
         _reset()
 

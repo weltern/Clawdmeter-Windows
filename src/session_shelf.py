@@ -308,8 +308,27 @@ class ScrollingLabel(QWidget):
 # past 100% with a distinct overage colour).
 _BAR_TRACK = _P.surface
 _BAR_BORDER = _P.border
-_BAR_OVERAGE = "#A50F1A"   # deep fire-truck red — the overage overflow (fixed)
-_BAR_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
+
+# The usage-bar fill tracks the theme so the bar reads as part of the palette.
+# Sub-100% it ramps from the accent (low usage) through amber to red near the
+# limit; over 100% it flips to an alarm red. The shipped default keeps its exact
+# hand-tuned salmon ramp and deep overage red so it doesn't change.
+_DEFAULT_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
+_DEFAULT_OVERAGE = "#A50F1A"   # deep fire-truck red
+
+
+def _heat_ramp(p) -> dict:
+    if p is theme.MIDNIGHT_SALMON:
+        return dict(_DEFAULT_HEAT)
+    return {"cool": p.accent, "warm": p.warn, "hot": p.danger}
+
+
+def _overage_color(p) -> str:
+    return _DEFAULT_OVERAGE if p is theme.MIDNIGHT_SALMON else p.danger
+
+
+_BAR_HEAT = _heat_ramp(_P)
+_BAR_OVERAGE = _overage_color(_P)
 
 
 class UsageBar(QWidget):
@@ -963,7 +982,7 @@ def refresh_theme() -> None:
     widgets and repaints them afterward. Fixed colours (_BAR_HEAT, _BAR_OVERAGE,
     _IDLE_COLOR / activity glows) are intentionally left untouched."""
     global _P, _BG, _TEXT, _MUTED, _IDLE_COLOR, _BAR_TRACK, _BAR_BORDER
-    global SHELF_STYLESHEET, COMPACT_STYLESHEET
+    global _BAR_HEAT, _BAR_OVERAGE, SHELF_STYLESHEET, COMPACT_STYLESHEET
     _P = theme.active()
     _BG = _P.bg
     _TEXT = _P.text
@@ -971,6 +990,8 @@ def refresh_theme() -> None:
     _IDLE_COLOR = _P.idle
     _BAR_TRACK = _P.surface
     _BAR_BORDER = _P.border
+    _BAR_HEAT = _heat_ramp(_P)
+    _BAR_OVERAGE = _overage_color(_P)
     SHELF_STYLESHEET = _build_shelf_qss()
     COMPACT_STYLESHEET = _build_compact_qss()
 
