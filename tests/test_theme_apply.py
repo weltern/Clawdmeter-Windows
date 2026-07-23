@@ -121,16 +121,19 @@ def test_apply_custom_theme_uses_derived_palette():
         _reset()
 
 
-def test_custom_editor_commit_and_fix_contrast():
+def test_custom_editor_edits_role_and_fixes_contrast():
+    base = theme.custom_base()
+    base["bg"] = "#ffffff"
+    theme.set_custom_base(base)
     ed = dashboard.CustomThemeEditor()
     try:
-        base = theme.custom_base()
-        base["bg"] = "#ffffff"
-        base["accent"] = "#dddddd"      # near-invisible on white
-        ed._commit(base)
+        ed._select_role("accent")
+        ed._on_color("#dddddd")          # near-invisible on white
+        assert theme.custom_base()["accent"] == "#dddddd"
+        ed._apply_now()                  # debounced apply, forced here
         assert theme.selected() == theme.CUSTOM
         assert theme.active().accent == "#dddddd"
-        ed._fix_contrast()              # should darken accent until AA-clear
+        ed._fix_contrast()               # darken accent until AA-clear
         assert theme.contrast(theme.custom_base()["accent"],
                               theme.custom_base()["bg"]) >= 4.5
     finally:

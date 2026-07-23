@@ -45,12 +45,10 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
-    QColorDialog,
     QDialog,
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -85,6 +83,7 @@ import stats
 import statviz
 from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, PercentBars, WeekBars
 import theme
+from color_picker import ColorPicker
 from usage_history import UsageHistory
 from approaching_notify import ApproachingNotifier
 from reset_notify import ResetDecision, ResetNotifier
@@ -986,10 +985,127 @@ class _ThemeOption(QFrame):
         super().mousePressEvent(e)
 
 
+class _PvBar(QWidget):
+    """A tiny fixed-fill usage bar for the editor's live preview."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._track = "#1f2937"
+        self._fill = "#ce7d6b"
+        self.setFixedHeight(9)
+
+    def set_colors(self, track: str, fill: str) -> None:
+        self._track, self._fill = track, fill
+        self.update()
+
+    def paintEvent(self, e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect()
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(self._track))
+        p.drawRoundedRect(r, 4, 4)
+        p.setBrush(QColor(self._fill))
+        p.drawRoundedRect(QRect(r.x(), r.y(), int(r.width() * 0.64), r.height()), 4, 4)
+
+
+class _MiniPreview(QFrame):
+    """A compact live preview of the custom palette — a usage bar, status chips
+    and sample text — recoloured on every edit (reads the derived palette, so it
+    updates instantly without a full app restyle)."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("miniPrev")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 11, 12, 12)
+        v.setSpacing(9)
+        self._lbl = QLabel("LIVE PREVIEW")
+        v.addWidget(self._lbl)
+        top = QHBoxLayout()
+        self._sess = QLabel("Session")
+        self._pct = QLabel("64%")
+        top.addWidget(self._sess)
+        top.addStretch(1)
+        top.addWidget(self._pct)
+        v.addLayout(top)
+        self._bar = _PvBar()
+        v.addWidget(self._bar)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        self._chips = [QLabel("accent"), QLabel("good"), QLabel("over")]
+        for c in self._chips:
+            chips.addWidget(c)
+        chips.addStretch(1)
+        v.addLayout(chips)
+        self._sample = QLabel("data-pipeline · reading transcript.py")
+        v.addWidget(self._sample)
+
+    def refresh(self, p) -> None:
+        self.setStyleSheet(
+            f"QFrame#miniPrev{{background:{p.bg};border:1px solid {p.border};"
+            "border-radius:8px}")
+        self._lbl.setStyleSheet(
+            f"color:{p.text_muted};font-size:10px;letter-spacing:1.5px")
+        self._sess.setStyleSheet(f"color:{p.text_dim};font-size:12px")
+        self._pct.setStyleSheet(f"color:{p.text};font-size:15px;font-weight:700")
+        self._bar.set_colors(p.surface, p.accent)
+        for lbl, col in zip(self._chips, (p.accent, p.positive, p.danger)):
+            lbl.setStyleSheet(
+                f"color:{col};background:{p.surface};border-radius:9px;"
+                "padding:2px 9px;font-size:10px")
+        self._sample.setStyleSheet(f"color:{p.text_muted};font-size:11px")
+
+
+class _EditorRow(QFrame):
+    """One selectable role in the custom-theme editor's left list."""
+
+    clicked = Signal(str)
+
+    def __init__(self, role: str, label: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("editorRow")
+        self._role = role
+        self.setProperty("selected", "false")
+        self.setCursor(Qt.PointingHandCursor)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(9, 7, 10, 7)
+        row.setSpacing(9)
+        self._sw = QFrame()
+        self._sw.setFixedSize(18, 18)
+        row.addWidget(self._sw)
+        row.addWidget(QLabel(label, objectName="roleName"))
+        row.addStretch(1)
+        self._aa = QLabel()
+        row.addWidget(self._aa)
+
+    def set_swatch(self, hexv: str) -> None:
+        self._sw.setStyleSheet(
+            f"background:{hexv};border-radius:4px;border:1px solid rgba(0,0,0,.4)")
+
+    def set_aa(self, text: str, color: str) -> None:
+        self._aa.setText(text)
+        self._aa.setStyleSheet(
+            f"color:{color};font-family:'Cascadia Code',monospace;font-size:11px")
+
+    def set_selected(self, on: bool) -> None:
+        self.setProperty("selected", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit(self._role)
+        super().mousePressEvent(e)
+
+
 class CustomThemeEditor(QDialog):
-    """Edit the 8 base colours of the custom theme with live preview and WCAG-AA
-    contrast warnings. Every change re-derives the full palette and applies it to
-    the whole app immediately."""
+    """Studio-style custom theme editor: a role list on the left; a themed HSV
+    colour picker (with a screen eyedropper) + a live preview on the right. Every
+    edit re-derives the palette and applies it to the whole app. The full-app
+    restyle is debounced so dragging the picker stays smooth; the in-dialog
+    preview updates instantly. Contrast warnings are soft (a 'Fix contrast'
+    button nudges failing colours to AA)."""
 
     changed = Signal()   # custom palette changed -> refresh the picker swatches
 
@@ -998,94 +1114,113 @@ class CustomThemeEditor(QDialog):
         "text": "Text", "accent": "Accent", "warn": "Warning",
         "danger": "Danger", "positive": "Positive",
     }
-    # Base roles that are read as marks/text against bg (so they get an AA check).
     _FG_ROLES = ("text", "accent", "warn", "danger", "positive")
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Custom theme")
         self.setObjectName("root")
-        self.setStyleSheet(STYLESHEET)   # themed; re-themed live by apply_theme
-        self.setMinimumWidth(370)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 16, 18, 16)
-        lay.setSpacing(10)
-        lay.addWidget(QLabel("CUSTOM THEME", objectName="settingsTitle"))
-        hint = QLabel("Click a colour to change it — the other shades derive "
-                      "automatically. Changes apply live.", objectName="sectionHint")
+        self.setStyleSheet(STYLESHEET)
+        self.setMinimumWidth(540)
+        self._active_role = "accent"
+        self._apply_timer = QTimer(self)
+        self._apply_timer.setSingleShot(True)
+        self._apply_timer.setInterval(45)
+        self._apply_timer.timeout.connect(self._apply_now)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 16, 18, 14)
+        root.setSpacing(12)
+        root.addWidget(QLabel("CUSTOM THEME", objectName="settingsTitle"))
+        hint = QLabel("Pick a role, then set its colour — or grab one off the "
+                      "screen with the eyedropper. Shades derive automatically; "
+                      "changes apply live.", objectName="sectionHint")
         hint.setWordWrap(True)
-        lay.addWidget(hint)
+        root.addWidget(hint)
 
+        split = QHBoxLayout()
+        split.setSpacing(16)
+        left = QVBoxLayout()
+        left.setSpacing(1)
         self._rows = {}
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(7)
-        for r, role in enumerate(theme.CUSTOM_ROLES):
-            swatch = QPushButton()
-            swatch.setFixedSize(30, 22)
-            swatch.setCursor(Qt.PointingHandCursor)
-            swatch.setFocusPolicy(Qt.NoFocus)
-            swatch.clicked.connect(lambda _=False, ro=role: self._pick(ro))
-            hexlbl = QLabel(objectName="credStatus")
-            aalbl = QLabel(objectName="credStatus")
-            grid.addWidget(swatch, r, 0)
-            grid.addWidget(QLabel(self._ROLE_LABELS[role], objectName="pushSummary"), r, 1)
-            grid.addWidget(hexlbl, r, 2)
-            grid.addWidget(aalbl, r, 3)
-            self._rows[role] = (swatch, hexlbl, aalbl)
-        grid.setColumnStretch(1, 1)
-        lay.addLayout(grid)
+        for role in theme.CUSTOM_ROLES:
+            r = _EditorRow(role, self._ROLE_LABELS[role])
+            r.clicked.connect(self._select_role)
+            left.addWidget(r)
+            self._rows[role] = r
+        left.addStretch(1)
+        lw = QWidget()
+        lw.setLayout(left)
+        lw.setFixedWidth(210)
+        split.addWidget(lw)
 
-        btns = QHBoxLayout()
-        fix_btn = QPushButton("Fix contrast")
-        fix_btn.clicked.connect(self._fix_contrast)
-        btns.addWidget(fix_btn)
-        btns.addStretch(1)
-        done_btn = QPushButton("Done")
-        done_btn.clicked.connect(self.accept)
-        btns.addWidget(done_btn)
-        lay.addLayout(btns)
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        self.picker = ColorPicker()
+        self.picker.colorChanged.connect(self._on_color)
+        right.addWidget(self.picker)
+        self.preview = _MiniPreview()
+        right.addWidget(self.preview)
+        right.addStretch(1)
+        split.addLayout(right, 1)
+        root.addLayout(split, 1)
 
-        self._refresh()
+        foot = QHBoxLayout()
+        fix = QPushButton("Fix contrast")
+        fix.clicked.connect(self._fix_contrast)
+        foot.addWidget(fix)
+        foot.addStretch(1)
+        done = QPushButton("Done")
+        done.clicked.connect(self.accept)
+        foot.addWidget(done)
+        root.addLayout(foot)
 
-    def _pick(self, role: str) -> None:
-        cur = QColor(theme.custom_base()[role])
-        chosen = QColorDialog.getColor(cur, self, f"Pick {self._ROLE_LABELS[role]}")
-        if chosen.isValid():
-            self._commit({**theme.custom_base(), role: chosen.name()})
+        self._refresh_all()
+        self._select_role(self._active_role)
+
+    def _select_role(self, role: str) -> None:
+        self._active_role = role
+        for r, row in self._rows.items():
+            row.set_selected(r == role)
+        self.picker.set_color(theme.custom_base()[role])
+
+    def _on_color(self, hexv: str) -> None:
+        base = theme.custom_base()
+        base[self._active_role] = hexv
+        theme.set_custom_base(base)
+        self._refresh_all()          # instant in-dialog feedback
+        self._apply_timer.start()    # debounced full-app restyle
+
+    def _apply_now(self) -> None:
+        app_settings.set_custom_base(theme.custom_base())
+        apply_theme(theme.CUSTOM)
+        self.setStyleSheet(STYLESHEET)   # keep the dialog itself themed
+        self.changed.emit()
 
     def _fix_contrast(self) -> None:
         base = theme.custom_base()
         bg = base["bg"]
         for role in self._FG_ROLES:
             base[role] = theme.ensure_contrast(base[role], bg, 4.5)
-        self._commit(base)
-
-    def _commit(self, base: dict) -> None:
         theme.set_custom_base(base)
-        app_settings.set_custom_base(theme.custom_base())
-        apply_theme(theme.CUSTOM)     # live re-derive + restyle
-        self.setStyleSheet(STYLESHEET)  # keep the dialog itself themed
-        self._refresh()
-        self.changed.emit()
+        self.picker.set_color(base[self._active_role])
+        self._refresh_all()
+        self._apply_now()
 
-    def _refresh(self) -> None:
+    def _refresh_all(self) -> None:
         base = theme.custom_base()
         bg = base["bg"]
-        pal = theme.active()
-        for role, (swatch, hexlbl, aalbl) in self._rows.items():
+        pal = theme.custom_palette()
+        for role, row in self._rows.items():
             col = base[role]
-            swatch.setStyleSheet(
-                f"background:{col}; border:1px solid rgba(128,128,128,0.6);"
-                " border-radius:4px;")
-            hexlbl.setText(col.upper())
+            row.set_swatch(col)
             if role in self._FG_ROLES:
                 c = theme.contrast(col, bg)
                 ok = c >= 4.5
-                aalbl.setText(f"{c:.1f}  {'OK' if ok else 'low'}")
-                aalbl.setStyleSheet(f"color:{pal.text_muted if ok else pal.warn};")
+                row.set_aa(f"{c:.1f}", pal.text_muted if ok else pal.warn)
             else:
-                aalbl.setText("")
+                row.set_aa("", pal.text_muted)
+        self.preview.refresh(pal)
 
 
 class SettingsPanel(QWidget):

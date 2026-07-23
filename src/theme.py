@@ -749,6 +749,14 @@ QFrame#themeOption:hover { border-color: #374151; }
 QFrame#themeOption[selected="true"] { border-color: #CE7D6B; }
 QLabel#themeName { font-size: 13px; font-weight: 600; color: #e6edf3; }
 QLabel#themeTag { font-size: 10px; font-weight: 700; color: #CE7D6B; letter-spacing: 1px; }
+
+/* Custom-theme editor — the role list on the left of the Studio editor. */
+QFrame#editorRow { background: transparent; border: 0; border-radius: 6px; }
+QFrame#editorRow:hover { background: #161b22; }
+QFrame#editorRow[selected="true"] { background: #1f2937; }
+QLabel#roleName { font-size: 13px; color: #e6edf3; }
+QFrame#editorRow[selected="true"] QLabel#roleName { color: #CE7D6B; font-weight: 600; }
+QPushButton#eyedropBtn { font-size: 13px; padding: 6px 0; }
 """
 
 
