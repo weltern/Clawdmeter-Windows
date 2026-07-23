@@ -1001,12 +1001,12 @@ class _ThemedCombo(QComboBox):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        # Small minimum so the combo can shrink (never widening the settings
+        # column past its limit) — but with a stretch factor in its row it fills
+        # the available space at render, showing the full name + swatches.
         self.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.setMinimumContentsLength(10)
-        # Hard cap so a long preset name can't force the narrow settings column
-        # wider than it is (the name elides in the field, shows full in popup).
-        self.setMaximumWidth(166)
+        self.setMinimumContentsLength(8)
 
     def showPopup(self) -> None:
         p = theme.active()
@@ -1038,21 +1038,20 @@ class _PresetRow(QFrame):
         row.setContentsMargins(12, 8, 12, 8)
         row.setSpacing(11)
         row.addWidget(QLabel("Preset", objectName="themeName"))
-        row.addStretch(1)
         self.combo = _ThemedCombo()
         self.combo.setFocusPolicy(Qt.StrongFocus)
-        self.combo.setIconSize(QSize(46, 15))
+        self.combo.setIconSize(QSize(38, 14))
         for name in theme.names():
             self.combo.addItem(self._swatch_icon(name), name)
         self.combo.currentTextChanged.connect(self._on_combo)
-        row.addWidget(self.combo)
+        row.addWidget(self.combo, 1)   # fill the row so long names show
 
     @staticmethod
     def _swatch_icon(name: str) -> QIcon:
         """A 4-chip (bg/surface/accent/text) preview icon for a preset, shown
         beside its name in the dropdown field and the popup list."""
         p = theme.get(name)
-        w, h, gap = 10, 15, 2
+        w, h, gap = 8, 14, 2
         pm = QPixmap((w + gap) * 4 - gap, h)
         pm.fill(Qt.transparent)
         painter = QPainter(pm)
@@ -1109,7 +1108,7 @@ class _SystemTargets(QWidget):
         row.addWidget(lbl)
         combo = _ThemedCombo()
         combo.setFocusPolicy(Qt.StrongFocus)
-        combo.setIconSize(QSize(46, 15))
+        combo.setIconSize(QSize(38, 14))
         for n in names:
             combo.addItem(_PresetRow._swatch_icon(n), n)
         combo.currentTextChanged.connect(self._on_change)
