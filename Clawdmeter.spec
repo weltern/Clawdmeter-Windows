@@ -255,6 +255,7 @@ if _IS_MAC:
             'CFBundleShortVersionString': _ver_str,
             'CFBundleVersion': _ver_str,
             'NSHighResolutionCapable': True,
+            'NSRequiresAquaSystemAppearance': False,  # allow dark appearance for the dark theme
             'LSMinimumSystemVersion': '11.0',
             'NSHumanReadableCopyright': (
                 '© 2026 Nick Welter · MIT licensed · '

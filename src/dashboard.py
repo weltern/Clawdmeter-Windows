@@ -242,7 +242,7 @@ QPushButton#resetLink {
     text-decoration: underline; font-size: 10px;
 }
 QPushButton#resetLink:hover { color: #e6edf3; }
-QCheckBox { color: #e6edf3; font-size: 12px; spacing: 8px; }
+QCheckBox { color: #e6edf3; font-size: 12px; spacing: 8px; padding: 3px 0; }
 QCheckBox::indicator {
     width: 16px; height: 16px; border: 1px solid #374151;
     background-color: #1f2937; border-radius: 2px;
@@ -1417,7 +1417,7 @@ class SettingsPanel(QWidget):
         # Windows channel: the desktop toast + tray flash, with Play-a-sound /
         # Pop-to-front nested in an indented box so they hide together when the
         # channel — or all alerts — are off.
-        self.notify_toast_check = QCheckBox("Show a Windows notification")
+        self.notify_toast_check = QCheckBox("Show a toast notification")
         self.notify_toast_check.setChecked(app_settings.get_reset_notify_toast())
         self.notify_toast_check.toggled.connect(self._on_notify_toast_toggled)
         layout.addWidget(self.notify_toast_check)
