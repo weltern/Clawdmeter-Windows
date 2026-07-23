@@ -171,6 +171,22 @@ def test_custom_base_edit_flows_into_derived_palette():
         theme.set_custom_base(theme.custom_base_from(MIDNIGHT_SALMON))
 
 
+def test_custom_theme_serialize_parse_roundtrip():
+    base = theme.custom_base_from(theme.get("Dracula"))
+    assert theme.parse_custom(theme.serialize_custom(base)) == base
+
+
+def test_parse_custom_rejects_bad_input():
+    import json
+    assert theme.parse_custom("not json") is None
+    assert theme.parse_custom("{}") is None                       # no roles
+    assert theme.parse_custom('{"base": {"bg": "red"}}') is None   # bad colour
+    base = theme.custom_base_from(MIDNIGHT_SALMON)
+    assert theme.parse_custom(json.dumps(base)) == base            # bare map accepted
+    partial = {k: v for k, v in base.items() if k != "accent"}
+    assert theme.parse_custom(json.dumps(partial)) is None         # missing a role
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))

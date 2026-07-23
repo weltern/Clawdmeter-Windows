@@ -19,6 +19,7 @@ breakdown palette.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, replace as _replace
 
@@ -454,6 +455,39 @@ def _resolve(name: str) -> Palette:
     if name == CUSTOM:
         return custom_palette()
     return PRESETS.get(name, MIDNIGHT_SALMON)
+
+
+_THEME_FORMAT = 1
+
+
+def serialize_custom(base: dict) -> str:
+    """A custom theme's base colours as a shareable, pretty-printed JSON string."""
+    return json.dumps(
+        {"clawdmeter_theme": _THEME_FORMAT,
+         "base": {r: base[r] for r in CUSTOM_ROLES}},
+        indent=2) + "\n"
+
+
+def parse_custom(text: str) -> "dict | None":
+    """Parse a theme-file string into a validated base dict, or None if it isn't
+    a valid theme (bad JSON, a missing role, or a malformed colour). Accepts
+    either the wrapped ``{"base": {...}}`` form or a bare ``{role: hex}`` map."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    base = data.get("base", data)
+    if not isinstance(base, dict):
+        return None
+    out = {}
+    for role in CUSTOM_ROLES:
+        val = base.get(role)
+        if not isinstance(val, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", val):
+            return None
+        out[role] = val
+    return out
 
 # Module-level "which theme is live" state. Consumers call active(); the app
 # calls apply_selection() (via apply_theme in dashboard) on startup and switches.

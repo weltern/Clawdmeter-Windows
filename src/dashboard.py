@@ -1310,6 +1310,12 @@ class CustomThemeEditor(QDialog):
         root.addLayout(split, 1)
 
         foot = QHBoxLayout()
+        imp = QPushButton("Import")
+        imp.clicked.connect(self._import)
+        foot.addWidget(imp)
+        exp = QPushButton("Export")
+        exp.clicked.connect(self._export)
+        foot.addWidget(exp)
         fix = QPushButton("Fix contrast")
         fix.clicked.connect(self._fix_contrast)
         foot.addWidget(fix)
@@ -1349,6 +1355,40 @@ class CustomThemeEditor(QDialog):
         apply_theme(theme.CUSTOM)        # now the whole app changes
         self.setStyleSheet(STYLESHEET)   # re-theme the dialog to the committed look
         self.applied.emit()
+
+    def _export(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export theme", "clawdmeter-theme.json", "Theme file (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(theme.serialize_custom(self._working))
+        except OSError as e:
+            QMessageBox.warning(self, "Export failed",
+                                f"Couldn't write the file:\n{e}")
+
+    def _import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import theme", "", "Theme file (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except OSError as e:
+            QMessageBox.warning(self, "Import failed",
+                                f"Couldn't read the file:\n{e}")
+            return
+        base = theme.parse_custom(text)
+        if base is None:
+            QMessageBox.warning(self, "Import failed",
+                                "That file isn't a valid Clawdmeter theme.")
+            return
+        # Load into the working copy — previews live, applies on Apply like any edit.
+        self._working = base
+        self.picker.set_color(self._working[self._active_role])
+        self._refresh_all()
 
     def _refresh_all(self) -> None:
         bg = self._working["bg"]
