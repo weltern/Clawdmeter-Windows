@@ -45,6 +45,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
@@ -79,13 +81,17 @@ from poller import (
 )
 import remote_notify
 import stats
+import statviz
 from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, PercentBars, WeekBars
+import theme
+from color_picker import ColorPicker
 from usage_history import UsageHistory
 from approaching_notify import ApproachingNotifier
 from reset_notify import ResetDecision, ResetNotifier
 import update_check
 from update_check import UpdateChecker
 from pricing_refresh import PricingRefresher
+import session_shelf
 from session_shelf import (
     CompactView, SessionShelf, UsageBar, apply_overage_bar,
 )
@@ -147,218 +153,84 @@ def _should_release_autofit(height_changed, fitting, armed, max_involved, titleb
 VIEW_ORDER = ("full", "compact", "mini")
 
 
-STYLESHEET = """
-QWidget#root {
-    background-color: #0e1116;
-    border: 1px solid #1f2937;
-}
+STYLESHEET = theme.build_qss(theme.active())
 
-QWidget#titleBar { background-color: #0a0d12; }
-QLabel#titleAppName {
-    font-size: 12px; color: #e6edf3; font-weight: 600; letter-spacing: 1px;
-}
-QToolButton#titleBtn, QToolButton#closeBtn, QToolButton#settingsBtn {
-    background: transparent; color: #CE7D6B; border: 0;
-    min-width: 38px; min-height: 30px;
-    font-family: "Font Awesome 6 Free"; font-weight: 900;
-}
-QToolButton#titleBtn, QToolButton#closeBtn { font-size: 13px; }
-QToolButton#settingsBtn { font-size: 15px; }
-QToolButton#titleBtn:hover, QToolButton#settingsBtn:hover { background-color: #1f2937; color: #CE7D6B; }
-QToolButton#closeBtn:hover { background-color: #c13434; color: #ffffff; }
 
-QLabel#title { font-size: 22px; font-weight: 700; letter-spacing: 1px; color: #e6edf3; }
-QLabel#group { font-size: 13px; font-weight: 600; color: #9ca3af; letter-spacing: 2px; }
-QLabel#rowLabel { font-size: 14px; color: #9ca3af; }
-QLabel#pct { font-size: 40px; font-weight: 700; color: #e6edf3; }
-QLabel#reset { font-size: 12px; color: #9ca3af; }
-QLabel#statusText { font-size: 12px; font-weight: 600; }
-QLabel#statusText[level="warn"] { color: #f59e0b; }
-QLabel#statusText[level="block"] { color: #dc2626; }
-QLabel#statusIcon { font-size: 14px; font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif; }
+_applying_theme = False
 
-QPushButton {
-    background-color: #1f2937; color: #e6edf3; border: 1px solid #374151;
-    padding: 6px 12px; border-radius: 6px;
-}
-QPushButton:hover { background-color: #374151; }
-QPushButton:disabled { background-color: #161b22; color: #4b5563; border-color: #21262d; }
 
-QWidget#settingsPanel {
-    background-color: #0a0d12;
-}
-/* Left tab rail in the settings page (sits right of the app nav rail). */
-QWidget#settingsNav {
-    background-color: #0e1116;
-    border-right: 1px solid #1f2937;
-}
-/* QPushButton (not QToolButton) so QSS text-align actually left-aligns the
-   glyph+label. Segoe UI is primary so the Latin label stays crisp — FA Free
-   ships its own (ugly) Latin, so listing it first would hijack the words. The
-   leading FA glyph isn't in Segoe UI, so Qt falls back to Font Awesome for it.
-   FA is registered at startup in main.py via QFontDatabase. */
-QPushButton#navBtn {
-    background: transparent; color: #9ca3af; border: 0;
-    border-radius: 6px; padding: 9px 14px;
-    text-align: left; font-size: 13px; font-weight: 600;
-    font-family: "Segoe UI", "Helvetica Neue", "Noto Sans", "DejaVu Sans", "Font Awesome 6 Free", sans-serif;
-}
-QPushButton#navBtn:hover { background-color: #1f2937; color: #e6edf3; }
-QPushButton#navBtn:checked { background-color: #1f2937; color: #CE7D6B; }
-QScrollArea#settingsScroll, QWidget#settingsBody { background: transparent; border: none; }
-QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 0; }
-QScrollBar::handle:vertical { background: #374151; border-radius: 4px; min-height: 24px; }
-QScrollBar::handle:vertical:hover { background: #4b5563; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-QLabel#settingsTitle {
-    font-size: 16px; font-weight: 700; color: #e6edf3; letter-spacing: 2px;
-}
-QLabel#sectionLabel {
-    font-size: 10px; color: #6b7280; letter-spacing: 2px; font-weight: 600;
-}
-QLabel#pathDisplay {
-    font-size: 10px; color: #9ca3af;
-    background: #0e1116; border: 1px solid #1f2937; border-radius: 4px;
-    padding: 8px;
-}
-QLabel#credStatus { font-size: 10px; color: #6b7280; }
-QLabel#sectionHint { font-size: 10px; color: #6b7280; }
-QLabel#pollNote { font-size: 10px; color: #f59e0b; font-weight: 600; }
+def apply_theme(selected: str) -> None:
+    """Switch the whole app to ``selected`` and restyle every live widget in
+    place — no restart. Persists the choice.
 
-/* Stats page cards */
-QFrame#statCard {
-    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 8px;
-}
-QLabel#statLabel { font-size: 10px; color: #6b7280; letter-spacing: 2px; font-weight: 600; }
-QLabel#statBig { font-size: 32px; font-weight: 700; color: #e6edf3; }
-QLabel#statMid { font-size: 18px; font-weight: 700; color: #e6edf3; }
-QLabel#statPlan { font-size: 12px; color: #CE7D6B; font-weight: 600; letter-spacing: 1px; }
-QLabel#statDelta { font-size: 12px; font-weight: 700; }
-QLabel#statCount { font-size: 11px; color: #6b7280; font-weight: 600; }
-QFrame#statDivider { background: #1f2937; max-height: 1px; min-height: 1px; border: 0; }
-QPushButton#resetLink {
-    background: transparent; color: #9ca3af; border: 0; padding: 2px 4px;
-    text-decoration: underline; font-size: 10px;
-}
-QPushButton#resetLink:hover { color: #e6edf3; }
-QCheckBox { color: #e6edf3; font-size: 12px; spacing: 8px; padding: 3px 0; }
-QCheckBox::indicator {
-    width: 16px; height: 16px; border: 1px solid #374151;
-    background-color: #1f2937; border-radius: 2px;
-}
-QCheckBox::indicator:hover { border-color: #6b7280; }
-QCheckBox::indicator:checked {
-    background-color: #CE7D6B; border-color: #CE7D6B;
-    image: none;
-}
+    ``selected`` is a preset name OR ``theme.SYSTEM``. For Follow System we clear
+    any colour-scheme override so Qt reports the OS scheme, resolve to the
+    matching dark/light preset, and keep tracking it (see the OS-scheme signal
+    wired in Dashboard). For a fixed preset we pin the OS colour-scheme hint to
+    the palette's light/dark nature so native / un-QSS'd surfaces (menus,
+    tooltips, message boxes — notably on macOS) match.
 
-/* Text/number inputs — the app had no input styling, so these fell back to the
-   native light Windows look. Theme them to match the dark surface: poll-interval
-   field, push-channel editors, and the threshold / idle spinners. */
-QLineEdit, QSpinBox {
-    background-color: #0e1116; color: #e6edf3;
-    border: 1px solid #374151; border-radius: 6px;
-    padding: 4px 8px;
-    selection-background-color: #CE7D6B; selection-color: #0a0d12;
-}
-QLineEdit:focus, QSpinBox:focus { border-color: #CE7D6B; }
-QLineEdit:disabled, QSpinBox:disabled {
-    color: #4b5563; background-color: #161b22; border-color: #21262d;
-}
-QSpinBox::up-button, QSpinBox::down-button {
-    subcontrol-origin: border; width: 15px; background: #1f2937;
-    border-left: 1px solid #374151;
-}
-QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 6px; }
-QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 6px; }
-QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #374151; }
-QSpinBox::up-arrow {
-    width: 0; height: 0; image: none;
-    border-left: 4px solid transparent; border-right: 4px solid transparent;
-    border-bottom: 5px solid #9ca3af;
-}
-QSpinBox::down-arrow {
-    width: 0; height: 0; image: none;
-    border-left: 4px solid transparent; border-right: 4px solid transparent;
-    border-top: 5px solid #9ca3af;
-}
-QSpinBox::up-arrow:hover { border-bottom-color: #e6edf3; }
-QSpinBox::down-arrow:hover { border-top-color: #e6edf3; }
+    Safe to call at startup before any widgets exist: it sets the active palette
+    and refreshes the module colour caches, so widgets built afterward come up
+    themed. On a live switch it walks every existing widget, swaps the old
+    stylesheet strings for the freshly-built ones, and repaints the
+    custom-painted widgets (which read the module QColors at paint time).
+    """
+    global STYLESHEET, _applying_theme
+    if _applying_theme:
+        return
+    _applying_theme = True
+    try:
+        app = QApplication.instance()
+        sh = app.styleHints() if app is not None else None
 
-/* Approaching-limit threshold sliders: dark groove, salmon fill up to the
-   handle, salmon handle, with a value pill beside it. */
-QSlider#threshold::groove:horizontal { height: 4px; border-radius: 2px; background: #1f2937; }
-QSlider#threshold::add-page:horizontal { background: #1f2937; border-radius: 2px; }
-QSlider#threshold::sub-page:horizontal { background: #CE7D6B; border-radius: 2px; }
-QSlider#threshold::handle:horizontal {
-    width: 13px; height: 13px; margin: -5px 0; border-radius: 7px;
-    background: #CE7D6B; border: 2px solid #0a0d12;
-}
-QSlider#threshold::handle:horizontal:hover { background: #d98f7e; }
-/* Editable value field beside the slider — looks like a pill, but click + type.
-   It lights up with the salmon focus border both when focused and while its
-   slider is being dragged ([sliding="true"]). */
-QSpinBox#thresholdField { padding: 3px 4px; font-weight: 600; }
-QSpinBox#thresholdField[sliding="true"] { border-color: #CE7D6B; }
+        if selected == theme.SYSTEM:
+            # Clear any override so colorScheme() reflects the OS, then resolve.
+            if sh is not None:
+                sh.setColorScheme(Qt.ColorScheme.Unknown)
+            os_dark = sh.colorScheme() != Qt.ColorScheme.Light if sh else True
+            concrete = theme.system_target(os_dark)
+        elif selected == theme.CUSTOM:
+            concrete = theme.CUSTOM
+        else:
+            concrete = selected if selected in theme.PRESETS else theme.DEFAULT_NAME
 
-/* Slim left nav rail (overlay). Same icon+label language as the settings tabs:
-   Segoe UI primary so labels stay crisp; the leading FA glyph falls back to FA.
-   Labels are clipped while the rail is collapsed and revealed as it expands. */
-QWidget#navRail {
-    background-color: #0e1116;
-    border-right: 1px solid #1f2937;
-}
-QPushButton#railBtn {
-    background: transparent; color: #9ca3af; border: 0;
-    border-radius: 6px; padding: 9px 0px 9px 8px;  /* no right pad: icon never clips,
-                                                       and stays put as the rail widens */
-    text-align: left; font-size: 15px; font-weight: 600;
-    font-family: "Segoe UI", "Helvetica Neue", "Noto Sans", "DejaVu Sans", "Font Awesome 6 Free", sans-serif;
-}
-QPushButton#railBtn:hover { background-color: #1f2937; color: #e6edf3; }
-QPushButton#railBtn:checked { background-color: #1f2937; color: #CE7D6B; }
+        old_base, old_shelf, old_compact = (
+            STYLESHEET, session_shelf.SHELF_STYLESHEET, session_shelf.COMPACT_STYLESHEET)
 
-/* Push-notification channel cards (Settings -> Notifications). */
-QWidget#pushCard {
-    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 6px;
-}
-QLabel#pushSummary { font-size: 12px; }
-QToolButton#pushEditBtn {
-    background: transparent; color: #9ca3af; border: 0;
-    padding: 2px 6px; border-radius: 4px; font-size: 11px;
-}
-QToolButton#pushEditBtn:hover { color: #CE7D6B; background-color: #1f2937; }
-QToolButton#pushRemoveBtn {
-    background: transparent; color: #6b7280; border: 0;
-    padding: 2px 7px; border-radius: 4px; font-size: 12px;
-}
-QToolButton#pushRemoveBtn:hover { color: #ffffff; background-color: #c13434; }
-QToolButton#addChannelBtn {
-    background: transparent; color: #CE7D6B; border: 1px dashed #374151;
-    padding: 5px 12px; border-radius: 6px; font-size: 11px;
-}
-QToolButton#addChannelBtn:hover { background-color: #1f2937; border-color: #CE7D6B; }
-QToolButton#addChannelBtn:disabled { color: #4b5563; border-color: #21262d; }
-QToolButton#addChannelBtn::menu-indicator { image: none; width: 0; }
+        theme.apply_selection(selected, concrete)
+        app_settings.set_theme(theme.selected())
+        statviz.refresh_theme()
+        session_shelf.refresh_theme()
+        STYLESHEET = theme.build_qss(theme.active())
 
-QWidget#miniRoot {
-    background-color: #0e1116;
-    border: 1px solid #CE7D6B;
-}
-QLabel#miniPct { font-size: 17px; font-weight: 700; color: #e6edf3; }
-QLabel#miniPctSub { font-size: 13px; font-weight: 700; color: #9ca3af; }
-QLabel#miniReset { font-size: 12px; color: #9ca3af; }
+        # Fixed preset: pin the OS colour-scheme hint to match. Follow System
+        # left its override cleared above so it keeps tracking the OS.
+        if sh is not None and selected != theme.SYSTEM:
+            sh.setColorScheme(Qt.ColorScheme.Light if theme.is_light(theme.active())
+                              else Qt.ColorScheme.Dark)
 
-QWidget#toastRoot {
-    background-color: #0e1116;
-    border: 1px solid #CE7D6B;
-}
-QLabel#toastTitle {
-    font-size: 14px; font-weight: 700; color: #e6edf3; letter-spacing: 0.5px;
-}
-QLabel#toastBody { font-size: 12px; color: #9ca3af; }
-"""
+        if app is None:
+            return
+        pairs = (
+            (old_base, STYLESHEET),
+            (old_shelf, session_shelf.SHELF_STYLESHEET),
+            (old_compact, session_shelf.COMPACT_STYLESHEET),
+        )
+        for w in app.allWidgets():
+            sheet = w.styleSheet()
+            if sheet:
+                for old, new in pairs:
+                    if sheet == old:
+                        w.setStyleSheet(new)
+                        break
+            # Custom-painted labels that cache a themed colour (session/compact
+            # name + "working on" lines) re-read the palette here.
+            if hasattr(w, "refresh_theme_color"):
+                w.refresh_theme_color()
+            w.update()  # repaint custom-painted widgets that read module QColors
+    finally:
+        _applying_theme = False
 
 
 def _tray_pixmap(pct: int) -> QPixmap:
@@ -1040,14 +912,497 @@ class _PushChannelRow(QWidget):
 
     def _refresh(self) -> None:
         configured = app_settings.push_channel_configured(self._provider)
-        dot = "#CE7D6B" if configured else "#4b5563"
+        p = theme.active()
+        dot = p.accent if configured else p.border_dim
         summary = _push_channel_summary(self._provider)
         summary = (summary.replace("&", "&amp;").replace("<", "&lt;")
                    .replace(">", "&gt;"))  # the ntfy topic is user-supplied
         self._summary.setText(
             f"<span style='color:{dot}'>●</span>&nbsp;&nbsp;"
-            f"<span style='color:#e6edf3'>{self._name}</span>&nbsp;&nbsp;"
-            f"<span style='color:#6b7280'>· {summary}</span>")
+            f"<span style='color:{p.text}'>{self._name}</span>&nbsp;&nbsp;"
+            f"<span style='color:{p.text_muted}'>· {summary}</span>")
+
+
+class _ThemeOption(QFrame):
+    """One selectable theme row in the Appearance picker: a strip of colour
+    swatches (the theme's identity), its name, and an ACTIVE tag. The Custom row
+    (`editable`) also carries an Edit button and refreshes its swatches as the
+    custom theme is edited."""
+
+    selected = Signal(str)
+    edit_requested = Signal()
+
+    # Fixed per-theme chips — styled inline (their own colours), NOT via the
+    # themed base stylesheet, so they show each theme's identity.
+    _SWATCH_ROLES = ("bg", "surface", "accent", "text")
+
+    def __init__(self, name: str, palette, parent=None, *,
+                 editable: bool = False) -> None:
+        super().__init__(parent)
+        self.setObjectName("themeOption")
+        self._name = name
+        self.setProperty("selected", "false")
+        self.setCursor(Qt.PointingHandCursor)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 9, 12, 9)
+        row.setSpacing(11)
+        swatches = QHBoxLayout()
+        swatches.setSpacing(3)
+        self._chips = []
+        for _role in self._SWATCH_ROLES:
+            chip = QFrame()
+            chip.setFixedSize(11, 19)
+            self._chips.append(chip)
+            swatches.addWidget(chip)
+        row.addLayout(swatches)
+        self.refresh_swatches(palette)
+        row.addWidget(QLabel(name, objectName="themeName"))
+        row.addStretch(1)
+        self._tag = QLabel("ACTIVE", objectName="themeTag")
+        self._tag.setVisible(False)
+        row.addWidget(self._tag)
+        if editable:
+            edit_btn = QPushButton("Edit", objectName="resetLink")
+            edit_btn.setCursor(Qt.PointingHandCursor)
+            edit_btn.setFocusPolicy(Qt.NoFocus)
+            edit_btn.clicked.connect(lambda: self.edit_requested.emit())
+            row.addWidget(edit_btn)
+
+    def refresh_swatches(self, palette) -> None:
+        for chip, role in zip(self._chips, self._SWATCH_ROLES):
+            chip.setStyleSheet(
+                f"background:{getattr(palette, role)}; border-radius:3px;"
+                " border:1px solid rgba(0,0,0,0.35);")
+
+    def set_selected(self, on: bool) -> None:
+        self.setProperty("selected", "true" if on else "false")
+        self._tag.setVisible(on)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            self.selected.emit(self._name)
+        super().mousePressEvent(e)
+
+
+class _ThemedCombo(QComboBox):
+    """A combo whose popup is themed to the LIVE palette each time it opens.
+
+    The popup is a separate top-level window: the app stylesheet reaches the
+    item view but not the container frame behind it, which otherwise shows a
+    native (light) background. So on every open we restyle the view and paint
+    the container's background to match — read from theme.active() so it always
+    matches the current theme.
+
+    Sizes to a fixed character budget (not the widest item), so a long preset
+    name can't blow out the narrow settings column — it elides in the field and
+    shows in full in the popup."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        # Small minimum so the combo can shrink (never widening the settings
+        # column past its limit) — but with a stretch factor in its row it fills
+        # the available space at render, showing the full name + swatches.
+        self.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(8)
+
+    def showPopup(self) -> None:
+        p = theme.active()
+        self.view().setStyleSheet(
+            f"QAbstractItemView{{background:{p.surface_dim};color:{p.text};"
+            f"border:1px solid {p.border};border-radius:8px;padding:5px;outline:none;}}"
+            f"QAbstractItemView::item{{padding:5px 8px;min-height:22px;"
+            f"border-radius:5px;color:{p.text};}}"
+            f"QAbstractItemView::item:selected{{background:{p.surface};color:{p.accent};}}"
+            f"QAbstractItemView::item:hover{{background:{p.surface};}}")
+        super().showPopup()
+        win = self.view().window()
+        if win is not None:   # the popup container — paint it the theme colour
+            win.setStyleSheet(f"background:{p.surface_dim};")
+
+
+class _PresetRow(QFrame):
+    """The 'Preset theme' Appearance option — a selectable row whose dropdown
+    (with per-preset swatch previews) chooses which built-in preset to use."""
+
+    selected = Signal(str)   # emits the chosen preset name
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("themeOption")
+        self.setProperty("selected", "false")
+        self.setCursor(Qt.PointingHandCursor)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 8, 12, 8)
+        row.setSpacing(11)
+        row.addWidget(QLabel("Preset", objectName="themeName"))
+        self.combo = _ThemedCombo()
+        self.combo.setFocusPolicy(Qt.StrongFocus)
+        self.combo.setIconSize(QSize(38, 14))
+        for name in theme.names():
+            self.combo.addItem(self._swatch_icon(name), name)
+        self.combo.currentTextChanged.connect(self._on_combo)
+        row.addWidget(self.combo, 1)   # fill the row so long names show
+
+    @staticmethod
+    def _swatch_icon(name: str) -> QIcon:
+        """A 4-chip (bg/surface/accent/text) preview icon for a preset, shown
+        beside its name in the dropdown field and the popup list."""
+        p = theme.get(name)
+        w, h, gap = 8, 14, 2
+        pm = QPixmap((w + gap) * 4 - gap, h)
+        pm.fill(Qt.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.Antialiasing)
+        for i, role in enumerate(("bg", "surface", "accent", "text")):
+            painter.setPen(QColor(0, 0, 0, 90))
+            painter.setBrush(QColor(getattr(p, role)))
+            painter.drawRoundedRect(QRect(i * (w + gap), 0, w, h), 2, 2)
+        painter.end()
+        return QIcon(pm)
+
+    def _on_combo(self, name: str) -> None:
+        self.selected.emit(name)
+
+    def set_current(self, name: str) -> None:
+        self.combo.blockSignals(True)
+        self.combo.setCurrentText(name)
+        self.combo.blockSignals(False)
+
+    def set_selected(self, on: bool) -> None:
+        self.setProperty("selected", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mousePressEvent(self, e) -> None:
+        # Clicking the row (outside the combo) applies the current preset.
+        if e.button() == Qt.LeftButton:
+            self.selected.emit(self.combo.currentText())
+        super().mousePressEvent(e)
+
+
+class _SystemTargets(QWidget):
+    """Sub-controls shown under the Follow System row: choose which preset it
+    uses when the OS is dark vs. light. The dark dropdown lists dark presets;
+    the light dropdown lists light presets."""
+
+    changed = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 0, 12, 8)   # indent under the Follow System row
+        lay.setSpacing(7)
+        darks = [n for n in theme.names() if not theme.is_light(theme.get(n))]
+        lights = [n for n in theme.names() if theme.is_light(theme.get(n))]
+        self._dark = self._make_row(lay, "When dark", darks)
+        self._light = self._make_row(lay, "When light", lights)
+
+    def _make_row(self, lay, label, names) -> "_ThemedCombo":
+        row = QHBoxLayout()
+        row.setSpacing(9)
+        lbl = QLabel(label, objectName="sectionHint")
+        lbl.setFixedWidth(54)
+        row.addWidget(lbl)
+        combo = _ThemedCombo()
+        combo.setFocusPolicy(Qt.StrongFocus)
+        combo.setIconSize(QSize(38, 14))
+        for n in names:
+            combo.addItem(_PresetRow._swatch_icon(n), n)
+        combo.currentTextChanged.connect(self._on_change)
+        row.addWidget(combo, 1)
+        lay.addLayout(row)
+        return combo
+
+    def _on_change(self, *_) -> None:
+        dark, light = self._dark.currentText(), self._light.currentText()
+        theme.set_system_targets(dark, light)
+        app_settings.set_system_targets(dark, light)
+        self.changed.emit()
+
+    def sync(self) -> None:
+        d, light = theme.system_targets()
+        for combo, val in ((self._dark, d), (self._light, light)):
+            combo.blockSignals(True)
+            combo.setCurrentText(val)
+            combo.blockSignals(False)
+
+
+class _PvBar(QWidget):
+    """A tiny fixed-fill usage bar for the editor's live preview."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._track = "#1f2937"
+        self._fill = "#ce7d6b"
+        self.setFixedHeight(9)
+
+    def set_colors(self, track: str, fill: str) -> None:
+        self._track, self._fill = track, fill
+        self.update()
+
+    def paintEvent(self, e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = self.rect()
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(self._track))
+        p.drawRoundedRect(r, 4, 4)
+        p.setBrush(QColor(self._fill))
+        p.drawRoundedRect(QRect(r.x(), r.y(), int(r.width() * 0.64), r.height()), 4, 4)
+
+
+class _MiniPreview(QFrame):
+    """A compact live preview of the custom palette — a usage bar, status chips
+    and sample text — recoloured on every edit (reads the derived palette, so it
+    updates instantly without a full app restyle)."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("miniPrev")
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 11, 12, 12)
+        v.setSpacing(9)
+        self._lbl = QLabel("LIVE PREVIEW")
+        v.addWidget(self._lbl)
+        top = QHBoxLayout()
+        self._sess = QLabel("Session")
+        self._pct = QLabel("64%")
+        top.addWidget(self._sess)
+        top.addStretch(1)
+        top.addWidget(self._pct)
+        v.addLayout(top)
+        self._bar = _PvBar()
+        v.addWidget(self._bar)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        self._chips = [QLabel("accent"), QLabel("good"), QLabel("over")]
+        for c in self._chips:
+            chips.addWidget(c)
+        chips.addStretch(1)
+        v.addLayout(chips)
+        self._sample = QLabel("data-pipeline · reading transcript.py")
+        v.addWidget(self._sample)
+
+    def refresh(self, p) -> None:
+        self.setStyleSheet(
+            f"QFrame#miniPrev{{background:{p.bg};border:1px solid {p.border};"
+            "border-radius:8px}")
+        self._lbl.setStyleSheet(
+            f"color:{p.text_muted};font-size:10px;letter-spacing:1.5px")
+        self._sess.setStyleSheet(f"color:{p.text_dim};font-size:12px")
+        self._pct.setStyleSheet(f"color:{p.text};font-size:15px;font-weight:700")
+        self._bar.set_colors(p.surface, p.accent)
+        for lbl, col in zip(self._chips, (p.accent, p.positive, p.danger)):
+            lbl.setStyleSheet(
+                f"color:{col};background:{p.surface};border-radius:9px;"
+                "padding:2px 9px;font-size:10px")
+        self._sample.setStyleSheet(f"color:{p.text_muted};font-size:11px")
+
+
+class _EditorRow(QFrame):
+    """One selectable role in the custom-theme editor's left list."""
+
+    clicked = Signal(str)
+
+    def __init__(self, role: str, label: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("editorRow")
+        self._role = role
+        self.setProperty("selected", "false")
+        self.setCursor(Qt.PointingHandCursor)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(9, 7, 10, 7)
+        row.setSpacing(9)
+        self._sw = QFrame()
+        self._sw.setFixedSize(18, 18)
+        row.addWidget(self._sw)
+        row.addWidget(QLabel(label, objectName="roleName"))
+        row.addStretch(1)
+        self._aa = QLabel()
+        row.addWidget(self._aa)
+
+    def set_swatch(self, hexv: str) -> None:
+        self._sw.setStyleSheet(
+            f"background:{hexv};border-radius:4px;border:1px solid rgba(0,0,0,.4)")
+
+    def set_aa(self, text: str, color: str) -> None:
+        self._aa.setText(text)
+        self._aa.setStyleSheet(
+            f"color:{color};font-family:'Cascadia Code',monospace;font-size:11px")
+
+    def set_selected(self, on: bool) -> None:
+        self.setProperty("selected", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit(self._role)
+        super().mousePressEvent(e)
+
+
+class CustomThemeEditor(QDialog):
+    """Studio-style custom theme editor: a role list on the left; a themed HSV
+    colour picker (with a screen eyedropper) + a live preview on the right.
+
+    Edits update a WORKING copy and the in-dialog preview only — the rest of the
+    app does NOT change until you press Apply. Apply commits the theme to the
+    whole app (and persists it); Close discards any uncommitted edits. Contrast
+    warnings are soft (a 'Fix contrast' button nudges failing colours to AA)."""
+
+    applied = Signal()   # committed to the app -> refresh the Appearance page
+
+    _ROLE_LABELS = {
+        "bg": "Background", "surface": "Surface / cards", "border": "Borders",
+        "text": "Text", "accent": "Accent", "warn": "Warning",
+        "danger": "Danger", "positive": "Positive",
+    }
+    _FG_ROLES = ("text", "accent", "warn", "danger", "positive")
+
+    def __init__(self, seed_base: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Custom theme")
+        self.setObjectName("root")
+        self.setStyleSheet(STYLESHEET)   # the current app theme; only the preview shows custom
+        self.setMinimumWidth(540)
+        self._working = dict(seed_base)   # edited in place; committed on Apply
+        self._active_role = "accent"
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 16, 18, 14)
+        root.setSpacing(12)
+        root.addWidget(QLabel("CUSTOM THEME", objectName="settingsTitle"))
+        hint = QLabel("Pick a role, then set its colour — or grab one off the "
+                      "screen with the eyedropper. Shades derive automatically. "
+                      "The preview updates live; press Apply to use it.",
+                      objectName="sectionHint")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        split = QHBoxLayout()
+        split.setSpacing(16)
+        left = QVBoxLayout()
+        left.setSpacing(1)
+        self._rows = {}
+        for role in theme.CUSTOM_ROLES:
+            r = _EditorRow(role, self._ROLE_LABELS[role])
+            r.clicked.connect(self._select_role)
+            left.addWidget(r)
+            self._rows[role] = r
+        left.addStretch(1)
+        lw = QWidget()
+        lw.setLayout(left)
+        lw.setFixedWidth(210)
+        split.addWidget(lw)
+
+        right = QVBoxLayout()
+        right.setSpacing(12)
+        self.picker = ColorPicker()
+        self.picker.colorChanged.connect(self._on_color)
+        right.addWidget(self.picker)
+        self.preview = _MiniPreview()
+        right.addWidget(self.preview)
+        right.addStretch(1)
+        split.addLayout(right, 1)
+        root.addLayout(split, 1)
+
+        foot = QHBoxLayout()
+        imp = QPushButton("Import")
+        imp.clicked.connect(self._import)
+        foot.addWidget(imp)
+        exp = QPushButton("Export")
+        exp.clicked.connect(self._export)
+        foot.addWidget(exp)
+        fix = QPushButton("Fix contrast")
+        fix.clicked.connect(self._fix_contrast)
+        foot.addWidget(fix)
+        foot.addStretch(1)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.reject)
+        foot.addWidget(close_btn)
+        apply_btn = QPushButton("Apply", objectName="applyBtn")
+        apply_btn.clicked.connect(self._apply)
+        foot.addWidget(apply_btn)
+        root.addLayout(foot)
+
+        self._refresh_all()
+        self._select_role(self._active_role)
+
+    def _select_role(self, role: str) -> None:
+        self._active_role = role
+        for r, row in self._rows.items():
+            row.set_selected(r == role)
+        self.picker.set_color(self._working[role])
+
+    def _on_color(self, hexv: str) -> None:
+        # Working copy + in-dialog preview only; the app is untouched until Apply.
+        self._working[self._active_role] = hexv
+        self._refresh_all()
+
+    def _fix_contrast(self) -> None:
+        bg = self._working["bg"]
+        for role in self._FG_ROLES:
+            self._working[role] = theme.ensure_contrast(self._working[role], bg, 4.5)
+        self.picker.set_color(self._working[self._active_role])
+        self._refresh_all()
+
+    def _apply(self) -> None:
+        theme.set_custom_base(self._working)
+        app_settings.set_custom_base(theme.custom_base())
+        apply_theme(theme.CUSTOM)        # now the whole app changes
+        self.setStyleSheet(STYLESHEET)   # re-theme the dialog to the committed look
+        self.applied.emit()
+
+    def _export(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export theme", "clawdmeter-theme.json", "Theme file (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(theme.serialize_custom(self._working))
+        except OSError as e:
+            QMessageBox.warning(self, "Export failed",
+                                f"Couldn't write the file:\n{e}")
+
+    def _import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import theme", "", "Theme file (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except OSError as e:
+            QMessageBox.warning(self, "Import failed",
+                                f"Couldn't read the file:\n{e}")
+            return
+        base = theme.parse_custom(text)
+        if base is None:
+            QMessageBox.warning(self, "Import failed",
+                                "That file isn't a valid Clawdmeter theme.")
+            return
+        # Load into the working copy — previews live, applies on Apply like any edit.
+        self._working = base
+        self.picker.set_color(self._working[self._active_role])
+        self._refresh_all()
+
+    def _refresh_all(self) -> None:
+        bg = self._working["bg"]
+        pal = theme.derive_palette(self._working)   # preview reflects the working copy
+        for role, row in self._rows.items():
+            col = self._working[role]
+            row.set_swatch(col)
+            if role in self._FG_ROLES:
+                c = theme.contrast(col, bg)
+                ok = c >= 4.5
+                row.set_aa(f"{c:.1f}", pal.text_muted if ok else pal.warn)
+            else:
+                row.set_aa("", pal.text_muted)
+        self.preview.refresh(pal)
 
 
 class SettingsPanel(QWidget):
@@ -1126,7 +1481,7 @@ class SettingsPanel(QWidget):
             page_body = QWidget(objectName="settingsBody")
             page.setWidget(page_body)
             lay = QVBoxLayout(page_body)
-            lay.setContentsMargins(20, 8, 20, 18)
+            lay.setContentsMargins(14, 8, 16, 18)
             lay.setSpacing(12)
             self._nav_group.addButton(btn, self._stack.addWidget(page))
             return lay
@@ -1136,12 +1491,44 @@ class SettingsPanel(QWidget):
         # hover/active, exactly as the Segoe glyphs did.
         gen_layout = _make_tab("\uF013", "General")
         disp_layout = _make_tab("\uE163", "Display")
+        appearance_layout = _make_tab("\uF53F", "Appearance")  # fa-palette
         conn_layout = _make_tab("\uE4E2", "Connection")
         notif_layout = _make_tab("\uF0F3", "Notifications")
         about_layout = _make_tab("\uF129", "About")
         nav.addStretch(1)
         self._nav_group.idClicked.connect(self._stack.setCurrentIndex)
         self._nav_group.button(0).setChecked(True)
+
+        # ── Appearance: three options — Follow System / Custom / Preset ──
+        appearance_layout.addWidget(QLabel("THEME", objectName="sectionLabel"))
+        _theme_hint = QLabel(
+            "Follow your system, build your own, or pick a preset.",
+            objectName="sectionHint")
+        _theme_hint.setWordWrap(True)
+        appearance_layout.addWidget(_theme_hint)
+        self._theme_options = []
+        # 1. Follow System — resolves to a dark/light preset per the OS scheme.
+        self._sys_option = _ThemeOption(theme.SYSTEM, theme.active())
+        self._sys_option.selected.connect(self._on_theme_selected)
+        appearance_layout.addWidget(self._sys_option)
+        self._theme_options.append(self._sys_option)
+        # Its selectable dark/light targets, revealed when Follow System is on.
+        self._system_targets = _SystemTargets()
+        self._system_targets.changed.connect(self._on_system_targets_changed)
+        appearance_layout.addWidget(self._system_targets)
+        # 2. Custom theme — user-editable; swatches track the custom palette.
+        self._custom_option = _ThemeOption(theme.CUSTOM, theme.custom_palette(),
+                                           editable=True)
+        self._custom_option.selected.connect(self._on_theme_selected)
+        self._custom_option.edit_requested.connect(self._open_custom_editor)
+        appearance_layout.addWidget(self._custom_option)
+        self._theme_options.append(self._custom_option)
+        # 3. Preset theme — a dropdown of the built-in presets.
+        self._preset_row = _PresetRow()
+        self._preset_row.selected.connect(self._on_theme_selected)
+        appearance_layout.addWidget(self._preset_row)
+        self._theme_options.append(self._preset_row)
+        self._sync_theme_selection()
 
         # `layout` is a moving cursor: each section appends to whichever tab page
         # it currently points at, reassigned at the section boundaries below.
@@ -1512,8 +1899,51 @@ class SettingsPanel(QWidget):
         about.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(about)
 
-        for _page_layout in (gen_layout, disp_layout, conn_layout, notif_layout, about_layout):
+        for _page_layout in (gen_layout, disp_layout, appearance_layout,
+                             conn_layout, notif_layout, about_layout):
             _page_layout.addStretch(1)
+
+    def _on_theme_selected(self, name: str) -> None:
+        if name == theme.CUSTOM:
+            self._ensure_custom_seeded()   # copy current theme on first use
+        apply_theme(name)
+        self._sync_theme_selection()
+
+    def _ensure_custom_seeded(self) -> None:
+        # First time the custom theme is used, seed it from whatever theme is
+        # active right now (Nick's choice: copy the current theme).
+        if app_settings.get_custom_base() is None:
+            theme.set_custom_base(theme.custom_base_from(theme.active()))
+            app_settings.set_custom_base(theme.custom_base())
+
+    def _open_custom_editor(self) -> None:
+        # Seed from the saved custom theme, or from the current theme the first
+        # time ("copy the current theme"). Editing previews in the dialog only;
+        # the app changes when the user presses Apply.
+        seed = app_settings.get_custom_base() or theme.custom_base_from(theme.active())
+        dlg = CustomThemeEditor(seed, self.window())
+        dlg.applied.connect(self._sync_theme_selection)
+        dlg.exec()
+        self._sync_theme_selection()
+
+    def _on_system_targets_changed(self) -> None:
+        # If Follow System is active, re-resolve to the new target right away.
+        if theme.selected() == theme.SYSTEM:
+            apply_theme(theme.SYSTEM)
+        self._sync_theme_selection()
+
+    def _sync_theme_selection(self) -> None:
+        sel = theme.selected()
+        self._custom_option.refresh_swatches(theme.custom_palette())
+        self._sys_option.refresh_swatches(theme.active())
+        self._sys_option.set_selected(sel == theme.SYSTEM)
+        self._system_targets.setVisible(sel == theme.SYSTEM)
+        self._system_targets.sync()
+        self._custom_option.set_selected(sel == theme.CUSTOM)
+        is_preset = sel in theme.PRESETS
+        self._preset_row.set_selected(is_preset)
+        if is_preset:
+            self._preset_row.set_current(sel)
 
     def _refresh_cred_status(self) -> None:
         override = app_settings.get_credentials_override()
@@ -2274,6 +2704,12 @@ class Dashboard(QMainWindow):
         # notice when the window is shown without a tray.
         self.tray_available = QSystemTrayIcon.isSystemTrayAvailable()
 
+        # When the user is on "Follow System", re-resolve the theme whenever the
+        # OS flips light/dark. Ignored for fixed presets (apply_theme no-ops the
+        # re-resolve because selected() != SYSTEM).
+        QApplication.instance().styleHints().colorSchemeChanged.connect(
+            self._on_os_scheme_changed)
+
         # Tray-flash state for the limit-reset notification.
         self._flash_timer = QTimer(self)
         self._flash_timer.setInterval(400)
@@ -2558,7 +2994,8 @@ class Dashboard(QMainWindow):
                 except ValueError:
                     continue
                 rows.append((ACTIVITY_LABELS.get(act, key.upper()),
-                             n / total * 100.0, ACTIVITY_COLORS.get(act, "#6b7280")))
+                             n / total * 100.0,
+                             ACTIVITY_COLORS.get(act, theme.active().text_muted)))
             rows.sort(key=lambda r: r[1], reverse=True)
         self.stat_activity.set_data(rows)
 
@@ -2571,10 +3008,10 @@ class Dashboard(QMainWindow):
             up = pct >= 0
             self.stat_week_delta.setText(f"{'+' if up else '−'}{abs(pct):.0f}%")
             self.stat_week_delta.setStyleSheet(
-                f"color: {'#5FB3A1' if up else '#c13434'};")
+                f"color: {theme.active().positive if up else theme.active().danger_strong};")
         elif wt > 0:
             self.stat_week_delta.setText("new")
-            self.stat_week_delta.setStyleSheet("color: #5FB3A1;")
+            self.stat_week_delta.setStyleSheet(f"color: {theme.active().positive};")
         else:
             self.stat_week_delta.setText("")
 
@@ -3612,6 +4049,12 @@ class Dashboard(QMainWindow):
         """Tray click / 'Show' / pop-to-front: re-show the last-used mode without
         re-persisting it (it's already the saved value)."""
         self._set_view_mode(getattr(self, "_view_mode", "full"), persist=False)
+
+    def _on_os_scheme_changed(self, _scheme=None) -> None:
+        """OS light/dark flipped. Only matters on Follow System — re-resolve to
+        the matching preset (apply_theme no-ops for fixed presets)."""
+        if theme.selected() == theme.SYSTEM:
+            apply_theme(theme.SYSTEM)
 
     def show_initial(self) -> None:
         """Launch into the last-used view mode directly (no full-window flash)."""

@@ -13,9 +13,31 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QToolTip, QWidget
 
-_ACCENT = QColor("#CE7D6B")
-_EMPTY = QColor("#161b22")     # an empty cell / zero bar track
-_DIM = QColor("#6b7280")       # labels
+import theme
+
+# Chrome colours pulled from the app palette (Phase 1 theming). Frozen at import
+# for now; Phase 2 adds a refresh hook so a live theme switch restyles these.
+_P = theme.active()
+_ACCENT = QColor(_P.accent)
+_EMPTY = QColor(_P.surface_dim)   # an empty cell / zero bar track
+_DIM = QColor(_P.text_muted)      # labels
+_TEXT = QColor(_P.text)           # value labels drawn over bars
+_HOT = QColor(_P.danger_strong)   # hot end of the value->heat lerp
+
+
+def refresh_theme() -> None:
+    """Recompute the cached QColors from the now-active palette.
+
+    Called by the app's apply_theme() on a live theme switch; callers then
+    repaint the widgets (which read these module constants at paint time).
+    """
+    global _P, _ACCENT, _EMPTY, _DIM, _TEXT, _HOT
+    _P = theme.active()
+    _ACCENT = QColor(_P.accent)
+    _EMPTY = QColor(_P.surface_dim)
+    _DIM = QColor(_P.text_muted)
+    _TEXT = QColor(_P.text)
+    _HOT = QColor(_P.danger_strong)
 
 
 def _lerp(a: QColor, b: QColor, t: float) -> QColor:
@@ -131,7 +153,7 @@ class ModelBreakdown(QWidget):
                        Qt.AlignVCenter | Qt.AlignLeft, label)
             bw = max(2.0, (value / vmax) * bar_max)
             p.fillRect(QRectF(self._LABEL_W, cy - 5, bw, 10), _ACCENT)
-            p.setPen(QColor("#e6edf3"))
+            p.setPen(_TEXT)
             p.drawText(QRectF(w - self._VALUE_W, y, self._VALUE_W, self._ROW_H),
                        Qt.AlignVCenter | Qt.AlignRight, f"${value:,.0f}")
         p.end()
@@ -180,8 +202,8 @@ class PercentBars(QWidget):
             p.drawText(QRectF(0, y, self._LABEL_W - 8, self._ROW_H),
                        Qt.AlignVCenter | Qt.AlignLeft, label)
             p.fillRect(QRectF(self._LABEL_W, cy - 5, max(2.0, frac * bar_max), 10),
-                       _lerp(_ACCENT, QColor("#c13434"), frac))
-            p.setPen(QColor("#e6edf3"))
+                       _lerp(_ACCENT, _HOT, frac))
+            p.setPen(_TEXT)
             p.drawText(QRectF(w - self._VALUE_W, y, self._VALUE_W, self._ROW_H),
                        Qt.AlignVCenter | Qt.AlignRight, f"{int(pct)}%")
         p.end()
@@ -229,7 +251,7 @@ class CategoryBars(QWidget):
                        Qt.AlignVCenter | Qt.AlignLeft, label)
             bw = max(2.0, (pct / vmax) * bar_max)
             p.fillRect(QRectF(self._LABEL_W, cy - 5, bw, 10), QColor(color))
-            p.setPen(QColor("#e6edf3"))
+            p.setPen(_TEXT)
             p.drawText(QRectF(w - self._VALUE_W, y, self._VALUE_W, self._ROW_H),
                        Qt.AlignVCenter | Qt.AlignRight, f"{pct:.0f}%")
         p.end()
@@ -273,7 +295,7 @@ class WeekBars(QWidget):
                        Qt.AlignVCenter | Qt.AlignLeft, label)
             bw = max(2.0, (val / vmax) * bar_max)
             p.fillRect(QRectF(self._LABEL_W, cy - 6, bw, 12), color)
-            p.setPen(QColor("#e6edf3"))
+            p.setPen(_TEXT)
             p.drawText(QRectF(w - self._VALUE_W, y, self._VALUE_W, self._ROW_H),
                        Qt.AlignVCenter | Qt.AlignRight, f"${val:,.0f}")
         p.end()

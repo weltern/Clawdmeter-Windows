@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
+
 from PySide6.QtCore import QSettings
 
 ORG = "Clawdmeter"
 APP = "Clawdmeter"
-APP_VERSION = "2.4.2"
+APP_VERSION = "3.0.0"
 
 KEY_CRED_PATH = "credentials/path"
 KEY_ALWAYS_ON_TOP = "window/always_on_top"
@@ -15,6 +17,10 @@ KEY_QUIT_ON_CLOSE = "window/quit_on_close"
 KEY_MINI_POS = "window/mini_pos"
 KEY_COMPACT_POS = "window/compact_pos"
 KEY_VIEW_MODE = "window/view_mode"
+KEY_THEME = "ui/theme"
+KEY_CUSTOM_THEME = "ui/custom_theme"
+KEY_SYSTEM_DARK = "ui/system_dark"
+KEY_SYSTEM_LIGHT = "ui/system_light"
 KEY_SHOW_MULTIPLE_SESSIONS = "sessions/show_multiple"
 KEY_SHOW_SUBAGENTS = "sessions/show_subagents"
 KEY_SHOW_TOKEN_USAGE = "tokens/show_usage"
@@ -165,6 +171,46 @@ def get_view_mode() -> str:
 def set_view_mode(mode: str) -> None:
     if mode in ("full", "compact", "mini"):
         _settings().setValue(KEY_VIEW_MODE, mode)
+
+
+def get_theme() -> str:
+    """Saved appearance-theme name (defaults to the default preset). Validated
+    against the catalogue at apply time, so an unknown/removed name falls back
+    to the default rather than erroring."""
+    return str(_settings().value(KEY_THEME, "Midnight Salmon"))
+
+
+def set_theme(name: str) -> None:
+    _settings().setValue(KEY_THEME, name)
+
+
+def get_custom_base() -> dict | None:
+    """The saved custom-theme base colours ({role: hex}), or None if the user
+    has never created a custom theme (so it can be seeded from the current one)."""
+    raw = _settings().value(KEY_CUSTOM_THEME, "")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def set_custom_base(base: dict) -> None:
+    _settings().setValue(KEY_CUSTOM_THEME, json.dumps(base))
+
+
+def get_system_targets() -> tuple:
+    """Saved (dark, light) Follow System target preset names; either may be ""
+    if never set (the app then keeps the built-in default)."""
+    s = _settings()
+    return (str(s.value(KEY_SYSTEM_DARK, "")), str(s.value(KEY_SYSTEM_LIGHT, "")))
+
+
+def set_system_targets(dark: str, light: str) -> None:
+    _settings().setValue(KEY_SYSTEM_DARK, dark)
+    _settings().setValue(KEY_SYSTEM_LIGHT, light)
 
 
 def get_show_multiple_sessions() -> bool:

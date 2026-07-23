@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import sys
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -13,7 +12,8 @@ import app_settings
 import pricing_refresh
 import run_at_startup
 import single_instance
-from dashboard import Dashboard
+import theme
+from dashboard import Dashboard, apply_theme
 from sprite_player import assets_root
 
 
@@ -21,12 +21,9 @@ def main() -> int:
     mock = "--mock" in sys.argv
     startup = run_at_startup.STARTUP_FLAG in sys.argv  # launched at sign-in
     app = QApplication(sys.argv)
-    # macOS draws un-QSS'd / native text from the system palette, which is BLACK
-    # in Light mode and clashes with the dark theme (some titles unreadable).
-    # Force the dark colour scheme so the palette matches the dark stylesheet.
-    # macOS only, so Windows/Linux appearance stays provably unchanged.
-    if sys.platform == "darwin":
-        app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
+    # The OS colour-scheme hint (for native / un-QSS'd surfaces — notably macOS
+    # native text) is set to match the active theme by apply_theme() below, so a
+    # light theme renders correctly on every platform.
     app.setApplicationName("Clawdmeter")
     app.setOrganizationName(app_settings.ORG)
     # Ties the app to packaging/clawdmeter.desktop so Wayland uses its icon
@@ -57,6 +54,19 @@ def main() -> int:
     fa_path = assets_root() / "fonts" / "fa-solid-900.ttf"
     if fa_path.exists():
         QFontDatabase.addApplicationFont(str(fa_path))
+
+    # Apply the saved appearance theme before building the window so it comes up
+    # already themed (no flash). With no widgets yet, apply_theme just sets the
+    # active palette and refreshes the module colour caches. Load the custom
+    # theme's base colours first so a saved "Custom" selection resolves.
+    saved_custom = app_settings.get_custom_base()
+    if saved_custom:
+        theme.set_custom_base(saved_custom)
+    sys_dark, sys_light = app_settings.get_system_targets()
+    if sys_dark or sys_light:
+        theme.set_system_targets(sys_dark or theme.SYSTEM_DARK,
+                                 sys_light or theme.SYSTEM_LIGHT)
+    apply_theme(app_settings.get_theme())
 
     win = Dashboard(mock=mock)
     if startup:

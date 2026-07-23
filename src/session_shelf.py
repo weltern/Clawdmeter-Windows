@@ -41,6 +41,7 @@ from PySide6.QtGui import (
     QAction, QColor, QFont, QFontMetrics, QIcon, QPainter,
 )
 
+import theme
 import winutil
 from mood import GROUP_ANIMS
 from sprite_player import SpritePlayer, assets_root
@@ -60,14 +61,18 @@ from transcript import (
 # leads with the sleep expression, matching the dashboard's empty-state mood.
 _IDLE_ANIMS = GROUP_ANIMS[0]
 
-# Local copy of the dashboard's visual tokens. Kept here (rather than imported
-# from dashboard.py) so the shelf has no back-dependency on its host window.
-_BG = "#0e1116"
-_TEXT = "#e6edf3"
-_MUTED = "#9ca3af"
-_IDLE_COLOR = ACTIVITY_COLORS[Activity.IDLE]
+# Chrome tokens from the app palette (Phase 1 theming). Frozen at import for
+# now; Phase 2 adds a refresh hook so a live theme switch restyles the shelf.
+_P = theme.active()
+_BG = _P.bg
+_TEXT = _P.text
+_MUTED = _P.text_dim
+# Idle indicator (label/dot/glow): a theme role so it stays readable on every
+# background — unlike the other activity hues, which are fixed & meaning-bearing.
+_IDLE_COLOR = _P.idle
 
-SHELF_STYLESHEET = f"""
+def _build_shelf_qss() -> str:
+    return f"""
 QWidget#shelfRoot {{ background-color: {_BG}; }}
 QScrollArea#shelfScroll {{ background: transparent; border: none; }}
 QWidget#shelfRow {{ background: transparent; }}
@@ -81,12 +86,15 @@ QLabel#tileActivity {{
 QLabel#tileDot {{ font-size: 11px; }}
 QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 0 2px; }}
 QScrollBar::handle:horizontal {{
-    background: #374151; border-radius: 4px; min-width: 24px;
+    background: {_P.border}; border-radius: 4px; min-width: 24px;
 }}
-QScrollBar::handle:horizontal:hover {{ background: #4b5563; }}
+QScrollBar::handle:horizontal:hover {{ background: {_P.border_dim}; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
 """
+
+
+SHELF_STYLESHEET = _build_shelf_qss()
 
 
 # Top padding inside a tile so the mascot's glow (drop-shadow blur ~38) isn't
@@ -163,7 +171,8 @@ class ScrollingLabel(QWidget):
     _END_GAP_PX = 12         # trailing gap so the last glyph isn't flush to edge
 
     def __init__(self, parent=None, *, px: int = 13, bold: bool = True,
-                 color: str = _TEXT, letter_spacing: float = 0.5,
+                 color: str | None = None, role: str = "text",
+                 letter_spacing: float = 0.5,
                  max_w: int = _LABEL_MIN_W, align=Qt.AlignHCenter) -> None:
         super().__init__(parent)
         self._full = ""
@@ -177,11 +186,27 @@ class ScrollingLabel(QWidget):
         if letter_spacing:
             self._font.setLetterSpacing(QFont.AbsoluteSpacing, letter_spacing)
         self._fm = QFontMetrics(self._font)
-        self._color = QColor(color)
+        # A themed role ("text"/"muted") re-reads the live palette on a theme
+        # switch (see refresh_theme_color). An explicit `color` is fixed and
+        # opts out. Default is "text" so a bare ScrollingLabel() follows the
+        # primary text colour rather than baking it at import.
+        self._role = None if color else role
+        self._color = QColor(color if color else self._role_color(role))
         self.setFixedHeight(self._fm.height())
         self.setMaximumWidth(max_w)
         self._anim = QPropertyAnimation(self, b"scrollOffset", self)
         self._anim.setEasingCurve(QEasingCurve.InOutSine)
+
+    @staticmethod
+    def _role_color(role: str) -> str:
+        return _MUTED if role == "muted" else _TEXT
+
+    def refresh_theme_color(self) -> None:
+        """Re-read the palette for this label's role (called on a theme switch).
+        No-op for labels created with an explicit fixed colour."""
+        if self._role is not None:
+            self._color = QColor(self._role_color(self._role))
+            self.update()
 
     # --- public API (QLabel-like) -------------------------------------------
     def setText(self, text: str, tooltip: str | None = None) -> None:
@@ -298,10 +323,29 @@ class ScrollingLabel(QWidget):
 
 # Usage-bar palette (was QProgressBar QSS; now painted so the bar can render
 # past 100% with a distinct overage colour).
-_BAR_TRACK = "#1f2937"
-_BAR_BORDER = "#374151"
-_BAR_OVERAGE = "#A50F1A"   # deep fire-truck red — the overage overflow
-_BAR_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
+_BAR_TRACK = _P.surface
+_BAR_BORDER = _P.border
+
+# The usage-bar fill tracks the theme so the bar reads as part of the palette.
+# Sub-100% it ramps from the accent (low usage) through amber to red near the
+# limit; over 100% it flips to an alarm red. The shipped default keeps its exact
+# hand-tuned salmon ramp and deep overage red so it doesn't change.
+_DEFAULT_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
+_DEFAULT_OVERAGE = "#A50F1A"   # deep fire-truck red
+
+
+def _heat_ramp(p) -> dict:
+    if p is theme.MIDNIGHT_SALMON:
+        return dict(_DEFAULT_HEAT)
+    return {"cool": p.accent, "warm": p.warn, "hot": p.danger}
+
+
+def _overage_color(p) -> str:
+    return _DEFAULT_OVERAGE if p is theme.MIDNIGHT_SALMON else p.danger
+
+
+_BAR_HEAT = _heat_ramp(_P)
+_BAR_OVERAGE = _overage_color(_P)
 
 
 class UsageBar(QWidget):
@@ -466,7 +510,7 @@ class SessionTile(QWidget):
         # Secondary line — the target being acted on (file/pattern/…, else the
         # tool name) when live, "last active Nm ago" when idle. Scrolls on hover
         # like the title, since file paths/queries can be long.
-        self.sub_label = ScrollingLabel(px=10, bold=False, color=_MUTED,
+        self.sub_label = ScrollingLabel(px=10, bold=False, role="muted",
                                         letter_spacing=0, max_w=self._label_max_w)
         col.addWidget(self.sub_label, 0, Qt.AlignHCenter)
 
@@ -920,15 +964,16 @@ class SessionShelf(QWidget):
 
 COMPACT_MASCOT = 38
 
-COMPACT_STYLESHEET = f"""
+def _build_compact_qss() -> str:
+    return f"""
 QWidget#compactRoot {{ background: {_BG}; }}
-QWidget#compactTitleBar {{ background: #0b0e13; }}
+QWidget#compactTitleBar {{ background: {_P.bg_deepest}; }}
 QLabel#compactTitle {{ font-size: 12px; font-weight: 700; color: {_TEXT};
                        letter-spacing: 1.5px; }}
-QToolButton#compactBtn {{ background: transparent; color: #CE7D6B; border: none;
+QToolButton#compactBtn {{ background: transparent; color: {_P.accent}; border: none;
                           font-size: 13px; padding: 2px 7px; }}
-QToolButton#compactBtn:hover {{ background: #1f2937; }}
-QWidget#compactRow:hover {{ background: #161b22; }}
+QToolButton#compactBtn:hover {{ background: {_P.surface}; }}
+QWidget#compactRow:hover {{ background: {_P.surface_dim}; }}
 QLabel#compactBarLabel {{ font-size: 10px; font-weight: 600; color: {_MUTED};
                           letter-spacing: 1px; }}
 QLabel#compactPctLbl {{ font-size: 11px; font-weight: 700; color: {_TEXT}; }}
@@ -939,9 +984,33 @@ QLabel#compactRowActivity {{ font-size: 10px; font-weight: 600; letter-spacing: 
 QLabel#compactRowAgents {{ font-size: 10px; font-weight: 700; color: {_MUTED}; }}
 QScrollArea#compactScroll {{ background: transparent; border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px 0; }}
-QScrollBar::handle:vertical {{ background: #374151; border-radius: 4px; min-height: 24px; }}
+QScrollBar::handle:vertical {{ background: {_P.border}; border-radius: 4px; min-height: 24px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """
+
+
+COMPACT_STYLESHEET = _build_compact_qss()
+
+
+def refresh_theme() -> None:
+    """Recompute cached chrome colours + rebuild the shelf/compact stylesheets
+    from the now-active palette (for a live theme switch). The app's
+    apply_theme() re-applies SHELF_STYLESHEET/COMPACT_STYLESHEET to the live
+    widgets and repaints them afterward. Fixed colours (_BAR_HEAT, _BAR_OVERAGE,
+    _IDLE_COLOR / activity glows) are intentionally left untouched."""
+    global _P, _BG, _TEXT, _MUTED, _IDLE_COLOR, _BAR_TRACK, _BAR_BORDER
+    global _BAR_HEAT, _BAR_OVERAGE, SHELF_STYLESHEET, COMPACT_STYLESHEET
+    _P = theme.active()
+    _BG = _P.bg
+    _TEXT = _P.text
+    _MUTED = _P.text_dim
+    _IDLE_COLOR = _P.idle
+    _BAR_TRACK = _P.surface
+    _BAR_BORDER = _P.border
+    _BAR_HEAT = _heat_ramp(_P)
+    _BAR_OVERAGE = _overage_color(_P)
+    SHELF_STYLESHEET = _build_shelf_qss()
+    COMPACT_STYLESHEET = _build_compact_qss()
 
 
 class CompactRow(QWidget):
@@ -975,7 +1044,7 @@ class CompactRow(QWidget):
 
         top = QHBoxLayout()
         top.setSpacing(8)
-        self.title = ScrollingLabel(px=12, bold=True, color=_TEXT, max_w=230,
+        self.title = ScrollingLabel(px=12, bold=True, role="text", max_w=230,
                                     align=Qt.AlignLeft)
         self.tokens = QLabel("", objectName="compactRowTokens")
         self.tokens.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -988,7 +1057,7 @@ class CompactRow(QWidget):
         self.dot = QLabel(self._DOT, objectName="compactRowDot")
         self.activity = QLabel("", objectName="compactRowActivity")
         self.sep = QLabel("·", objectName="compactRowActivity")
-        self.target = ScrollingLabel(px=10, bold=False, color=_MUTED,
+        self.target = ScrollingLabel(px=10, bold=False, role="muted",
                                      letter_spacing=0, max_w=170, align=Qt.AlignLeft)
         self.agents = QLabel("", objectName="compactRowAgents")
         bot.addWidget(self.dot, 0)
