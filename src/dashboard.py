@@ -79,6 +79,7 @@ from poller import (
 )
 import remote_notify
 import stats
+import statviz
 from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, PercentBars, WeekBars
 import theme
 from usage_history import UsageHistory
@@ -87,6 +88,7 @@ from reset_notify import ResetDecision, ResetNotifier
 import update_check
 from update_check import UpdateChecker
 from pricing_refresh import PricingRefresher
+import session_shelf
 from session_shelf import (
     CompactView, SessionShelf, UsageBar, apply_overage_bar,
 )
@@ -149,6 +151,44 @@ VIEW_ORDER = ("full", "compact", "mini")
 
 
 STYLESHEET = theme.build_qss(theme.active())
+
+
+def apply_theme(name: str) -> None:
+    """Switch the whole app to preset ``name`` and restyle every live widget in
+    place — no restart. Persists the choice.
+
+    Safe to call at startup before any widgets exist: it just sets the active
+    palette and refreshes the module colour caches, so widgets built afterward
+    come up themed. On a live switch it also walks every existing widget and
+    swaps the old stylesheet strings for the freshly-built ones, then repaints
+    the custom-painted widgets (which read the module QColors at paint time).
+    """
+    global STYLESHEET
+    old_base, old_shelf, old_compact = (
+        STYLESHEET, session_shelf.SHELF_STYLESHEET, session_shelf.COMPACT_STYLESHEET)
+
+    theme.set_active(name)
+    app_settings.set_theme(theme.active_name())
+    statviz.refresh_theme()
+    session_shelf.refresh_theme()
+    STYLESHEET = theme.build_qss(theme.active())
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    pairs = (
+        (old_base, STYLESHEET),
+        (old_shelf, session_shelf.SHELF_STYLESHEET),
+        (old_compact, session_shelf.COMPACT_STYLESHEET),
+    )
+    for w in app.allWidgets():
+        sheet = w.styleSheet()
+        if sheet:
+            for old, new in pairs:
+                if sheet == old:
+                    w.setStyleSheet(new)
+                    break
+        w.update()  # repaint custom-painted widgets that read module QColors
 
 
 def _tray_pixmap(pct: int) -> QPixmap:
@@ -841,6 +881,52 @@ class _PushChannelRow(QWidget):
             f"<span style='color:{p.text_muted}'>· {summary}</span>")
 
 
+class _ThemeOption(QFrame):
+    """One selectable theme row in the Appearance picker: a strip of colour
+    swatches (the preset's identity), its name, and an ACTIVE tag."""
+
+    selected = Signal(str)
+
+    def __init__(self, name: str, palette, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("themeOption")
+        self._name = name
+        self.setProperty("selected", "false")
+        self.setCursor(Qt.PointingHandCursor)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 9, 12, 9)
+        row.setSpacing(11)
+        swatches = QHBoxLayout()
+        swatches.setSpacing(3)
+        # Fixed per-preset chips (bg / surface / accent / text) — these show the
+        # preset's own colours and must NOT re-theme with the active palette, so
+        # they're styled inline rather than via the themed base stylesheet.
+        for col in (palette.bg, palette.surface, palette.accent, palette.text):
+            chip = QFrame()
+            chip.setFixedSize(13, 22)
+            chip.setStyleSheet(
+                f"background:{col}; border-radius:3px;"
+                " border:1px solid rgba(0,0,0,0.35);")
+            swatches.addWidget(chip)
+        row.addLayout(swatches)
+        row.addWidget(QLabel(name, objectName="themeName"))
+        row.addStretch(1)
+        self._tag = QLabel("● ACTIVE", objectName="themeTag")
+        self._tag.setVisible(False)
+        row.addWidget(self._tag)
+
+    def set_selected(self, on: bool) -> None:
+        self.setProperty("selected", "true" if on else "false")
+        self._tag.setVisible(on)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            self.selected.emit(self._name)
+        super().mousePressEvent(e)
+
+
 class SettingsPanel(QWidget):
     """The Settings page — a destination in the app nav rail (not an overlay).
     Holds a left tab rail (General/Display/Connection/Notifications/About) plus
@@ -927,12 +1013,28 @@ class SettingsPanel(QWidget):
         # hover/active, exactly as the Segoe glyphs did.
         gen_layout = _make_tab("\uF013", "General")
         disp_layout = _make_tab("\uE163", "Display")
+        appearance_layout = _make_tab("\uF53F", "Appearance")  # fa-palette
         conn_layout = _make_tab("\uE4E2", "Connection")
         notif_layout = _make_tab("\uF0F3", "Notifications")
         about_layout = _make_tab("\uF129", "About")
         nav.addStretch(1)
         self._nav_group.idClicked.connect(self._stack.setCurrentIndex)
         self._nav_group.button(0).setChecked(True)
+
+        # ── Appearance: theme picker ──────────────────────────────────────────
+        appearance_layout.addWidget(QLabel("THEME", objectName="sectionLabel"))
+        _theme_hint = QLabel(
+            "Pick a look — it applies instantly across the whole app.",
+            objectName="sectionHint")
+        _theme_hint.setWordWrap(True)
+        appearance_layout.addWidget(_theme_hint)
+        self._theme_options = []
+        for _tname in theme.names():
+            opt = _ThemeOption(_tname, theme.get(_tname))
+            opt.selected.connect(self._on_theme_selected)
+            opt.set_selected(_tname == theme.active_name())
+            appearance_layout.addWidget(opt)
+            self._theme_options.append(opt)
 
         # `layout` is a moving cursor: each section appends to whichever tab page
         # it currently points at, reassigned at the section boundaries below.
@@ -1303,8 +1405,14 @@ class SettingsPanel(QWidget):
         about.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(about)
 
-        for _page_layout in (gen_layout, disp_layout, conn_layout, notif_layout, about_layout):
+        for _page_layout in (gen_layout, disp_layout, appearance_layout,
+                             conn_layout, notif_layout, about_layout):
             _page_layout.addStretch(1)
+
+    def _on_theme_selected(self, name: str) -> None:
+        apply_theme(name)
+        for opt in self._theme_options:
+            opt.set_selected(opt._name == theme.active_name())
 
     def _refresh_cred_status(self) -> None:
         override = app_settings.get_credentials_override()

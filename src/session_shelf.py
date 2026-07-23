@@ -69,7 +69,8 @@ _TEXT = _P.text
 _MUTED = _P.text_dim
 _IDLE_COLOR = ACTIVITY_COLORS[Activity.IDLE]   # meaning-bearing, stays fixed
 
-SHELF_STYLESHEET = f"""
+def _build_shelf_qss() -> str:
+    return f"""
 QWidget#shelfRoot {{ background-color: {_BG}; }}
 QScrollArea#shelfScroll {{ background: transparent; border: none; }}
 QWidget#shelfRow {{ background: transparent; }}
@@ -89,6 +90,9 @@ QScrollBar::handle:horizontal:hover {{ background: {_P.border_dim}; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
 """
+
+
+SHELF_STYLESHEET = _build_shelf_qss()
 
 
 # Top padding inside a tile so the mascot's glow (drop-shadow blur ~38) isn't
@@ -922,7 +926,8 @@ class SessionShelf(QWidget):
 
 COMPACT_MASCOT = 38
 
-COMPACT_STYLESHEET = f"""
+def _build_compact_qss() -> str:
+    return f"""
 QWidget#compactRoot {{ background: {_BG}; }}
 QWidget#compactTitleBar {{ background: {_P.bg_deepest}; }}
 QLabel#compactTitle {{ font-size: 12px; font-weight: 700; color: {_TEXT};
@@ -944,6 +949,27 @@ QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px 0; }}
 QScrollBar::handle:vertical {{ background: {_P.border}; border-radius: 4px; min-height: 24px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """
+
+
+COMPACT_STYLESHEET = _build_compact_qss()
+
+
+def refresh_theme() -> None:
+    """Recompute cached chrome colours + rebuild the shelf/compact stylesheets
+    from the now-active palette (for a live theme switch). The app's
+    apply_theme() re-applies SHELF_STYLESHEET/COMPACT_STYLESHEET to the live
+    widgets and repaints them afterward. Fixed colours (_BAR_HEAT, _BAR_OVERAGE,
+    _IDLE_COLOR / activity glows) are intentionally left untouched."""
+    global _P, _BG, _TEXT, _MUTED, _BAR_TRACK, _BAR_BORDER
+    global SHELF_STYLESHEET, COMPACT_STYLESHEET
+    _P = theme.active()
+    _BG = _P.bg
+    _TEXT = _P.text
+    _MUTED = _P.text_dim
+    _BAR_TRACK = _P.surface
+    _BAR_BORDER = _P.border
+    SHELF_STYLESHEET = _build_shelf_qss()
+    COMPACT_STYLESHEET = _build_compact_qss()
 
 
 class CompactRow(QWidget):

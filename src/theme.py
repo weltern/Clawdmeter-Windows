@@ -86,6 +86,137 @@ MIDNIGHT_SALMON = Palette(
 )
 
 
+# ── Preset catalogue ─────────────────────────────────────────────────────────
+# Every preset is a full Palette. `accent` is an ordinary per-preset field, so
+# nothing is hard-locked to salmon: to pull any preset's accent back to the
+# salmon default (or push a neutral one to its own colour) is a ONE-LINE edit
+# here. The only truly fixed salmon in the app is the mascot sprite (a PNG).
+#
+# Status colours (warn/danger/danger_strong/positive) are kept semantic and
+# only lightly tuned per palette — they're always reinforced by an icon/label
+# so they read for colour-blind users regardless of theme.
+
+# Near-black OLED-friendly dark; keeps the salmon accent.
+OBSIDIAN = Palette(
+    bg="#0a0a0c", bg_deep="#060608", bg_deepest="#050506",
+    surface="#17181c", surface_dim="#121317", surface_sunken="#1c1e23",
+    border="#2c2e35", border_dim="#45474f",
+    text="#eceef2", text_dim="#9a9da6", text_muted="#6b6e77",
+    accent="#CE7D6B", accent_hover="#d98f7e",
+    warn="#f59e0b", danger="#dc2626", danger_strong="#c13434", positive="#5FB3A1",
+)
+
+# Accessibility-first: pure-black canvas, high-luma text, stronger borders,
+# brightened salmon so the accent clears AA on black.
+HIGH_CONTRAST = Palette(
+    bg="#000000", bg_deep="#000000", bg_deepest="#000000",
+    surface="#161616", surface_dim="#0e0e0e", surface_sunken="#1e1e1e",
+    border="#4a4a4a", border_dim="#6a6a6a",
+    text="#ffffff", text_dim="#d4d4d4", text_muted="#a6a6a6",
+    accent="#f2a58f", accent_hover="#ffb8a3",
+    warn="#ffb020", danger="#ff5c5c", danger_strong="#ff3b3b", positive="#4ad991",
+)
+
+# Nord — cool polar-night slate. Signature frost accent.
+NORD = Palette(
+    bg="#2e3440", bg_deep="#272c36", bg_deepest="#242933",
+    surface="#3b4252", surface_dim="#353b48", surface_sunken="#414a5c",
+    border="#4c566a", border_dim="#616e88",
+    text="#eceff4", text_dim="#d8dee9", text_muted="#9aa2b1",
+    accent="#88c0d0", accent_hover="#8fbcbb",
+    warn="#ebcb8b", danger="#bf616a", danger_strong="#a5545c", positive="#a3be8c",
+)
+
+# Dracula — signature purple accent.
+DRACULA = Palette(
+    bg="#282a36", bg_deep="#21222c", bg_deepest="#1e1f28",
+    surface="#343746", surface_dim="#2b2e3b", surface_sunken="#3c4052",
+    border="#44475a", border_dim="#565a71",
+    text="#f8f8f2", text_dim="#c8c9da", text_muted="#7684b8",
+    accent="#bd93f9", accent_hover="#cba6fa",
+    warn="#ffb86c", danger="#ff5555", danger_strong="#e04a4a", positive="#50fa7b",
+)
+
+# Gruvbox — warm retro. Signature orange accent.
+GRUVBOX = Palette(
+    bg="#282828", bg_deep="#1d2021", bg_deepest="#1b1b1b",
+    surface="#3c3836", surface_dim="#32302f", surface_sunken="#45403d",
+    border="#504945", border_dim="#665c54",
+    text="#ebdbb2", text_dim="#d5c4a1", text_muted="#a89984",
+    accent="#fe8019", accent_hover="#ff9642",
+    warn="#fabd2f", danger="#fb4934", danger_strong="#cc2f26", positive="#b8bb26",
+)
+
+# Terminal Green — phosphor CRT. Signature green accent.
+TERMINAL_GREEN = Palette(
+    bg="#0c0f0c", bg_deep="#080a08", bg_deepest="#060806",
+    surface="#141814", surface_dim="#101410", surface_sunken="#1a1f1a",
+    border="#253025", border_dim="#3a463a",
+    text="#d6f5d6", text_dim="#86c586", text_muted="#5e835e",
+    accent="#3fdd6a", accent_hover="#5fe986",
+    warn="#e0c040", danger="#ff6a5a", danger_strong="#d84545", positive="#3fdd6a",
+)
+
+# Amber CRT — amber monochrome. Signature amber accent.
+AMBER_CRT = Palette(
+    bg="#100b04", bg_deep="#0b0803", bg_deepest="#090602",
+    surface="#1a1206", surface_dim="#150e05", surface_sunken="#201708",
+    border="#3a2a10", border_dim="#55401a",
+    text="#ffcf8f", text_dim="#d99a55", text_muted="#9c6f3c",
+    accent="#ffb000", accent_hover="#ffc233",
+    warn="#ffd24d", danger="#ff6a44", danger_strong="#d84428", positive="#c0c04a",
+)
+
+
+# Ordered catalogue. First entry is the default. To reorder or add a preset,
+# edit this dict — the Appearance picker and persistence read it directly.
+PRESETS = {
+    "Midnight Salmon": MIDNIGHT_SALMON,
+    "Obsidian": OBSIDIAN,
+    "High Contrast": HIGH_CONTRAST,
+    "Nord": NORD,
+    "Dracula": DRACULA,
+    "Gruvbox": GRUVBOX,
+    "Terminal Green": TERMINAL_GREEN,
+    "Amber CRT": AMBER_CRT,
+}
+DEFAULT_NAME = "Midnight Salmon"
+
+# Module-level "which theme is live" state. Consumers call active(); the app
+# calls set_active() (via apply_theme in dashboard) on startup and on a switch.
+_active_name = DEFAULT_NAME
+_active_palette = MIDNIGHT_SALMON
+
+
+def names() -> list:
+    """Preset display names, in catalogue order."""
+    return list(PRESETS)
+
+
+def get(name: str) -> Palette:
+    """The palette for `name`, or the default if unknown."""
+    return PRESETS.get(name, MIDNIGHT_SALMON)
+
+
+def active_name() -> str:
+    """Name of the palette currently in force."""
+    return _active_name
+
+
+def set_active(name: str) -> Palette:
+    """Make `name` the active palette (falls back to default if unknown).
+
+    Pure state — emits no signal and restyles nothing. The app's apply_theme()
+    orchestrates the refresh/restyle after calling this.
+    """
+    global _active_name, _active_palette
+    if name in PRESETS:
+        _active_name, _active_palette = name, PRESETS[name]
+    else:
+        _active_name, _active_palette = DEFAULT_NAME, MIDNIGHT_SALMON
+    return _active_palette
+
+
 # Maps every hex that appears in the base stylesheet to the Palette field it
 # plays. Pure white (#ffffff — text on the destructive-hover red) is left as a
 # literal in the QSS: it's universal across light/dark and isn't a theme role.
@@ -326,6 +457,17 @@ QLabel#toastTitle {
     font-size: 14px; font-weight: 700; color: #e6edf3; letter-spacing: 0.5px;
 }
 QLabel#toastBody { font-size: 12px; color: #9ca3af; }
+
+/* Appearance settings page — theme picker. Rows use palette hexes so the
+   picker itself re-themes with the active theme; the per-row swatch chips are
+   styled inline with each preset's own colours (they must NOT re-theme). */
+QFrame#themeOption {
+    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 8px;
+}
+QFrame#themeOption:hover { border-color: #374151; }
+QFrame#themeOption[selected="true"] { border-color: #CE7D6B; }
+QLabel#themeName { font-size: 13px; font-weight: 600; color: #e6edf3; }
+QLabel#themeTag { font-size: 10px; font-weight: 700; color: #CE7D6B; letter-spacing: 1px; }
 """
 
 
@@ -338,9 +480,5 @@ def build_qss(p: Palette) -> str:
 
 
 def active() -> Palette:
-    """The palette currently in force.
-
-    Phase 1: always the default. Phase 2 wires this to the saved theme setting
-    and adds a change signal so the running app can restyle live.
-    """
-    return MIDNIGHT_SALMON
+    """The palette currently in force (see set_active())."""
+    return _active_palette

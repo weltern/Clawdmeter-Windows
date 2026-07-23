@@ -25,6 +25,21 @@ _TEXT = QColor(_P.text)           # value labels drawn over bars
 _HOT = QColor(_P.danger_strong)   # hot end of the value->heat lerp
 
 
+def refresh_theme() -> None:
+    """Recompute the cached QColors from the now-active palette.
+
+    Called by the app's apply_theme() on a live theme switch; callers then
+    repaint the widgets (which read these module constants at paint time).
+    """
+    global _P, _ACCENT, _EMPTY, _DIM, _TEXT, _HOT
+    _P = theme.active()
+    _ACCENT = QColor(_P.accent)
+    _EMPTY = QColor(_P.surface_dim)
+    _DIM = QColor(_P.text_muted)
+    _TEXT = QColor(_P.text)
+    _HOT = QColor(_P.danger_strong)
+
+
 def _lerp(a: QColor, b: QColor, t: float) -> QColor:
     t = 0.0 if t < 0 else 1.0 if t > 1 else t
     return QColor(int(a.red() + (b.red() - a.red()) * t),

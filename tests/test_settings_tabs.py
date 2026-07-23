@@ -1,6 +1,6 @@
 """Offscreen tests for the tabbed settings panel.
 
-Builds a SettingsPanel and asserts the full-width tab refactor: five tabs in
+Builds a SettingsPanel and asserts the full-width tab refactor: six tabs in
 the expected order, every section routed onto the tab that owns its concern,
 and the prominent close affordance present. Runs headless via
 QT_QPA_PLATFORM=offscreen so it works in CI with no display.
@@ -32,13 +32,13 @@ def _panel() -> SettingsPanel:
     return SettingsPanel(None, noop, noop)
 
 
-def test_five_tabs_in_order():
+def test_six_tabs_in_order():
     sp = _panel()
-    assert sp._stack.count() == 5
-    assert len(sp._nav_group.buttons()) == 5
-    labels = [sp._nav_group.button(i).text() for i in range(5)]
+    assert sp._stack.count() == 6
+    assert len(sp._nav_group.buttons()) == 6
+    labels = [sp._nav_group.button(i).text() for i in range(6)]
     assert [t.split()[-1] for t in labels] == [
-        "General", "Display", "Connection", "Notifications", "About",
+        "General", "Display", "Appearance", "Connection", "Notifications", "About",
     ]
     # First tab is selected by default.
     assert sp._nav_group.button(0).isChecked()
@@ -53,16 +53,18 @@ def test_every_page_is_populated():
 
 def test_sections_routed_to_expected_tabs():
     sp = _panel()
-    page = {  # tab index by concern
+    page = {  # tab index by concern (Appearance inserted at index 2)
         "general": sp._stack.widget(0),
         "display": sp._stack.widget(1),
-        "connection": sp._stack.widget(2),
-        "notifications": sp._stack.widget(3),
+        "appearance": sp._stack.widget(2),
+        "connection": sp._stack.widget(3),
+        "notifications": sp._stack.widget(4),
     }
     expected = {
         "general": [sp.aot_check, sp.auto_hide_check, sp.quit_on_close_check,
                     sp.startup_check, sp.auto_check_updates_check, sp.start_btn],
         "display": [sp.multi_sessions_check, sp.subagents_check, sp.token_usage_check],
+        "appearance": sp._theme_options,
         "connection": [sp.cred_btn, sp.auto_refresh_check, sp.refresh_token_btn,
                        sp.poll_interval_edit, sp.idle_backoff_check,
                        sp.idle_after_spin, sp.idle_interval_spin],

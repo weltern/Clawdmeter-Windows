@@ -13,7 +13,7 @@ import app_settings
 import pricing_refresh
 import run_at_startup
 import single_instance
-from dashboard import Dashboard
+from dashboard import Dashboard, apply_theme
 from sprite_player import assets_root
 
 
@@ -57,6 +57,11 @@ def main() -> int:
     fa_path = assets_root() / "fonts" / "fa-solid-900.ttf"
     if fa_path.exists():
         QFontDatabase.addApplicationFont(str(fa_path))
+
+    # Apply the saved appearance theme before building the window so it comes up
+    # already themed (no flash). With no widgets yet, apply_theme just sets the
+    # active palette and refreshes the module colour caches.
+    apply_theme(app_settings.get_theme())
 
     win = Dashboard(mock=mock)
     if startup:

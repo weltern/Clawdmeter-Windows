@@ -15,6 +15,7 @@ KEY_QUIT_ON_CLOSE = "window/quit_on_close"
 KEY_MINI_POS = "window/mini_pos"
 KEY_COMPACT_POS = "window/compact_pos"
 KEY_VIEW_MODE = "window/view_mode"
+KEY_THEME = "ui/theme"
 KEY_SHOW_MULTIPLE_SESSIONS = "sessions/show_multiple"
 KEY_SHOW_SUBAGENTS = "sessions/show_subagents"
 KEY_SHOW_TOKEN_USAGE = "tokens/show_usage"
@@ -165,6 +166,17 @@ def get_view_mode() -> str:
 def set_view_mode(mode: str) -> None:
     if mode in ("full", "compact", "mini"):
         _settings().setValue(KEY_VIEW_MODE, mode)
+
+
+def get_theme() -> str:
+    """Saved appearance-theme name (defaults to the default preset). Validated
+    against the catalogue at apply time, so an unknown/removed name falls back
+    to the default rather than erroring."""
+    return str(_settings().value(KEY_THEME, "Midnight Salmon"))
+
+
+def set_theme(name: str) -> None:
+    _settings().setValue(KEY_THEME, name)
 
 
 def get_show_multiple_sessions() -> bool:

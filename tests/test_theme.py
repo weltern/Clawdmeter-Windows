@@ -65,6 +65,43 @@ def test_swap_is_single_pass_no_aliasing():
     assert old_bg in qss and old_surface in qss
 
 
+def test_presets_are_full_valid_palettes():
+    import re
+    fields = [f.name for f in dataclasses.fields(Palette)]
+    for name, pal in theme.PRESETS.items():
+        for fld in fields:
+            val = getattr(pal, fld)
+            assert re.fullmatch(r"#[0-9a-fA-F]{6}", val), f"{name}.{fld}={val!r}"
+
+
+def test_default_is_first_preset_and_present():
+    assert theme.names()[0] == theme.DEFAULT_NAME
+    assert theme.DEFAULT_NAME in theme.PRESETS
+
+
+def test_set_active_switches_and_active_reflects_it():
+    try:
+        theme.set_active("Dracula")
+        assert theme.active_name() == "Dracula"
+        assert theme.active() is theme.PRESETS["Dracula"]
+        assert "#bd93f9" in build_qss(theme.active())  # Dracula's purple accent
+    finally:
+        theme.set_active(theme.DEFAULT_NAME)
+
+
+def test_unknown_theme_falls_back_to_default():
+    try:
+        theme.set_active("No Such Theme")
+        assert theme.active_name() == theme.DEFAULT_NAME
+        assert theme.active() is MIDNIGHT_SALMON
+    finally:
+        theme.set_active(theme.DEFAULT_NAME)
+
+
+def test_get_unknown_returns_default():
+    assert theme.get("nope") is MIDNIGHT_SALMON
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))
