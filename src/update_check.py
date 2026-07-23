@@ -19,6 +19,7 @@ GUI thread when a newer, non-skipped release appears.
 from __future__ import annotations
 
 import re
+import sys
 import time
 from dataclasses import dataclass
 
@@ -30,6 +31,54 @@ import app_settings
 REPO = "weltern/Clawdmeter-Windows"
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{REPO}/releases/latest"
+
+
+def _is_macos() -> bool:
+    """True on macOS, where the release ships as a zipped .app, not a .exe."""
+    return sys.platform == "darwin"
+
+
+# The distributable each platform downloads from a GitHub release. Windows ships
+# a loose ``Clawdmeter.exe``; macOS ships a zipped ``.app`` (``Clawdmeter-macos.zip``
+# from build-macos.sh). The name also seeds the SHA-256 lookup in the release
+# notes (extract_sha256 prefers the line that names this file). Linux ships a
+# bare ``Clawdmeter`` binary, but its asset detection is unchanged here (it falls
+# through to the Windows default) — this session scopes the darwin branch only.
+_WINDOWS_ASSET_NAME = "Clawdmeter.exe"
+_MACOS_ASSET_NAME = "Clawdmeter-macos.zip"
+
+
+def _platform_asset_name() -> str:
+    """Filename of the release asset for the running platform."""
+    return _MACOS_ASSET_NAME if _is_macos() else _WINDOWS_ASSET_NAME
+
+
+def _asset_matches(name: str) -> bool:
+    """True if a release-asset filename is the downloadable for this platform.
+
+    macOS: the zipped ``.app`` (a ``*mac*.zip``). Everywhere else: the ``.exe``.
+    """
+    n = name.lower()
+    if _is_macos():
+        return n.endswith(".zip") and "mac" in n
+    return n.endswith(".exe")
+
+
+def download_url(info: "UpdateInfo | None") -> str:
+    """The URL to open in the user's browser for a *manual* download.
+
+    On every platform this is the GitHub release **page** — Clawdmeter ships as
+    an unsigned, self-contained artifact with no installer, so the user downloads
+    and swaps it themselves. macOS especially cannot self-replace a *running*
+    ``.app``, so there is deliberately no in-app download/replace path on Darwin;
+    the release page is where the user grabs the new build. Guards against a
+    compromised/unexpected API response by trusting only a ``github.com/<REPO>``
+    URL, else falling back to the canonical releases page.
+    """
+    url = info.url if info else RELEASES_PAGE
+    if not url.startswith(f"https://github.com/{REPO}/"):
+        return RELEASES_PAGE
+    return url
 
 # GitHub's REST API rejects requests with no User-Agent (HTTP 403). Unauthed
 # calls are limited to 60/hr/IP, which is plenty for a once-a-day check.
@@ -121,12 +170,14 @@ def fetch_latest(timeout: float = 10.0) -> UpdateInfo | None:
         return None
 
     asset_url = ""
-    exe_name = "Clawdmeter.exe"
+    # Default to this platform's expected asset name so the SHA-256 lookup below
+    # keys off the right release-notes line even when the asset list is empty.
+    exe_name = _platform_asset_name()
     for asset in (data.get("assets") or []):
         if not isinstance(asset, dict):
             continue
         name = str(asset.get("name") or "")
-        if name.lower().endswith(".exe"):
+        if _asset_matches(name):
             asset_url = str(asset.get("browser_download_url") or "")
             exe_name = name
             break

@@ -3,9 +3,12 @@
 Ported from HermannBjorgvin/Clawdmeter daemon. The BLE/asyncio plumbing is
 gone; this is a QThread that posts UsageSample objects via a Qt signal.
 
-Token resolution order on Windows:
-  1. CLAUDE_CREDENTIALS_PATH env var (explicit override)
-  2. ~/.claude/.credentials.json (Claude Code default)
+Token resolution order:
+  1. CLAUDE_CREDENTIALS_PATH env var (explicit override — always a file)
+  2. macOS only: the login Keychain (where Claude Code stores the token on Mac,
+     instead of a credentials file)
+  3. ~/.claude/.credentials.json (Claude Code default on Windows/Linux, and a
+     fallback on macOS if a file happens to exist)
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import httpx
 from PySide6.QtCore import QThread, Signal
 
 import app_settings
+import macos_keychain
 import token_refresh
 from transcript import account_window_tokens
 
@@ -79,6 +83,21 @@ def credentials_path() -> Path:
     return Path(override) if override else DEFAULT_CREDENTIALS_PATH
 
 
+def token_source_description() -> str:
+    """Human-readable description of where the token is being read from.
+
+    Used for the Settings "credentials" line and the no-token error, so both
+    tell the truth on macOS (the Keychain) instead of naming a file that isn't
+    where the token actually lives.
+    """
+    override = os.environ.get("CLAUDE_CREDENTIALS_PATH")
+    if override:
+        return override
+    if macos_keychain.is_macos():
+        return f"the macOS login Keychain (service \"{macos_keychain.service_name()}\")"
+    return str(DEFAULT_CREDENTIALS_PATH)
+
+
 def _extract_access_token(blob: str) -> str | None:
     """Pull accessToken from a credentials blob — JSON, nested JSON, or raw."""
     blob = blob.strip()
@@ -103,6 +122,19 @@ def _extract_access_token(blob: str) -> str | None:
 
 
 def read_token() -> str | None:
+    # An explicit CLAUDE_CREDENTIALS_PATH override always points at a file and
+    # wins on every platform.
+    override = os.environ.get("CLAUDE_CREDENTIALS_PATH")
+    # macOS keeps the token in the login Keychain, not a file. Try it before the
+    # default file path (which normally doesn't exist on Mac).
+    if macos_keychain.is_macos() and not override:
+        blob = macos_keychain.read_credentials()
+        if blob:
+            token = _extract_access_token(blob)
+            if token:
+                return token
+        # Fall through to the file path in the rare case a credentials file also
+        # exists on this Mac.
     path = credentials_path()
     try:
         raw = path.read_text(encoding="utf-8")
@@ -291,6 +323,13 @@ class UsagePoller(QThread):
     def _maybe_auto_refresh(self) -> None:
         if not self._auto_refresh:
             return
+        # macOS has no Keychain write-back path yet, so there's nothing to auto
+        # refresh into — re-authing in Claude Code updates the Keychain and the
+        # next poll re-reads it. Skip here so we don't emit a refresh failure on
+        # every cooldown while a token is expired. (An explicit file override on
+        # Mac still takes the normal file path.)
+        if macos_keychain.is_macos() and not os.environ.get("CLAUDE_CREDENTIALS_PATH"):
+            return
         if not token_refresh.is_expired(credentials_path()):
             return
         if time.time() - self._last_refresh_attempt < self._cooldown:
@@ -309,7 +348,7 @@ class UsagePoller(QThread):
             if not token:
                 self.sample.emit(UsageSample(
                     0, 0, 0, 0, "no-token", False,
-                    f"No token at {credentials_path()}", time.time(),
+                    f"No token in {token_source_description()}", time.time(),
                 ))
             else:
                 self.sample.emit(_poll_once(token))

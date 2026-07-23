@@ -73,7 +73,10 @@ import start_menu
 import token_refresh
 import winutil
 from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
-from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
+from poller import (
+    UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH,
+    token_source_description,
+)
 import remote_notify
 import stats
 from statviz import CategoryBars, DailyBars, Heatmap, ModelBreakdown, PercentBars, WeekBars
@@ -239,7 +242,7 @@ QPushButton#resetLink {
     text-decoration: underline; font-size: 10px;
 }
 QPushButton#resetLink:hover { color: #e6edf3; }
-QCheckBox { color: #e6edf3; font-size: 12px; spacing: 8px; }
+QCheckBox { color: #e6edf3; font-size: 12px; spacing: 8px; padding: 3px 0; }
 QCheckBox::indicator {
     width: 16px; height: 16px; border: 1px solid #374151;
     background-color: #1f2937; border-radius: 2px;
@@ -1414,7 +1417,7 @@ class SettingsPanel(QWidget):
         # Windows channel: the desktop toast + tray flash, with Play-a-sound /
         # Pop-to-front nested in an indented box so they hide together when the
         # channel — or all alerts — are off.
-        self.notify_toast_check = QCheckBox("Show a Windows notification")
+        self.notify_toast_check = QCheckBox("Show a toast notification")
         self.notify_toast_check.setChecked(app_settings.get_reset_notify_toast())
         self.notify_toast_check.toggled.connect(self._on_notify_toast_toggled)
         layout.addWidget(self.notify_toast_check)
@@ -1518,7 +1521,9 @@ class SettingsPanel(QWidget):
             self.cred_status.setText(f"Using: {override}")
             self.cred_reset_btn.show()
         else:
-            self.cred_status.setText(f"Default: {DEFAULT_CREDENTIALS_PATH}")
+            # token_source_description() names the login Keychain on macOS and
+            # the default credentials file on Windows/Linux.
+            self.cred_status.setText(f"Default: {token_source_description()}")
             self.cred_reset_btn.hide()
 
     def refresh_token_status(self) -> None:
@@ -2900,13 +2905,11 @@ class Dashboard(QMainWindow):
 
     def _open_update_page(self) -> None:
         info = getattr(self, "_update_info", None)
-        url = info.url if info else update_check.RELEASES_PAGE
-        # The URL comes from the GitHub API response; only open it if it's this
-        # repo on github.com, else fall back to the canonical releases page —
-        # so a compromised/unexpected response can't redirect the user anywhere.
-        if not url.startswith(f"https://github.com/{update_check.REPO}/"):
-            url = update_check.RELEASES_PAGE
-        QDesktopServices.openUrl(QUrl(url))
+        # There's no in-app installer on any platform — and macOS can't
+        # self-replace a running .app — so a detected update opens the release
+        # *page* for a manual download. update_check.download_url() picks the
+        # safe URL (only this repo on github.com; see its docstring).
+        QDesktopServices.openUrl(QUrl(update_check.download_url(info)))
 
     def _on_tray_message_clicked(self) -> None:
         # Only act if there's a pending update — other balloons are informational.

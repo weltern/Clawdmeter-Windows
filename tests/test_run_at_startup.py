@@ -46,11 +46,66 @@ def test_launch_command_quotes_and_flags():
     assert cmd.lstrip().startswith('"')  # ...even if it has spaces
 
 
-def test_is_supported_true_on_windows_and_linux():
-    # Supported wherever there's an autostart mechanism: Windows (Run key) and
-    # Linux (XDG autostart). Not on other platforms (e.g. macOS — deferred).
-    expected = sys.platform == "win32" or sys.platform.startswith("linux")
+def test_is_supported_true_on_supported_platforms():
+    # Supported wherever there's an autostart mechanism: Windows (Run key),
+    # Linux (XDG autostart), and macOS (LaunchAgent plist).
+    expected = (
+        sys.platform == "win32"
+        or sys.platform.startswith("linux")
+        or sys.platform == "darwin"
+    )
     assert run_at_startup.is_supported() is expected
+
+
+# --- macOS LaunchAgent branch (forced on via monkeypatch so it runs anywhere) ---
+
+def _force_macos(monkeypatch, tmp_path):
+    """Route the platform dispatch to the macOS branch and sandbox the plist."""
+    monkeypatch.setattr(run_at_startup, "_is_macos", lambda: True)
+    monkeypatch.setattr(run_at_startup, "_is_linux", lambda: False)
+    monkeypatch.setattr(run_at_startup, "_launch_agents_dir", lambda: tmp_path)
+
+
+def test_macos_is_supported_when_forced(monkeypatch, tmp_path):
+    _force_macos(monkeypatch, tmp_path)
+    assert run_at_startup.is_supported() is True
+
+
+def test_macos_launch_agent_round_trip(monkeypatch, tmp_path):
+    _force_macos(monkeypatch, tmp_path)
+    plist = tmp_path / run_at_startup.PLIST_FILE_NAME
+
+    assert run_at_startup.is_enabled() is False
+
+    ok, msg = run_at_startup.enable()
+    assert ok
+    assert plist.exists()
+    assert run_at_startup.STARTUP_FLAG in msg
+    assert run_at_startup.is_enabled() is True
+
+    ok, _ = run_at_startup.disable()
+    assert ok
+    assert not plist.exists()
+    assert run_at_startup.is_enabled() is False
+
+    # Disabling when already absent is a no-op success.
+    ok, _ = run_at_startup.disable()
+    assert ok
+
+
+def test_macos_plist_is_well_formed_xml(monkeypatch, tmp_path):
+    import xml.etree.ElementTree as ET
+
+    _force_macos(monkeypatch, tmp_path)
+    run_at_startup.enable()
+    text = (tmp_path / run_at_startup.PLIST_FILE_NAME).read_text(encoding="utf-8")
+
+    # Parses cleanly (escaping in ProgramArguments is valid) and carries the
+    # label, the --startup flag, and RunAtLoad.
+    ET.fromstring(text)
+    assert run_at_startup.LAUNCH_AGENT_LABEL in text
+    assert f"<string>{run_at_startup.STARTUP_FLAG}</string>" in text
+    assert "<key>RunAtLoad</key>" in text
 
 
 @requires_winreg

@@ -16,7 +16,7 @@ import ctypes
 import ctypes.wintypes as wt
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 
 # WM_NCHITTEST result codes.
@@ -75,9 +75,25 @@ def set_topmost(widget, on: bool) -> None:
             wt.HWND(int(widget.winId())), wt.HWND(insert_after), 0, 0, 0, 0, flags
         )
         return
+    # Off Windows, toggling WindowStaysOnTopHint recreates the native window.
+    # On macOS that hides a frameless Tool window and a bare show() doesn't bring
+    # it back (it vanishes until re-summoned from the tray). Preserve geometry and
+    # force it visible + frontmost, both immediately and deferred one event-loop
+    # tick so the flag change has settled before the re-show.
+    was_visible = widget.isVisible()
+    geo = widget.geometry()
     widget.setWindowFlag(Qt.WindowStaysOnTopHint, on)
-    if widget.isVisible():
-        widget.show()  # re-apply the changed flag
+    if not was_visible:
+        return
+
+    def _reshow():
+        widget.setGeometry(geo)
+        widget.show()
+        widget.raise_()
+        widget.activateWindow()
+
+    _reshow()
+    QTimer.singleShot(0, _reshow)
 
 
 def start_move(widget) -> None:

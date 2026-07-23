@@ -13,6 +13,13 @@ major desktop (GNOME, KDE, XFCE, …) honors at login. The presence of that file
 is the single source of truth there. The Windows code paths below are unchanged
 from the Windows-only version; the Linux branches are purely additive.
 
+macOS uses a per-user LaunchAgent — a ``com.clawdmeter.startup.plist`` under
+``~/Library/LaunchAgents`` with ``RunAtLoad`` — which ``launchd`` runs at login.
+As with Linux, the presence of that plist is the single source of truth; the
+macOS branches are purely additive and mirror the Linux ones. (Writing the file
+is enough for the *next* login — we don't ``launchctl load`` it, matching the
+file-presence model and avoiding cross-version ``launchctl`` quirks.)
+
 The stored command points at the running executable plus ``--startup`` so the
 login launch goes straight to the tray instead of popping the window open.
 """
@@ -22,6 +29,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
 
 try:
     import winreg  # Windows-only; None everywhere else.
@@ -37,15 +45,24 @@ STARTUP_FLAG = "--startup"
 # XDG autostart entry written on Linux.
 DESKTOP_FILE_NAME = "clawdmeter.desktop"
 
+# macOS LaunchAgent label + plist filename (filename convention is <label>.plist).
+LAUNCH_AGENT_LABEL = "com.clawdmeter.startup"
+PLIST_FILE_NAME = f"{LAUNCH_AGENT_LABEL}.plist"
+
 
 def _is_linux() -> bool:
     """True on any Linux platform, where XDG autostart applies."""
     return sys.platform.startswith("linux")
 
 
+def _is_macos() -> bool:
+    """True on macOS, where a LaunchAgent plist drives run-at-login."""
+    return sys.platform == "darwin"
+
+
 def is_supported() -> bool:
-    """True where run-at-login is implemented: Windows (Run key) or Linux (XDG)."""
-    if _is_linux():
+    """True where run-at-login is implemented: Windows, Linux (XDG), macOS (LaunchAgent)."""
+    if _is_linux() or _is_macos():
         return True
     return winreg is not None
 
@@ -145,11 +162,105 @@ def _linux_sync_if_enabled() -> None:
         _linux_enable()
 
 
+# --- macOS LaunchAgent helpers ---------------------------------------------
+
+def _launch_agents_dir() -> Path:
+    """The per-user LaunchAgents directory: ``~/Library/LaunchAgents``."""
+    return Path.home() / "Library" / "LaunchAgents"
+
+
+def _plist_path() -> Path:
+    """Full path to the ``com.clawdmeter.startup.plist`` LaunchAgent."""
+    return _launch_agents_dir() / PLIST_FILE_NAME
+
+
+def _macos_program_arguments() -> list[str]:
+    """``ProgramArguments`` for the LaunchAgent, as a list (no shell quoting).
+
+    Mirrors ``launch_command``'s frozen-vs-dev split. Frozen build (inside a
+    ``Clawdmeter.app``): ``sys.executable`` is the binary under
+    ``Contents/MacOS`` — exec it directly with ``--startup``. Dev checkout: the
+    interpreter plus ``main.py``. launchd passes these as an argv array, so
+    spaces in paths need no quoting.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, STARTUP_FLAG]
+    script = str(Path(__file__).resolve().parent / "main.py")
+    return [sys.executable, script, STARTUP_FLAG]
+
+
+def _plist_contents() -> str:
+    """The full XML text of the LaunchAgent plist."""
+    args_xml = "".join(
+        f"        <string>{_xml_escape(a)}</string>\n"
+        for a in _macos_program_arguments()
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n'
+        "<dict>\n"
+        "    <key>Label</key>\n"
+        f"    <string>{LAUNCH_AGENT_LABEL}</string>\n"
+        "    <key>ProgramArguments</key>\n"
+        "    <array>\n"
+        f"{args_xml}"
+        "    </array>\n"
+        "    <key>RunAtLoad</key>\n"
+        "    <true/>\n"
+        # Interactive: this is a GUI menu-bar app, not a background daemon.
+        "    <key>ProcessType</key>\n"
+        "    <string>Interactive</string>\n"
+        "</dict>\n"
+        "</plist>\n"
+    )
+
+
+def _macos_is_enabled() -> bool:
+    return _plist_path().exists()
+
+
+def _macos_enable() -> tuple[bool, str]:
+    """Write (or refresh) the LaunchAgent plist. Returns (success, message)."""
+    path = _plist_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_plist_contents(), encoding="utf-8")
+    except OSError as exc:
+        return False, f"Could not write the startup entry: {exc}"
+    return True, " ".join(_macos_program_arguments())
+
+
+def _macos_disable() -> tuple[bool, str]:
+    """Remove the LaunchAgent plist. Treats an already-absent file as success."""
+    try:
+        _plist_path().unlink()
+    except FileNotFoundError:
+        return True, ""  # file doesn't exist -> nothing to remove
+    except OSError as exc:
+        return False, f"Could not remove the startup entry: {exc}"
+    return True, ""
+
+
+def _macos_sync_if_enabled() -> None:
+    """If autostart is on, rewrite the plist to the current binary location.
+
+    A ``.app`` gets moved or replaced on update; re-pointing the plist on each
+    frozen launch keeps ``ProgramArguments`` from going stale. Frozen-only so a
+    dev run never overwrites a real user's plist with a python path.
+    """
+    if getattr(sys, "frozen", False) and _macos_is_enabled():
+        _macos_enable()
+
+
 # --- Public, platform-dispatching API --------------------------------------
 
 def is_enabled() -> bool:
     if _is_linux():
         return _linux_is_enabled()
+    if _is_macos():
+        return _macos_is_enabled()
     if winreg is None:
         return False
     try:
@@ -164,6 +275,8 @@ def enable() -> tuple[bool, str]:
     """Register (or refresh) the startup entry. Returns (success, message)."""
     if _is_linux():
         return _linux_enable()
+    if _is_macos():
+        return _macos_enable()
     if winreg is None:
         return False, "Run-at-startup is only supported on Windows."
     cmd = launch_command()
@@ -179,6 +292,8 @@ def disable() -> tuple[bool, str]:
     """Remove the startup entry. Treats an already-absent value as success."""
     if _is_linux():
         return _linux_disable()
+    if _is_macos():
+        return _macos_disable()
     if winreg is None:
         return False, "Run-at-startup is only supported on Windows."
     try:
@@ -205,6 +320,9 @@ def sync_if_enabled() -> None:
     """
     if _is_linux():
         _linux_sync_if_enabled()
+        return
+    if _is_macos():
+        _macos_sync_if_enabled()
         return
     if getattr(sys, "frozen", False) and is_enabled():
         enable()

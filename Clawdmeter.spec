@@ -140,23 +140,28 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 # prompt) a real File/Product version, name, and copyright. The version is
 # parsed from APP_VERSION in src/app_settings.py so it always matches the in-app
 # About box -- bump it there and rebuild; nothing here needs touching.
+import re
 import sys
+
+# Single source of truth for the build version: APP_VERSION in app_settings.
+# Used by the Windows version resource AND the macOS bundle's CFBundleVersion,
+# so parse it unconditionally (bump it in src/app_settings.py; nothing here).
+with open('src/app_settings.py', encoding='utf-8') as _f:
+    _m = re.search(r'APP_VERSION\s*=\s*["\']([0-9]+(?:\.[0-9]+)*)["\']', _f.read())
+_ver_str = _m.group(1) if _m else '0.0.0'
 
 # The version resource is a Windows-only concept (and its builder lives under
 # PyInstaller.utils.win32, which only imports on Windows). Off Windows the Linux
 # build carries no embedded version resource — the .desktop entry and release
-# metadata cover that instead — so leave it None.
+# metadata cover that instead — so leave it None. (macOS carries its version in
+# the .app Info.plist, built below.)
 version_info = None
 if sys.platform == 'win32':
-    import re
     from PyInstaller.utils.win32.versioninfo import (
         VSVersionInfo, FixedFileInfo, StringFileInfo, StringTable,
         StringStruct, VarFileInfo, VarStruct,
     )
 
-    with open('src/app_settings.py', encoding='utf-8') as _f:
-        _m = re.search(r'APP_VERSION\s*=\s*["\']([0-9]+(?:\.[0-9]+)*)["\']', _f.read())
-    _ver_str = _m.group(1) if _m else '0.0.0'
     _vtuple = tuple(([int(p) for p in _ver_str.split('.')] + [0, 0, 0, 0])[:4])
 
     version_info = VSVersionInfo(
@@ -193,24 +198,90 @@ elif _IS_MAC:
 else:
     _ICON = None
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name='Clawdmeter',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    runtime_tmpdir=None,
-    console=False,
-    disable_windowed_traceback=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=_ICON,
-    version=version_info,
-)
+# --- Packaging --------------------------------------------------------------
+# Windows/Linux ship a single self-contained executable (onefile): binaries,
+# zipfiles, and datas are baked into the EXE. macOS instead builds a onedir
+# bundle — EXE (bootstrap only, exclude_binaries=True) -> COLLECT (the onedir
+# tree) -> BUNDLE (Clawdmeter.app). A onefile EXE wrapped in BUNDLE is deprecated
+# and becomes an ERROR in PyInstaller v7, so the .app must be onedir. The
+# non-macOS EXE below is unchanged from the Windows-only version, so Windows and
+# Linux builds are byte-for-byte identical.
+if _IS_MAC:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,          # onedir: binaries go into COLLECT below
+        name='Clawdmeter',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        console=False,
+        disable_windowed_traceback=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=_ICON,
+        version=version_info,           # None off Windows
+    )
+
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=False,
+        upx_exclude=[],
+        name='Clawdmeter',
+    )
+
+    # --- macOS .app bundle --------------------------------------------------
+    # Wrap the COLLECT'd onedir tree into a Clawdmeter.app so it launches like a
+    # native menu-bar app. LSUIElement=1 makes it an "agent" — it lives in the
+    # menu bar with NO Dock icon and NO app-switcher entry, which is what a tray
+    # utility wants. The version comes from APP_VERSION (parsed above).
+    app = BUNDLE(
+        coll,
+        name='Clawdmeter.app',
+        icon=_ICON,
+        bundle_identifier='com.clawdmeter.app',
+        version=_ver_str,
+        info_plist={
+            'LSUIElement': True,                     # menu-bar agent, no Dock icon
+            'CFBundleName': 'Clawdmeter',
+            'CFBundleDisplayName': 'Clawdmeter',
+            'CFBundleShortVersionString': _ver_str,
+            'CFBundleVersion': _ver_str,
+            'NSHighResolutionCapable': True,
+            'NSRequiresAquaSystemAppearance': False,  # allow dark appearance for the dark theme
+            'LSMinimumSystemVersion': '11.0',
+            'NSHumanReadableCopyright': (
+                '© 2026 Nick Welter · MIT licensed · '
+                'Clawd mascot © Anthropic PBC'
+            ),
+        },
+    )
+else:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        [],
+        name='Clawdmeter',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        runtime_tmpdir=None,
+        console=False,
+        disable_windowed_traceback=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=_ICON,
+        version=version_info,
+    )
