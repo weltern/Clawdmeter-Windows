@@ -67,7 +67,9 @@ _P = theme.active()
 _BG = _P.bg
 _TEXT = _P.text
 _MUTED = _P.text_dim
-_IDLE_COLOR = ACTIVITY_COLORS[Activity.IDLE]   # meaning-bearing, stays fixed
+# Idle indicator (label/dot/glow): a theme role so it stays readable on every
+# background — unlike the other activity hues, which are fixed & meaning-bearing.
+_IDLE_COLOR = _P.idle
 
 def _build_shelf_qss() -> str:
     return f"""
@@ -960,12 +962,13 @@ def refresh_theme() -> None:
     apply_theme() re-applies SHELF_STYLESHEET/COMPACT_STYLESHEET to the live
     widgets and repaints them afterward. Fixed colours (_BAR_HEAT, _BAR_OVERAGE,
     _IDLE_COLOR / activity glows) are intentionally left untouched."""
-    global _P, _BG, _TEXT, _MUTED, _BAR_TRACK, _BAR_BORDER
+    global _P, _BG, _TEXT, _MUTED, _IDLE_COLOR, _BAR_TRACK, _BAR_BORDER
     global SHELF_STYLESHEET, COMPACT_STYLESHEET
     _P = theme.active()
     _BG = _P.bg
     _TEXT = _P.text
     _MUTED = _P.text_dim
+    _IDLE_COLOR = _P.idle
     _BAR_TRACK = _P.surface
     _BAR_BORDER = _P.border
     SHELF_STYLESHEET = _build_shelf_qss()

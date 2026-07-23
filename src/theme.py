@@ -58,6 +58,11 @@ class Palette:
     danger: str         # over-limit / error text
     danger_strong: str  # destructive-hover fill, negative delta
     positive: str       # good / positive delta
+    # State — the idle-session indicator (its label, status dot and mascot
+    # glow). A theme role, NOT a fixed activity hue, so it stays readable on
+    # every background. Other activity colours (reading/writing/…) are true
+    # semantic hues and remain fixed in transcript.ACTIVITY_COLORS.
+    idle: str
 
     def with_overrides(self, **changes: str) -> "Palette":
         """Return a copy with some fields replaced (used by later phases)."""
@@ -83,6 +88,7 @@ MIDNIGHT_SALMON = Palette(
     danger="#dc2626",
     danger_strong="#c13434",
     positive="#5FB3A1",
+    idle="#3a3f4b",
 )
 
 
@@ -101,9 +107,10 @@ OBSIDIAN = Palette(
     bg="#0a0a0c", bg_deep="#060608", bg_deepest="#050506",
     surface="#17181c", surface_dim="#121317", surface_sunken="#1c1e23",
     border="#2c2e35", border_dim="#45474f",
-    text="#eceef2", text_dim="#9a9da6", text_muted="#6b6e77",
+    text="#eceef2", text_dim="#9a9da6", text_muted="#777a82",
     accent="#CE7D6B", accent_hover="#d98f7e",
     warn="#f59e0b", danger="#dc2626", danger_strong="#c13434", positive="#5FB3A1",
+    idle="#7b7d85",
 )
 
 # Accessibility-first: pure-black canvas, high-luma text, stronger borders,
@@ -115,6 +122,7 @@ HIGH_CONTRAST = Palette(
     text="#ffffff", text_dim="#d4d4d4", text_muted="#a6a6a6",
     accent="#f2a58f", accent_hover="#ffb8a3",
     warn="#ffb020", danger="#ff5c5c", danger_strong="#ff3b3b", positive="#4ad991",
+    idle="#a6a6a6",
 )
 
 # Nord — cool polar-night slate. Signature frost accent.
@@ -125,6 +133,7 @@ NORD = Palette(
     text="#eceff4", text_dim="#d8dee9", text_muted="#9aa2b1",
     accent="#88c0d0", accent_hover="#8fbcbb",
     warn="#ebcb8b", danger="#bf616a", danger_strong="#a5545c", positive="#a3be8c",
+    idle="#9aa2b1",
 )
 
 # Dracula — signature purple accent.
@@ -132,9 +141,10 @@ DRACULA = Palette(
     bg="#282a36", bg_deep="#21222c", bg_deepest="#1e1f28",
     surface="#343746", surface_dim="#2b2e3b", surface_sunken="#3c4052",
     border="#44475a", border_dim="#565a71",
-    text="#f8f8f2", text_dim="#c8c9da", text_muted="#7684b8",
+    text="#f8f8f2", text_dim="#c8c9da", text_muted="#8692bf",
     accent="#bd93f9", accent_hover="#cba6fa",
     warn="#ffb86c", danger="#ff5555", danger_strong="#e04a4a", positive="#50fa7b",
+    idle="#8995c1",
 )
 
 # Gruvbox — warm retro. Signature orange accent.
@@ -145,6 +155,7 @@ GRUVBOX = Palette(
     text="#ebdbb2", text_dim="#d5c4a1", text_muted="#a89984",
     accent="#fe8019", accent_hover="#ff9642",
     warn="#fabd2f", danger="#fb4934", danger_strong="#cc2f26", positive="#b8bb26",
+    idle="#a89984",
 )
 
 # Terminal Green — phosphor CRT. Signature green accent.
@@ -152,9 +163,10 @@ TERMINAL_GREEN = Palette(
     bg="#0c0f0c", bg_deep="#080a08", bg_deepest="#060806",
     surface="#141814", surface_dim="#101410", surface_sunken="#1a1f1a",
     border="#253025", border_dim="#3a463a",
-    text="#d6f5d6", text_dim="#86c586", text_muted="#5e835e",
+    text="#d6f5d6", text_dim="#86c586", text_muted="#608560",
     accent="#3fdd6a", accent_hover="#5fe986",
     warn="#e0c040", danger="#ff6a5a", danger_strong="#d84545", positive="#3fdd6a",
+    idle="#648864",
 )
 
 # Amber CRT — amber monochrome. Signature amber accent.
@@ -162,9 +174,10 @@ AMBER_CRT = Palette(
     bg="#100b04", bg_deep="#0b0803", bg_deepest="#090602",
     surface="#1a1206", surface_dim="#150e05", surface_sunken="#201708",
     border="#3a2a10", border_dim="#55401a",
-    text="#ffcf8f", text_dim="#d99a55", text_muted="#9c6f3c",
+    text="#ffcf8f", text_dim="#d99a55", text_muted="#9f723e",
     accent="#ffb000", accent_hover="#ffc233",
     warn="#ffd24d", danger="#ff6a44", danger_strong="#d84428", positive="#c0c04a",
+    idle="#a27540",
 )
 
 
