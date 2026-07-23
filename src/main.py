@@ -12,6 +12,7 @@ import app_settings
 import pricing_refresh
 import run_at_startup
 import single_instance
+import theme
 from dashboard import Dashboard, apply_theme
 from sprite_player import assets_root
 
@@ -56,7 +57,11 @@ def main() -> int:
 
     # Apply the saved appearance theme before building the window so it comes up
     # already themed (no flash). With no widgets yet, apply_theme just sets the
-    # active palette and refreshes the module colour caches.
+    # active palette and refreshes the module colour caches. Load the custom
+    # theme's base colours first so a saved "Custom" selection resolves.
+    saved_custom = app_settings.get_custom_base()
+    if saved_custom:
+        theme.set_custom_base(saved_custom)
     apply_theme(app_settings.get_theme())
 
     win = Dashboard(mock=mock)

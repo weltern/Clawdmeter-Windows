@@ -45,9 +45,12 @@ from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QCheckBox,
+    QColorDialog,
+    QDialog,
     QFileDialog,
     QFrame,
     QGraphicsOpacityEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -187,6 +190,8 @@ def apply_theme(selected: str) -> None:
                 sh.setColorScheme(Qt.ColorScheme.Unknown)
             os_dark = sh.colorScheme() != Qt.ColorScheme.Light if sh else True
             concrete = theme.system_target(os_dark)
+        elif selected == theme.CUSTOM:
+            concrete = theme.CUSTOM
         else:
             concrete = selected if selected in theme.PRESETS else theme.DEFAULT_NAME
 
@@ -920,11 +925,19 @@ class _PushChannelRow(QWidget):
 
 class _ThemeOption(QFrame):
     """One selectable theme row in the Appearance picker: a strip of colour
-    swatches (the preset's identity), its name, and an ACTIVE tag."""
+    swatches (the theme's identity), its name, and an ACTIVE tag. The Custom row
+    (`editable`) also carries an Edit button and refreshes its swatches as the
+    custom theme is edited."""
 
     selected = Signal(str)
+    edit_requested = Signal()
 
-    def __init__(self, name: str, palette, parent=None) -> None:
+    # Fixed per-theme chips — styled inline (their own colours), NOT via the
+    # themed base stylesheet, so they show each theme's identity.
+    _SWATCH_ROLES = ("bg", "surface", "accent", "text")
+
+    def __init__(self, name: str, palette, parent=None, *,
+                 editable: bool = False) -> None:
         super().__init__(parent)
         self.setObjectName("themeOption")
         self._name = name
@@ -935,22 +948,31 @@ class _ThemeOption(QFrame):
         row.setSpacing(11)
         swatches = QHBoxLayout()
         swatches.setSpacing(3)
-        # Fixed per-preset chips (bg / surface / accent / text) — these show the
-        # preset's own colours and must NOT re-theme with the active palette, so
-        # they're styled inline rather than via the themed base stylesheet.
-        for col in (palette.bg, palette.surface, palette.accent, palette.text):
+        self._chips = []
+        for _role in self._SWATCH_ROLES:
             chip = QFrame()
             chip.setFixedSize(13, 22)
-            chip.setStyleSheet(
-                f"background:{col}; border-radius:3px;"
-                " border:1px solid rgba(0,0,0,0.35);")
+            self._chips.append(chip)
             swatches.addWidget(chip)
         row.addLayout(swatches)
+        self.refresh_swatches(palette)
         row.addWidget(QLabel(name, objectName="themeName"))
         row.addStretch(1)
         self._tag = QLabel("● ACTIVE", objectName="themeTag")
         self._tag.setVisible(False)
         row.addWidget(self._tag)
+        if editable:
+            edit_btn = QPushButton("Edit", objectName="resetLink")
+            edit_btn.setCursor(Qt.PointingHandCursor)
+            edit_btn.setFocusPolicy(Qt.NoFocus)
+            edit_btn.clicked.connect(lambda: self.edit_requested.emit())
+            row.addWidget(edit_btn)
+
+    def refresh_swatches(self, palette) -> None:
+        for chip, role in zip(self._chips, self._SWATCH_ROLES):
+            chip.setStyleSheet(
+                f"background:{getattr(palette, role)}; border-radius:3px;"
+                " border:1px solid rgba(0,0,0,0.35);")
 
     def set_selected(self, on: bool) -> None:
         self.setProperty("selected", "true" if on else "false")
@@ -962,6 +984,108 @@ class _ThemeOption(QFrame):
         if e.button() == Qt.LeftButton:
             self.selected.emit(self._name)
         super().mousePressEvent(e)
+
+
+class CustomThemeEditor(QDialog):
+    """Edit the 8 base colours of the custom theme with live preview and WCAG-AA
+    contrast warnings. Every change re-derives the full palette and applies it to
+    the whole app immediately."""
+
+    changed = Signal()   # custom palette changed -> refresh the picker swatches
+
+    _ROLE_LABELS = {
+        "bg": "Background", "surface": "Surface / cards", "border": "Borders",
+        "text": "Text", "accent": "Accent", "warn": "Warning",
+        "danger": "Danger", "positive": "Positive",
+    }
+    # Base roles that are read as marks/text against bg (so they get an AA check).
+    _FG_ROLES = ("text", "accent", "warn", "danger", "positive")
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Custom theme")
+        self.setObjectName("root")
+        self.setStyleSheet(STYLESHEET)   # themed; re-themed live by apply_theme
+        self.setMinimumWidth(370)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(10)
+        lay.addWidget(QLabel("CUSTOM THEME", objectName="settingsTitle"))
+        hint = QLabel("Click a colour to change it — the other shades derive "
+                      "automatically. Changes apply live.", objectName="sectionHint")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+
+        self._rows = {}
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(7)
+        for r, role in enumerate(theme.CUSTOM_ROLES):
+            swatch = QPushButton()
+            swatch.setFixedSize(30, 22)
+            swatch.setCursor(Qt.PointingHandCursor)
+            swatch.setFocusPolicy(Qt.NoFocus)
+            swatch.clicked.connect(lambda _=False, ro=role: self._pick(ro))
+            hexlbl = QLabel(objectName="credStatus")
+            aalbl = QLabel(objectName="credStatus")
+            grid.addWidget(swatch, r, 0)
+            grid.addWidget(QLabel(self._ROLE_LABELS[role], objectName="pushSummary"), r, 1)
+            grid.addWidget(hexlbl, r, 2)
+            grid.addWidget(aalbl, r, 3)
+            self._rows[role] = (swatch, hexlbl, aalbl)
+        grid.setColumnStretch(1, 1)
+        lay.addLayout(grid)
+
+        btns = QHBoxLayout()
+        fix_btn = QPushButton("Fix contrast")
+        fix_btn.clicked.connect(self._fix_contrast)
+        btns.addWidget(fix_btn)
+        btns.addStretch(1)
+        done_btn = QPushButton("Done")
+        done_btn.clicked.connect(self.accept)
+        btns.addWidget(done_btn)
+        lay.addLayout(btns)
+
+        self._refresh()
+
+    def _pick(self, role: str) -> None:
+        cur = QColor(theme.custom_base()[role])
+        chosen = QColorDialog.getColor(cur, self, f"Pick {self._ROLE_LABELS[role]}")
+        if chosen.isValid():
+            self._commit({**theme.custom_base(), role: chosen.name()})
+
+    def _fix_contrast(self) -> None:
+        base = theme.custom_base()
+        bg = base["bg"]
+        for role in self._FG_ROLES:
+            base[role] = theme.ensure_contrast(base[role], bg, 4.5)
+        self._commit(base)
+
+    def _commit(self, base: dict) -> None:
+        theme.set_custom_base(base)
+        app_settings.set_custom_base(theme.custom_base())
+        apply_theme(theme.CUSTOM)     # live re-derive + restyle
+        self.setStyleSheet(STYLESHEET)  # keep the dialog itself themed
+        self._refresh()
+        self.changed.emit()
+
+    def _refresh(self) -> None:
+        base = theme.custom_base()
+        bg = base["bg"]
+        pal = theme.active()
+        for role, (swatch, hexlbl, aalbl) in self._rows.items():
+            col = base[role]
+            swatch.setStyleSheet(
+                f"background:{col}; border:1px solid rgba(128,128,128,0.6);"
+                " border-radius:4px;")
+            hexlbl.setText(col.upper())
+            if role in self._FG_ROLES:
+                c = theme.contrast(col, bg)
+                ok = c >= 4.5
+                aalbl.setText(f"{c:.1f}  {'OK' if ok else 'low'}")
+                aalbl.setStyleSheet(f"color:{pal.text_muted if ok else pal.warn};")
+            else:
+                aalbl.setText("")
 
 
 class SettingsPanel(QWidget):
@@ -1072,6 +1196,14 @@ class SettingsPanel(QWidget):
             opt.set_selected(_tname == theme.selected())
             appearance_layout.addWidget(opt)
             self._theme_options.append(opt)
+        # Custom — user-editable; its swatches track the live custom palette.
+        self._custom_option = _ThemeOption(theme.CUSTOM, theme.custom_palette(),
+                                           editable=True)
+        self._custom_option.selected.connect(self._on_theme_selected)
+        self._custom_option.edit_requested.connect(self._open_custom_editor)
+        self._custom_option.set_selected(theme.selected() == theme.CUSTOM)
+        appearance_layout.addWidget(self._custom_option)
+        self._theme_options.append(self._custom_option)
         # Follow System resolves to a dark/light preset per the OS scheme; its
         # swatches show whatever it currently resolves to.
         sys_opt = _ThemeOption(theme.SYSTEM, theme.active())
@@ -1454,7 +1586,30 @@ class SettingsPanel(QWidget):
             _page_layout.addStretch(1)
 
     def _on_theme_selected(self, name: str) -> None:
+        if name == theme.CUSTOM:
+            self._ensure_custom_seeded()   # copy current theme on first use
         apply_theme(name)
+        self._sync_theme_selection()
+
+    def _ensure_custom_seeded(self) -> None:
+        # First time the custom theme is used, seed it from whatever theme is
+        # active right now (Nick's choice: copy the current theme).
+        if app_settings.get_custom_base() is None:
+            theme.set_custom_base(theme.custom_base_from(theme.active()))
+            app_settings.set_custom_base(theme.custom_base())
+
+    def _open_custom_editor(self) -> None:
+        self._ensure_custom_seeded()
+        apply_theme(theme.CUSTOM)
+        self._sync_theme_selection()
+        dlg = CustomThemeEditor(self.window())
+        dlg.changed.connect(self._sync_theme_selection)
+        dlg.exec()
+
+    def _sync_theme_selection(self) -> None:
+        # Refresh the selection highlight and the Custom row's swatches (which
+        # track the live custom palette).
+        self._custom_option.refresh_swatches(theme.custom_palette())
         for opt in self._theme_options:
             opt.set_selected(opt._name == theme.selected())
 

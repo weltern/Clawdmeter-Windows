@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from PySide6.QtCore import QSettings
 
 ORG = "Clawdmeter"
@@ -16,6 +18,7 @@ KEY_MINI_POS = "window/mini_pos"
 KEY_COMPACT_POS = "window/compact_pos"
 KEY_VIEW_MODE = "window/view_mode"
 KEY_THEME = "ui/theme"
+KEY_CUSTOM_THEME = "ui/custom_theme"
 KEY_SHOW_MULTIPLE_SESSIONS = "sessions/show_multiple"
 KEY_SHOW_SUBAGENTS = "sessions/show_subagents"
 KEY_SHOW_TOKEN_USAGE = "tokens/show_usage"
@@ -177,6 +180,23 @@ def get_theme() -> str:
 
 def set_theme(name: str) -> None:
     _settings().setValue(KEY_THEME, name)
+
+
+def get_custom_base() -> dict | None:
+    """The saved custom-theme base colours ({role: hex}), or None if the user
+    has never created a custom theme (so it can be seeded from the current one)."""
+    raw = _settings().value(KEY_CUSTOM_THEME, "")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def set_custom_base(base: dict) -> None:
+    _settings().setValue(KEY_CUSTOM_THEME, json.dumps(base))
 
 
 def get_show_multiple_sessions() -> bool:

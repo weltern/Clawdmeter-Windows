@@ -128,6 +128,36 @@ def test_apply_selection_records_selection_and_resolves():
         theme.set_active(theme.DEFAULT_NAME)
 
 
+def test_derive_palette_is_full_and_secondary_text_clears_aa():
+    import re
+    fields = [f.name for f in dataclasses.fields(Palette)]
+    for seed in ("Midnight Salmon", "Riptide Light", "Dracula", "Sepia"):
+        p = theme.derive_palette(theme.custom_base_from(theme.get(seed)))
+        for f in fields:
+            assert re.fullmatch(r"#[0-9a-fA-F]{6}", getattr(p, f)), f"{seed}.{f}"
+        # Derived secondary text is clamped to AA on bg so custom themes stay
+        # readable even from an odd base.
+        assert theme.contrast(p.text_dim, p.bg) >= 4.4
+        assert theme.contrast(p.text_muted, p.bg) >= 4.4
+
+
+def test_ensure_contrast_lifts_low_pairs_leaves_good_ones():
+    fixed = theme.ensure_contrast("#999999", "#ffffff", 4.5)  # mid-grey on white fails
+    assert theme.contrast(fixed, "#ffffff") >= 4.5
+    assert theme.ensure_contrast("#000000", "#ffffff", 4.5) == "#000000"  # already clear
+
+
+def test_custom_base_edit_flows_into_derived_palette():
+    try:
+        base = theme.custom_base_from(theme.get("Nord"))
+        base["accent"] = "#123456"
+        theme.set_custom_base(base)
+        assert theme.custom_base()["accent"] == "#123456"
+        assert theme.custom_palette().accent == "#123456"   # base flows through
+    finally:
+        theme.set_custom_base(theme.custom_base_from(MIDNIGHT_SALMON))
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))

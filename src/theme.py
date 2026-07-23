@@ -308,19 +308,134 @@ SYSTEM_DARK = "Midnight Salmon"
 SYSTEM_LIGHT = "Daybreak"
 
 
-def is_light(p: "Palette") -> bool:
-    """Whether a palette is a light theme (used to set the OS colour-scheme hint
-    so native/un-QSS'd surfaces match)."""
-    h = p.bg.lstrip("#")
-    r, g, b = (int(h[i:i+2], 16) / 255 for i in (0, 2, 4))
-    def _l(c):
-        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
-    return 0.2126 * _l(r) + 0.7152 * _l(g) + 0.0722 * _l(b) > 0.5
-
-
 def system_target(os_is_dark: bool) -> str:
     """The preset 'Follow System' resolves to for the given OS scheme."""
     return SYSTEM_DARK if os_is_dark else SYSTEM_LIGHT
+
+
+# ── Colour math (WCAG) + custom-theme derivation ─────────────────────────────
+
+def _rgb(h: str) -> tuple:
+    h = h.lstrip("#")
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+
+def _hx(t) -> str:
+    return "#{:02x}{:02x}{:02x}".format(*(max(0, min(255, round(c))) for c in t))
+
+
+def _blend(a: str, b: str, t: float) -> str:
+    """Linear RGB blend: t=0 -> a, t=1 -> b."""
+    ra, rb = _rgb(a), _rgb(b)
+    return _hx(tuple(ra[i] + (rb[i] - ra[i]) * t for i in range(3)))
+
+
+def _rel_lum(h: str) -> float:
+    def ch(c):
+        c /= 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = _rgb(h)
+    return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+
+
+def contrast(a: str, b: str) -> float:
+    """WCAG contrast ratio between two hex colours (1.0–21.0)."""
+    la, lb = _rel_lum(a), _rel_lum(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def ensure_contrast(fg: str, bg: str, target: float = 4.5) -> str:
+    """Return fg unchanged if it already clears `target` against bg, else nudge
+    it toward black/white (whichever raises contrast) until it does."""
+    if contrast(fg, bg) >= target:
+        return fg
+    toward = "#000000" if _rel_lum(bg) > 0.5 else "#ffffff"
+    out = fg
+    for i in range(1, 101):
+        out = _blend(fg, toward, i / 100)
+        if contrast(out, bg) >= target:
+            break
+    return out
+
+
+def is_light(p: "Palette") -> bool:
+    """Whether a palette is a light theme (used to set the OS colour-scheme hint
+    so native/un-QSS'd surfaces match)."""
+    return _rel_lum(p.bg) > 0.5
+
+
+# The custom theme: the user edits these 8 base roles; the rest are derived.
+CUSTOM = "Custom"
+CUSTOM_ROLES = ("bg", "surface", "border", "text",
+                "accent", "warn", "danger", "positive")
+
+
+def derive_palette(base: dict) -> Palette:
+    """Build a full Palette from the 8 user-edited base roles, deriving the
+    shade/variant roles. Works for a light or dark base (direction flips off
+    bg luminance). Text-ish derived roles are clamped to WCAG AA on bg so a
+    custom theme can't produce unreadable secondary text."""
+    bg, surface, border, text = (base["bg"], base["surface"],
+                                 base["border"], base["text"])
+    accent, warn, danger, positive = (base["accent"], base["warn"],
+                                      base["danger"], base["positive"])
+    black, white = "#000000", "#ffffff"
+    hover_toward = black if _rel_lum(bg) > 0.5 else white  # darken light / lighten dark
+    return Palette(
+        bg=bg,
+        bg_deep=_blend(bg, black, 0.16),
+        bg_deepest=_blend(bg, black, 0.26),
+        surface=surface,
+        surface_dim=_blend(surface, bg, 0.55),
+        surface_sunken=_blend(surface, border, 0.5),
+        border=border,
+        border_dim=_blend(border, text, 0.32),
+        text=text,
+        text_dim=ensure_contrast(_blend(text, bg, 0.30), bg, 4.5),
+        text_muted=ensure_contrast(_blend(text, bg, 0.46), bg, 4.5),
+        accent=accent,
+        accent_hover=_blend(accent, hover_toward, 0.14),
+        warn=warn,
+        danger=danger,
+        danger_strong=_blend(danger, black, 0.20),
+        positive=positive,
+        idle=ensure_contrast(_blend(text, bg, 0.52), bg, 4.2),
+    )
+
+
+_DEFAULT_CUSTOM = {r: getattr(MIDNIGHT_SALMON, r) for r in CUSTOM_ROLES}
+_custom_base = dict(_DEFAULT_CUSTOM)
+
+
+def custom_base() -> dict:
+    """The 8 base hexes of the custom theme (a copy)."""
+    return dict(_custom_base)
+
+
+def set_custom_base(base: dict) -> None:
+    """Replace the custom theme's base colours (missing roles keep the default)."""
+    global _custom_base
+    _custom_base = {r: base.get(r, _DEFAULT_CUSTOM[r]) for r in CUSTOM_ROLES}
+
+
+def custom_base_from(p: "Palette") -> dict:
+    """Extract the 8 base roles from a palette (used to seed Custom from the
+    currently-active theme — 'copy the current theme')."""
+    return {r: getattr(p, r) for r in CUSTOM_ROLES}
+
+
+def custom_palette() -> Palette:
+    """The full custom Palette derived from the current base colours."""
+    return derive_palette(_custom_base)
+
+
+def _resolve(name: str) -> Palette:
+    """Concrete name -> Palette. CUSTOM builds from the base colours; unknown
+    names fall back to the default."""
+    if name == CUSTOM:
+        return custom_palette()
+    return PRESETS.get(name, MIDNIGHT_SALMON)
 
 # Module-level "which theme is live" state. Consumers call active(); the app
 # calls apply_selection() (via apply_theme in dashboard) on startup and switches.
@@ -350,9 +465,10 @@ def apply_selection(selected_name: str, concrete_name: str) -> Palette:
     """
     global _selected, _active_name, _active_palette
     _selected = selected_name
-    if concrete_name not in PRESETS:
+    if concrete_name != CUSTOM and concrete_name not in PRESETS:
         concrete_name = DEFAULT_NAME
-    _active_name, _active_palette = concrete_name, PRESETS[concrete_name]
+    _active_name = concrete_name
+    _active_palette = _resolve(concrete_name)
     return _active_palette
 
 

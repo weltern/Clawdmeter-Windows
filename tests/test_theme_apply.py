@@ -26,6 +26,7 @@ import theme  # noqa: E402
 _app = QApplication.instance() or QApplication([])
 # Tests must never persist a theme into HKCU.
 app_settings.set_theme = lambda name: None
+app_settings.set_custom_base = lambda base: None
 
 
 def _reset():
@@ -106,6 +107,36 @@ def test_scrolling_labels_follow_theme_on_switch():
         _reset()
         name.deleteLater()
         sub.deleteLater()
+
+
+def test_apply_custom_theme_uses_derived_palette():
+    try:
+        theme.set_custom_base(theme.custom_base_from(theme.get("Dracula")))
+        dashboard.apply_theme(theme.CUSTOM)
+        assert theme.selected() == theme.CUSTOM
+        assert theme.active_name() == theme.CUSTOM
+        assert theme.active().accent == theme.get("Dracula").accent   # base flows through
+    finally:
+        theme.set_custom_base(theme.custom_base_from(theme.MIDNIGHT_SALMON))
+        _reset()
+
+
+def test_custom_editor_commit_and_fix_contrast():
+    ed = dashboard.CustomThemeEditor()
+    try:
+        base = theme.custom_base()
+        base["bg"] = "#ffffff"
+        base["accent"] = "#dddddd"      # near-invisible on white
+        ed._commit(base)
+        assert theme.selected() == theme.CUSTOM
+        assert theme.active().accent == "#dddddd"
+        ed._fix_contrast()              # should darken accent until AA-clear
+        assert theme.contrast(theme.custom_base()["accent"],
+                              theme.custom_base()["bg"]) >= 4.5
+    finally:
+        theme.set_custom_base(theme.custom_base_from(theme.MIDNIGHT_SALMON))
+        _reset()
+        ed.deleteLater()
 
 
 def test_apply_follow_system_resolves_and_remembers_selection():
