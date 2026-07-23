@@ -22,6 +22,9 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("Clawdmeter")
     app.setOrganizationName(app_settings.ORG)
+    # Ties the app to packaging/clawdmeter.desktop so Wayland uses its icon
+    # (the app_id must match the .desktop basename). No-op on Windows.
+    app.setDesktopFileName("clawdmeter")
     app.setQuitOnLastWindowClosed(False)  # tray keeps app alive
 
     # Single instance: if a copy is already running, surface its window and
@@ -53,6 +56,12 @@ def main() -> int:
         # Sign-in launch: stay in the tray (don't pop the window). The poller,
         # update checker and transcript watcher already start in __init__.
         run_at_startup.sync_if_enabled()  # keep the entry pointed at this .exe
+        # ...unless there's no system tray to stay in (some Linux DEs): a hidden
+        # tray-less launch would be invisible and unrecoverable, so show the
+        # window instead. Gated off Windows so the Windows sign-in path is
+        # provably unchanged (it always has a tray regardless).
+        if sys.platform != "win32" and not getattr(win, "tray_available", True):
+            win.show_initial()
     else:
         win.show_initial()   # launch directly into the last-used view mode
 

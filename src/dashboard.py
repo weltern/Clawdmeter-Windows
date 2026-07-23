@@ -172,7 +172,7 @@ QLabel#reset { font-size: 12px; color: #9ca3af; }
 QLabel#statusText { font-size: 12px; font-weight: 600; }
 QLabel#statusText[level="warn"] { color: #f59e0b; }
 QLabel#statusText[level="block"] { color: #dc2626; }
-QLabel#statusIcon { font-size: 14px; font-family: "Segoe UI Emoji"; }
+QLabel#statusIcon { font-size: 14px; font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif; }
 
 QPushButton {
     background-color: #1f2937; color: #e6edf3; border: 1px solid #374151;
@@ -198,7 +198,7 @@ QPushButton#navBtn {
     background: transparent; color: #9ca3af; border: 0;
     border-radius: 6px; padding: 9px 14px;
     text-align: left; font-size: 13px; font-weight: 600;
-    font-family: "Segoe UI", "Font Awesome 6 Free";
+    font-family: "Segoe UI", "Helvetica Neue", "Noto Sans", "DejaVu Sans", "Font Awesome 6 Free", sans-serif;
 }
 QPushButton#navBtn:hover { background-color: #1f2937; color: #e6edf3; }
 QPushButton#navBtn:checked { background-color: #1f2937; color: #CE7D6B; }
@@ -311,7 +311,7 @@ QPushButton#railBtn {
     border-radius: 6px; padding: 9px 0px 9px 8px;  /* no right pad: icon never clips,
                                                        and stays put as the rail widens */
     text-align: left; font-size: 15px; font-weight: 600;
-    font-family: "Segoe UI", "Font Awesome 6 Free";
+    font-family: "Segoe UI", "Helvetica Neue", "Noto Sans", "DejaVu Sans", "Font Awesome 6 Free", sans-serif;
 }
 QPushButton#railBtn:hover { background-color: #1f2937; color: #e6edf3; }
 QPushButton#railBtn:checked { background-color: #1f2937; color: #CE7D6B; }
@@ -606,7 +606,7 @@ class MiniWidget(QWidget):
             moved = (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
             if moved >= QApplication.startDragDistance():
                 self._press_pos = None
-                winutil.start_native_move(int(self.winId()))
+                winutil.start_move(self)
             e.accept()
 
     def mouseReleaseEvent(self, e) -> None:
@@ -828,9 +828,23 @@ class TitleBar(QWidget):
         self.caret_btn.setToolTip("Full view" if up else "Compact view")
 
     def mousePressEvent(self, e) -> None:
-        if e.button() == Qt.LeftButton:
-            self._press_pos = e.globalPosition().toPoint()
-            e.accept()
+        if e.button() != Qt.LeftButton:
+            return
+        # Off Windows, the title bar overlaps the window's top resize border (and
+        # the upper part of the side/corner borders), so a press there must start
+        # an OS resize, not a move — otherwise the top edge is unresizable because
+        # this widget accepts the press before it can reach Dashboard's own
+        # border handler. On Windows the WM_NCHITTEST path in Dashboard.nativeEvent
+        # already handles the border before this widget sees the press.
+        if not winutil.is_windows() and not self._win.isMaximized():
+            wp = self._win.mapFromGlobal(e.globalPosition().toPoint())
+            hit = winutil.hit_test(wp.x(), wp.y(), self._win.width(), self._win.height())
+            if hit != winutil.HTCLIENT:
+                winutil.start_resize(self._win, winutil.edges_for_hit(hit))
+                e.accept()
+                return
+        self._press_pos = e.globalPosition().toPoint()
+        e.accept()
 
     def mouseMoveEvent(self, e) -> None:
         # Once past the drag threshold, hand the move to Windows' native move
@@ -850,7 +864,7 @@ class TitleBar(QWidget):
             # If the OS maximized us (e.g. Win+Up), restore before the handoff so
             # the window follows the cursor at its normal size.
             self._win.showNormal()
-        winutil.start_native_move(int(self._win.winId()))
+        winutil.start_move(self._win)
         e.accept()
 
     def mouseReleaseEvent(self, e) -> None:
@@ -1188,7 +1202,9 @@ class SettingsPanel(QWidget):
         )
         startup_hint.setWordWrap(True)
         layout.addWidget(startup_hint)
-        self.startup_check = QCheckBox("Start when I sign in to Windows")
+        self.startup_check = QCheckBox(
+            "Start when I sign in to Windows" if winutil.is_windows()
+            else "Start when I sign in")
         self.startup_check.setChecked(run_at_startup.is_enabled())
         self.startup_check.setEnabled(run_at_startup.is_supported())
         self.startup_check.toggled.connect(self._on_run_at_startup_toggled)
@@ -1457,17 +1473,25 @@ class SettingsPanel(QWidget):
 
         layout = gen_layout
         layout.addSpacing(10)
-        layout.addWidget(QLabel("START MENU", objectName="sectionLabel"))
-        hint = QLabel(
+        self._start_menu_label = QLabel("START MENU", objectName="sectionLabel")
+        layout.addWidget(self._start_menu_label)
+        self._start_menu_hint = QLabel(
             "Adds a Start menu shortcut. Right-click it in Start to Pin to Start.",
             objectName="sectionHint",
         )
-        hint.setWordWrap(True)
-        layout.addWidget(hint)
+        self._start_menu_hint.setWordWrap(True)
+        layout.addWidget(self._start_menu_hint)
         self.start_btn = QPushButton()
         self.start_btn.clicked.connect(self._on_start_menu_toggled)
         layout.addWidget(self.start_btn)
-        self._refresh_start_menu_btn()
+        # A Start Menu shortcut is a Windows-only concept; hide the whole section
+        # off Windows rather than showing a disabled, Windows-worded control.
+        if start_menu.is_supported():
+            self._refresh_start_menu_btn()
+        else:
+            self._start_menu_label.setVisible(False)
+            self._start_menu_hint.setVisible(False)
+            self.start_btn.setVisible(False)
 
         layout = about_layout
         layout.addWidget(QLabel("ABOUT", objectName="sectionLabel"))
@@ -2238,6 +2262,12 @@ class Dashboard(QMainWindow):
         self._update_info = None
         self._tray.setToolTip("Clawdmeter - starting…")
         self._tray.show()
+        # Whether the desktop actually has a system tray to dock into. On Windows
+        # there always is one; on Linux it depends on the DE (e.g. GNOME needs an
+        # AppIndicator/Tray extension). main.py reads this to avoid launching
+        # invisibly at sign-in, and _maybe_warn_no_tray() surfaces a one-time
+        # notice when the window is shown without a tray.
+        self.tray_available = QSystemTrayIcon.isSystemTrayAvailable()
 
         # Tray-flash state for the limit-reset notification.
         self._flash_timer = QTimer(self)
@@ -2686,7 +2716,7 @@ class Dashboard(QMainWindow):
         """Zero-flicker topmost via SetWindowPos. Qt's setWindowFlag forces a
         window re-creation, which flickers; SetWindowPos changes the OS-level
         WS_EX_TOPMOST bit on the existing HWND."""
-        winutil.set_topmost(int(self.winId()), on)
+        winutil.set_topmost(self, on)
 
     def _apply_auto_hide(self, on: bool) -> None:
         """Toggle the auto-hide title bar feature.
@@ -2775,6 +2805,25 @@ class Dashboard(QMainWindow):
                 if hit != winutil.HTCLIENT:
                     return True, hit
         return super().nativeEvent(eventType, message)
+
+    def mousePressEvent(self, e) -> None:
+        """Off Windows, drive edge/corner resize from a border press.
+
+        Windows resizes via the WM_NCHITTEST path in ``nativeEvent`` above, so
+        this is purely additive for the non-Windows compositor route: a left
+        press inside the resize border hands off to ``QWindow.startSystemResize``
+        (via winutil). Interior presses (HTCLIENT) fall through to the default
+        so the title-bar drag-move and all normal input are unaffected.
+        """
+        if (not winutil.is_windows() and e.button() == Qt.LeftButton
+                and not self.isMaximized()):
+            pos = e.position().toPoint()
+            hit = winutil.hit_test(pos.x(), pos.y(), self.width(), self.height())
+            if hit != winutil.HTCLIENT:
+                winutil.start_resize(self, winutil.edges_for_hit(hit))
+                e.accept()
+                return
+        super().mousePressEvent(e)
 
     def _build_row(self, label_text: str):
         outer = QVBoxLayout()
@@ -3563,11 +3612,35 @@ class Dashboard(QMainWindow):
 
     def show_initial(self) -> None:
         """Launch into the last-used view mode directly (no full-window flash)."""
+        self._maybe_warn_no_tray()
         mode = app_settings.get_view_mode()
         if mode == "full":
             self.show()
         else:
             self._set_view_mode(mode, persist=False)
+
+    def _maybe_warn_no_tray(self) -> None:
+        """Once, if no system tray was detected, tell the user the tray icon
+        won't appear (and, on GNOME, how to fix it).
+
+        Clawdmeter is tray-first, so a silent tray-less launch would look broken.
+        Only fires when the window is actually being shown (never during a
+        hidden sign-in launch), and only the first time — gated on a QSettings
+        flag so it doesn't nag on every open.
+        """
+        if self.tray_available:
+            return
+        settings = app_settings._settings()
+        if settings.value("ui/tray_notice_shown", False, type=bool):
+            return
+        settings.setValue("ui/tray_notice_shown", True)
+        QMessageBox.information(
+            self, "Clawdmeter",
+            "No system tray was detected, so the Clawdmeter tray icon won't "
+            "appear. The window still works normally.\n\n"
+            "On GNOME, enable the AppIndicator/Tray extension to get the tray "
+            "icon back.",
+        )
 
     def _stash_mini(self) -> None:
         if self.mini.isVisible():
@@ -3648,9 +3721,12 @@ class Dashboard(QMainWindow):
         self._restore_view()
 
     def closeEvent(self, event) -> None:
-        # Minimize to tray unless the user opted into quit-on-close (or the tray
-        # isn't available, in which case closing must actually exit).
-        if app_settings.get_quit_on_close() or not self._tray.isVisible():
+        # Minimize to tray unless the user opted into quit-on-close (or there is
+        # no system tray to minimize to — e.g. some Linux DEs — in which case
+        # closing must actually exit, not hide the window into nowhere).
+        # isVisible() reports the icon's requested state, not whether a tray host
+        # exists, so gate on the authoritative isSystemTrayAvailable() flag.
+        if app_settings.get_quit_on_close() or not getattr(self, "tray_available", True):
             event.accept()
             self._real_quit()
         else:

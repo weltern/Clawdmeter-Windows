@@ -1,0 +1,119 @@
+name: build
+
+# Builds Windows + Linux artifacts, runs the test suite on both, and launch-tests
+# the Linux binary across distros. Artifacts are uploaded to the run (and, on a
+# vX.Y.Z tag, are what you attach to the GitHub release manually — CI never
+# publishes a release on its own).
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Qt runtime libs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libglib2.0-0 libdbus-1-3 \
+            libxkbcommon0 libfontconfig1 fonts-dejavu-core
+      - name: Install deps
+        run: pip install -r requirements.txt pytest
+      - name: pytest
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest tests/ -q
+
+  build-linux:
+    # Pin to 22.04 (glibc 2.35): the resulting binary runs on any distro with
+    # glibc >= 2.35 (Ubuntu 22.04+, Debian 12+, Fedora, Arch). Building on a newer
+    # runner would silently raise the floor and drop older LTS users.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build + Qt runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3.10-venv libpython3.10 \
+            libgl1 libegl1 libglib2.0-0 libdbus-1-3 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 \
+            libfontconfig1 fonts-dejavu-core
+      - name: Build
+        run: bash build.sh
+      - name: Launch smoke (offscreen)
+        run: |
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout 8 dist/Clawdmeter --mock >/tmp/o 2>&1
+          [ $? -eq 124 ] && echo "OK — still running after 8s" || { echo "FAILED:"; cat /tmp/o; exit 1; }
+      - name: Package tarball
+        run: |
+          v="${GITHUB_REF_NAME#v}"; [ "$GITHUB_REF_TYPE" = tag ] || v="dev"
+          name="Clawdmeter-${v}-linux-x86_64"
+          mkdir -p "pkg/$name"
+          cp dist/Clawdmeter packaging/clawdmeter.desktop packaging/install.sh "pkg/$name/"
+          cp assets/icon.png "pkg/$name/clawdmeter.png"
+          chmod +x "pkg/$name/Clawdmeter" "pkg/$name/install.sh"
+          tar czf "$name.tar.gz" -C pkg "$name"
+          sha256sum "$name.tar.gz" | tee "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clawdmeter-linux
+          path: |
+            Clawdmeter-*-linux-x86_64.tar.gz
+            Clawdmeter-*-linux-x86_64.tar.gz.sha256
+
+  launch-matrix:
+    # Prove the built binary starts on a spread of distros/glibc versions. Bare
+    # images have no graphics stack, so install the minimal runtime libs first,
+    # then launch headless (offscreen) and require it to still be alive at 8s.
+    needs: build-linux
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:22.04', 'ubuntu:24.04', 'debian:12', 'fedora:40', 'archlinux']
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: clawdmeter-linux
+      - name: Launch in ${{ matrix.image }}
+        run: |
+          tar xzf Clawdmeter-*-linux-x86_64.tar.gz
+          docker run --rm -v "$PWD:/w" -w /w -e QT_QPA_PLATFORM=offscreen ${{ matrix.image }} sh -c '
+            if command -v apt-get >/dev/null; then
+              apt-get update -qq && apt-get install -y -qq libgl1 libegl1 libglib2.0-0 libfontconfig1 libdbus-1-3 coreutils >/dev/null
+            elif command -v dnf >/dev/null; then
+              dnf install -y -q mesa-libGL mesa-libEGL glib2 fontconfig dbus-libs coreutils >/dev/null
+            elif command -v pacman >/dev/null; then
+              pacman -Sy --noconfirm libglvnd glib2 fontconfig >/dev/null
+            fi
+            b=$(find /w -name Clawdmeter -type f | head -1); chmod +x "$b"
+            timeout 8 "$b" --mock >/tmp/o 2>&1; c=$?
+            echo "launch exit=$c"; [ "$c" = 124 ] && echo "LAUNCH_OK" || { cat /tmp/o; exit 1; }
+          '
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        shell: pwsh
+        run: ./build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clawdmeter-windows
+          path: |
+            dist/Clawdmeter.exe
+            dist/Clawdmeter.exe.sha256

@@ -1,16 +1,17 @@
-"""Single-instance guard for Clawdmeter-Windows.
+"""Single-instance guard for Clawdmeter.
 
 Without this, each relaunch starts a brand-new process while the previous one
 is still alive in the system tray, so processes pile up. This uses a
-QLocalServer named pipe: the first instance listens; later launches connect to
-it, ask it to show its window, and exit immediately instead of duplicating.
+QLocalServer named pipe (a Unix domain socket off Windows): the first instance
+listens; later launches connect to it, ask it to show its window, and exit
+immediately instead of duplicating.
 """
 
 from __future__ import annotations
 
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
-SERVER_NAME = "Clawdmeter-Windows.singleton"
+SERVER_NAME = "Clawdmeter.singleton"
 
 
 def activate_running_instance(timeout_ms: int = 300) -> bool:

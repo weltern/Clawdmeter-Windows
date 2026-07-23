@@ -43,7 +43,9 @@ from transcript import (  # noqa: E402
 
 
 def test_project_name_from_cwd_uses_cwd_leaf():
-    cwd = r"C:\Claude\ClonedRepos\Clawdmeter-Windows"
+    # Build with the running OS separator so Path(cwd).name resolves the leaf on
+    # both Windows and POSIX (a backslash literal isn't a separator on Linux).
+    cwd = os.sep.join(["C:", "Claude", "ClonedRepos", "Clawdmeter-Windows"])
     assert project_name_from_cwd(cwd, None) == "Clawdmeter-Windows"
 
 
@@ -195,7 +197,8 @@ def test_last_active_falls_back_to_wall_clock_without_timestamp():
 
 
 def test_session_label_prefers_custom_then_ai_then_cwd():
-    cwd = r"C:\Claude\ClonedRepos\Clawdmeter-Windows"
+    # OS-native separator so the cwd leaf resolves on Windows and POSIX alike.
+    cwd = os.sep.join(["C:", "Claude", "ClonedRepos", "Clawdmeter-Windows"])
     # custom title wins over everything
     assert session_label("My Tab", "Auto Title", cwd, None) == "My Tab"
     # no custom -> auto (ai) title
@@ -233,7 +236,8 @@ def test_session_tail_falls_back_to_cwd_leaf_without_titles():
     tail = _SessionTail(Path("/p/proj/sess.jsonl"))
     tail._consume_event({
         "type": "user",
-        "cwd": r"C:\Work\my-repo",
+        # OS-native separator so Path(cwd).name yields the leaf on either platform.
+        "cwd": os.sep.join(["C:", "Work", "my-repo"]),
         "message": {"role": "user", "content": "hi"},
     })
     assert tail._state(Activity.IDLE, None, is_stale=True).project_name == "my-repo"
@@ -312,9 +316,10 @@ def test_classify_last_tool_use_wins():
 
 
 def test_classify_extracts_target_from_tool_input():
+    # OS-native separator so Path(file_path).name yields the leaf on either platform.
     a, tool, target = _classify(
         [{"type": "tool_use", "name": "Read",
-          "input": {"file_path": r"C:\x\thisisatest.txt"}}])
+          "input": {"file_path": os.sep.join(["C:", "x", "thisisatest.txt"])}}])
     assert (a, tool, target) == (Activity.READING, "Read", "thisisatest.txt")
     assert _classify([{"type": "tool_use", "name": "Grep",
                        "input": {"pattern": "def foo"}}])[2] == "def foo"

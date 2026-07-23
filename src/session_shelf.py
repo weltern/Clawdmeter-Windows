@@ -1253,7 +1253,7 @@ class CompactView(QWidget):
             moved = (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
             if moved >= QApplication.startDragDistance():
                 self._press_pos = None
-                winutil.start_native_move(int(self.winId()))
+                winutil.start_move(self)
             e.accept()
 
     def mouseReleaseEvent(self, e) -> None:

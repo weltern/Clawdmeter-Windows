@@ -4,7 +4,15 @@
 
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+import sys
+
 block_cipher = None
+
+# Platform flags for the size-pruning and packaging logic below. Everything is
+# structured so a future macOS build is an additive branch, not a rewrite.
+_IS_WIN = sys.platform == 'win32'
+_IS_MAC = sys.platform == 'darwin'
 
 a = Analysis(
     ['src/main.py'],
@@ -91,6 +99,38 @@ a.binaries = TOC([b for b in a.binaries
 # 5. Qt's own UI translations (~6 MB of .qm). The app installs no QTranslator, so
 #    these are never loaded; its UI strings are hardcoded English.
 a.datas = [d for d in a.datas if 'translations' not in d[0].lower()]
+
+# 6. Cross-platform prune (Linux/macOS). Filters 1-5 above key off '\'-separated
+#    basenames or Windows plugin names, so they largely no-op off Windows — which
+#    keeps the Windows build byte-for-byte identical. Re-apply the equivalent
+#    prune for the current non-Windows OS here, keeping only the platform
+#    plugin(s) it actually uses. macOS-ready: qcocoa is in the keep list, so a
+#    future darwin build needs no change here.
+if not _IS_WIN:
+    def _base(p):
+        return os.path.basename(p.replace('\\', '/'))
+
+    def _plugin_stem(p):
+        n = _base(p).lower()
+        return (n[3:] if n.startswith('lib') else n).split('.')[0]
+
+    _KEEP_PLAT = (('qcocoa', 'qoffscreen') if _IS_MAC
+                  else ('qxcb', 'qwayland', 'qwayland-egl', 'qoffscreen'))
+    # Only PNG/.ico are used and PNG is built into Qt6Gui, so no image-format
+    # plugin is needed off Windows (Linux/macOS take their window icon from the
+    # .desktop entry / .app bundle, not a Qt .ico plugin).
+    _DROP_IMG_X = ('qjpeg', 'qtiff', 'qgif', 'qwebp', 'qwbmp', 'qtga', 'qicns',
+                   'qico', 'qsvg', 'qpdf')
+
+    def _keep_binary(b):
+        parts = b[0].replace('\\', '/').split('/')
+        if 'platforms' in parts:
+            return _plugin_stem(b[0]) in _KEEP_PLAT
+        if 'imageformats' in parts:
+            return _plugin_stem(b[0]) not in _DROP_IMG_X
+        return True
+
+    a.binaries = TOC([b for b in a.binaries if _keep_binary(b)])
 # ---------------------------------------------------------------------------
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
@@ -100,41 +140,58 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 # prompt) a real File/Product version, name, and copyright. The version is
 # parsed from APP_VERSION in src/app_settings.py so it always matches the in-app
 # About box -- bump it there and rebuild; nothing here needs touching.
-import re
-from PyInstaller.utils.win32.versioninfo import (
-    VSVersionInfo, FixedFileInfo, StringFileInfo, StringTable,
-    StringStruct, VarFileInfo, VarStruct,
-)
+import sys
 
-with open('src/app_settings.py', encoding='utf-8') as _f:
-    _m = re.search(r'APP_VERSION\s*=\s*["\']([0-9]+(?:\.[0-9]+)*)["\']', _f.read())
-_ver_str = _m.group(1) if _m else '0.0.0'
-_vtuple = tuple(([int(p) for p in _ver_str.split('.')] + [0, 0, 0, 0])[:4])
+# The version resource is a Windows-only concept (and its builder lives under
+# PyInstaller.utils.win32, which only imports on Windows). Off Windows the Linux
+# build carries no embedded version resource — the .desktop entry and release
+# metadata cover that instead — so leave it None.
+version_info = None
+if sys.platform == 'win32':
+    import re
+    from PyInstaller.utils.win32.versioninfo import (
+        VSVersionInfo, FixedFileInfo, StringFileInfo, StringTable,
+        StringStruct, VarFileInfo, VarStruct,
+    )
 
-version_info = VSVersionInfo(
-    ffi=FixedFileInfo(filevers=_vtuple, prodvers=_vtuple),
-    kids=[
-        StringFileInfo([
-            StringTable('040904B0', [
-                StringStruct('CompanyName', 'Nick Welter'),
-                StringStruct('FileDescription',
-                             'Clawdmeter-Windows — Claude Code usage dashboard'),
-                StringStruct('FileVersion', _ver_str),
-                StringStruct('InternalName', 'Clawdmeter'),
-                StringStruct('LegalCopyright',
-                             '© 2026 Nick Welter · MIT licensed · '
-                             'Clawd mascot © Anthropic PBC'),
-                StringStruct('OriginalFilename', 'Clawdmeter.exe'),
-                StringStruct('ProductName', 'Clawdmeter-Windows'),
-                StringStruct('ProductVersion', _ver_str),
-                StringStruct('Comments',
-                             'Unofficial; not affiliated with Anthropic. '
-                             'github.com/weltern/Clawdmeter-Windows'),
+    with open('src/app_settings.py', encoding='utf-8') as _f:
+        _m = re.search(r'APP_VERSION\s*=\s*["\']([0-9]+(?:\.[0-9]+)*)["\']', _f.read())
+    _ver_str = _m.group(1) if _m else '0.0.0'
+    _vtuple = tuple(([int(p) for p in _ver_str.split('.')] + [0, 0, 0, 0])[:4])
+
+    version_info = VSVersionInfo(
+        ffi=FixedFileInfo(filevers=_vtuple, prodvers=_vtuple),
+        kids=[
+            StringFileInfo([
+                StringTable('040904B0', [
+                    StringStruct('CompanyName', 'Nick Welter'),
+                    StringStruct('FileDescription',
+                                 'Clawdmeter-Windows — Claude Code usage dashboard'),
+                    StringStruct('FileVersion', _ver_str),
+                    StringStruct('InternalName', 'Clawdmeter'),
+                    StringStruct('LegalCopyright',
+                                 '© 2026 Nick Welter · MIT licensed · '
+                                 'Clawd mascot © Anthropic PBC'),
+                    StringStruct('OriginalFilename', 'Clawdmeter.exe'),
+                    StringStruct('ProductName', 'Clawdmeter-Windows'),
+                    StringStruct('ProductVersion', _ver_str),
+                    StringStruct('Comments',
+                                 'Unofficial; not affiliated with Anthropic. '
+                                 'github.com/weltern/Clawdmeter-Windows'),
+                ]),
             ]),
-        ]),
-        VarFileInfo([VarStruct('Translation', [0x0409, 0x04B0])]),
-    ],
-)
+            VarFileInfo([VarStruct('Translation', [0x0409, 0x04B0])]),
+        ],
+    )
+
+# App/window icon per platform. macOS uses an .icns (drop assets/icon.icns in
+# when a darwin build is added); Linux takes its icon from the .desktop entry.
+if _IS_WIN:
+    _ICON = 'assets/icon.ico'
+elif _IS_MAC:
+    _ICON = 'assets/icon.icns' if os.path.exists('assets/icon.icns') else None
+else:
+    _ICON = None
 
 exe = EXE(
     pyz,
@@ -154,6 +211,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/icon.ico',
+    icon=_ICON,
     version=version_info,
 )
