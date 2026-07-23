@@ -57,6 +57,18 @@ jobs:
           set +e
           QT_QPA_PLATFORM=offscreen timeout 8 dist/Clawdmeter --mock >/tmp/o 2>&1
           [ $? -eq 124 ] && echo "OK — still running after 8s" || { echo "FAILED:"; cat /tmp/o; exit 1; }
+      - name: Assert glibc floor <= 2.35
+        # The onefile bootloader links the runner's libc, so its glibc floor =
+        # the runner's. runs-on: ubuntu-22.04 keeps that at 2.35; this fails the
+        # build if a future runner bump silently raises it and would drop
+        # Ubuntu 22.04 / Debian 12 users.
+        run: |
+          floor="$(objdump -T dist/Clawdmeter | grep -oE 'GLIBC_[0-9.]+' | sed 's/GLIBC_//' | sort -V | tail -1)"
+          echo "highest GLIBC symbol required: ${floor:-none}"
+          if [ -n "$floor" ] && [ "$(printf '%s\n2.35\n' "$floor" | sort -V | tail -1)" != "2.35" ]; then
+            echo "::error::glibc floor $floor exceeds 2.35 — would drop Ubuntu 22.04 / Debian 12 users. Build on ubuntu-22.04."
+            exit 1
+          fi
       - name: Package tarball
         run: |
           v="${GITHUB_REF_NAME#v}"; [ "$GITHUB_REF_TYPE" = tag ] || v="dev"
