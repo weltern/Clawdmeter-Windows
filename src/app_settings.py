@@ -19,6 +19,8 @@ KEY_COMPACT_POS = "window/compact_pos"
 KEY_VIEW_MODE = "window/view_mode"
 KEY_THEME = "ui/theme"
 KEY_CUSTOM_THEME = "ui/custom_theme"
+KEY_SYSTEM_DARK = "ui/system_dark"
+KEY_SYSTEM_LIGHT = "ui/system_light"
 KEY_SHOW_MULTIPLE_SESSIONS = "sessions/show_multiple"
 KEY_SHOW_SUBAGENTS = "sessions/show_subagents"
 KEY_SHOW_TOKEN_USAGE = "tokens/show_usage"
@@ -197,6 +199,18 @@ def get_custom_base() -> dict | None:
 
 def set_custom_base(base: dict) -> None:
     _settings().setValue(KEY_CUSTOM_THEME, json.dumps(base))
+
+
+def get_system_targets() -> tuple:
+    """Saved (dark, light) Follow System target preset names; either may be ""
+    if never set (the app then keeps the built-in default)."""
+    s = _settings()
+    return (str(s.value(KEY_SYSTEM_DARK, "")), str(s.value(KEY_SYSTEM_LIGHT, "")))
+
+
+def set_system_targets(dark: str, light: str) -> None:
+    _settings().setValue(KEY_SYSTEM_DARK, dark)
+    _settings().setValue(KEY_SYSTEM_LIGHT, light)
 
 
 def get_show_multiple_sessions() -> bool:

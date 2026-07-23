@@ -1090,6 +1090,53 @@ class _PresetRow(QFrame):
         super().mousePressEvent(e)
 
 
+class _SystemTargets(QWidget):
+    """Sub-controls shown under the Follow System row: choose which preset it
+    uses when the OS is dark vs. light. The dark dropdown lists dark presets;
+    the light dropdown lists light presets."""
+
+    changed = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(34, 0, 12, 8)   # indent under the Follow System row
+        lay.setSpacing(7)
+        darks = [n for n in theme.names() if not theme.is_light(theme.get(n))]
+        lights = [n for n in theme.names() if theme.is_light(theme.get(n))]
+        self._dark = self._make_row(lay, "When dark", darks)
+        self._light = self._make_row(lay, "When light", lights)
+
+    def _make_row(self, lay, label, names) -> "_ThemedCombo":
+        row = QHBoxLayout()
+        row.setSpacing(9)
+        lbl = QLabel(label, objectName="sectionHint")
+        lbl.setFixedWidth(66)
+        row.addWidget(lbl)
+        combo = _ThemedCombo()
+        combo.setFocusPolicy(Qt.StrongFocus)
+        combo.setIconSize(QSize(60, 16))
+        for n in names:
+            combo.addItem(_PresetRow._swatch_icon(n), n)
+        combo.currentTextChanged.connect(self._on_change)
+        row.addWidget(combo, 1)
+        lay.addLayout(row)
+        return combo
+
+    def _on_change(self, *_) -> None:
+        dark, light = self._dark.currentText(), self._light.currentText()
+        theme.set_system_targets(dark, light)
+        app_settings.set_system_targets(dark, light)
+        self.changed.emit()
+
+    def sync(self) -> None:
+        d, light = theme.system_targets()
+        for combo, val in ((self._dark, d), (self._light, light)):
+            combo.blockSignals(True)
+            combo.setCurrentText(val)
+            combo.blockSignals(False)
+
+
 class _PvBar(QWidget):
     """A tiny fixed-fill usage bar for the editor's live preview."""
 
@@ -1432,6 +1479,10 @@ class SettingsPanel(QWidget):
         self._sys_option.selected.connect(self._on_theme_selected)
         appearance_layout.addWidget(self._sys_option)
         self._theme_options.append(self._sys_option)
+        # Its selectable dark/light targets, revealed when Follow System is on.
+        self._system_targets = _SystemTargets()
+        self._system_targets.changed.connect(self._on_system_targets_changed)
+        appearance_layout.addWidget(self._system_targets)
         # 2. Custom theme — user-editable; swatches track the custom palette.
         self._custom_option = _ThemeOption(theme.CUSTOM, theme.custom_palette(),
                                            editable=True)
@@ -1842,10 +1893,19 @@ class SettingsPanel(QWidget):
         dlg.exec()
         self._sync_theme_selection()
 
+    def _on_system_targets_changed(self) -> None:
+        # If Follow System is active, re-resolve to the new target right away.
+        if theme.selected() == theme.SYSTEM:
+            apply_theme(theme.SYSTEM)
+        self._sync_theme_selection()
+
     def _sync_theme_selection(self) -> None:
         sel = theme.selected()
         self._custom_option.refresh_swatches(theme.custom_palette())
+        self._sys_option.refresh_swatches(theme.active())
         self._sys_option.set_selected(sel == theme.SYSTEM)
+        self._system_targets.setVisible(sel == theme.SYSTEM)
+        self._system_targets.sync()
         self._custom_option.set_selected(sel == theme.CUSTOM)
         is_preset = sel in theme.PRESETS
         self._preset_row.set_selected(is_preset)

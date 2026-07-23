@@ -304,13 +304,31 @@ DEFAULT_NAME = "Midnight Salmon"
 # scheme and resolves to one of these two presets. The app reads the OS scheme
 # (Qt styleHints) and calls apply_selection() with the result.
 SYSTEM = "Follow System"
-SYSTEM_DARK = "Midnight Salmon"
-SYSTEM_LIGHT = "Daybreak"
+SYSTEM_DARK = "Midnight Salmon"   # default dark target
+SYSTEM_LIGHT = "Daybreak"         # default light target
+# User-selectable targets (persisted by the app); default to the constants.
+_sys_dark = SYSTEM_DARK
+_sys_light = SYSTEM_LIGHT
 
 
 def system_target(os_is_dark: bool) -> str:
     """The preset 'Follow System' resolves to for the given OS scheme."""
-    return SYSTEM_DARK if os_is_dark else SYSTEM_LIGHT
+    return _sys_dark if os_is_dark else _sys_light
+
+
+def system_targets() -> tuple:
+    """The (dark, light) presets 'Follow System' currently resolves to."""
+    return _sys_dark, _sys_light
+
+
+def set_system_targets(dark: str, light: str) -> None:
+    """Choose which presets 'Follow System' uses for OS dark / light. Unknown
+    names are ignored (keep the previous value)."""
+    global _sys_dark, _sys_light
+    if dark in PRESETS:
+        _sys_dark = dark
+    if light in PRESETS:
+        _sys_light = light
 
 
 # ── Colour math (WCAG) + custom-theme derivation ─────────────────────────────

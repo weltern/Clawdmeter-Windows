@@ -118,6 +118,19 @@ def test_system_target_maps_scheme_to_a_real_preset():
     assert theme.is_light(theme.get(theme.SYSTEM_LIGHT))
 
 
+def test_system_targets_are_selectable():
+    try:
+        theme.set_system_targets("Dracula", "Sepia")
+        assert theme.system_targets() == ("Dracula", "Sepia")
+        assert theme.system_target(True) == "Dracula"    # OS dark  -> dark target
+        assert theme.system_target(False) == "Sepia"     # OS light -> light target
+        theme.set_system_targets("nope", "Nord Light")   # unknown dark ignored
+        assert theme.system_target(True) == "Dracula"
+        assert theme.system_target(False) == "Nord Light"
+    finally:
+        theme.set_system_targets(theme.SYSTEM_DARK, theme.SYSTEM_LIGHT)
+
+
 def test_apply_selection_records_selection_and_resolves():
     try:
         theme.apply_selection(theme.SYSTEM, "Daybreak")

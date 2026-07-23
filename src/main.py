@@ -62,6 +62,10 @@ def main() -> int:
     saved_custom = app_settings.get_custom_base()
     if saved_custom:
         theme.set_custom_base(saved_custom)
+    sys_dark, sys_light = app_settings.get_system_targets()
+    if sys_dark or sys_light:
+        theme.set_system_targets(sys_dark or theme.SYSTEM_DARK,
+                                 sys_light or theme.SYSTEM_LIGHT)
     apply_theme(app_settings.get_theme())
 
     win = Dashboard(mock=mock)

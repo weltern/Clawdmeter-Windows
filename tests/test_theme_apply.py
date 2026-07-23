@@ -27,6 +27,7 @@ _app = QApplication.instance() or QApplication([])
 # Tests must never persist a theme into HKCU.
 app_settings.set_theme = lambda name: None
 app_settings.set_custom_base = lambda base: None
+app_settings.set_system_targets = lambda *a: None
 
 
 def _reset():
