@@ -181,6 +181,34 @@ AMBER_CRT = Palette(
 )
 
 
+# ── Light presets ────────────────────────────────────────────────────────────
+# Light palettes invert the neutral ramp (bg is the lightest, text the darkest),
+# and their status/accent colours are DARKENED versions so they clear WCAG AA on
+# a light background. Values were contrast-audited (text roles >=4.5, idle >=4.2).
+
+# Daybreak — clean cool-white daytime theme; deepened salmon accent.
+DAYBREAK = Palette(
+    bg="#f7f8fa", bg_deep="#eef1f5", bg_deepest="#e8ecf1",
+    surface="#e6eaf0", surface_dim="#dde2e8", surface_sunken="#ccd2da",
+    border="#d5dae1", border_dim="#aab2bd",
+    text="#1b1f27", text_dim="#454c59", text_muted="#626a77",
+    accent="#b65239", accent_hover="#d0654a",
+    warn="#b45309", danger="#cf2020", danger_strong="#b31818", positive="#1c8146",
+    idle="#707784",
+)
+
+# Sepia — warm paper / e-reader theme; sienna accent.
+SEPIA = Palette(
+    bg="#f4ecd8", bg_deep="#ece2c9", bg_deepest="#e6dcc0",
+    surface="#e6dbbe", surface_dim="#e2d7ba", surface_sunken="#d0c09b",
+    border="#cdbb92", border_dim="#bda57f",
+    text="#3f3527", text_dim="#6a5c43", text_muted="#786749",
+    accent="#a3532a", accent_hover="#b8632f",
+    warn="#906008", danger="#a02b25", danger_strong="#86241f", positive="#5a7220",
+    idle="#7f6d4d",
+)
+
+
 # Ordered catalogue. First entry is the default. To reorder or add a preset,
 # edit this dict — the Appearance picker and persistence read it directly.
 PRESETS = {
@@ -192,11 +220,38 @@ PRESETS = {
     "Gruvbox": GRUVBOX,
     "Terminal Green": TERMINAL_GREEN,
     "Amber CRT": AMBER_CRT,
+    "Daybreak": DAYBREAK,
+    "Sepia": SEPIA,
 }
 DEFAULT_NAME = "Midnight Salmon"
 
+# "Follow System" is a selection, not a palette: it tracks the OS light/dark
+# scheme and resolves to one of these two presets. The app reads the OS scheme
+# (Qt styleHints) and calls apply_selection() with the result.
+SYSTEM = "Follow System"
+SYSTEM_DARK = "Midnight Salmon"
+SYSTEM_LIGHT = "Daybreak"
+
+
+def is_light(p: "Palette") -> bool:
+    """Whether a palette is a light theme (used to set the OS colour-scheme hint
+    so native/un-QSS'd surfaces match)."""
+    h = p.bg.lstrip("#")
+    r, g, b = (int(h[i:i+2], 16) / 255 for i in (0, 2, 4))
+    def _l(c):
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    return 0.2126 * _l(r) + 0.7152 * _l(g) + 0.0722 * _l(b) > 0.5
+
+
+def system_target(os_is_dark: bool) -> str:
+    """The preset 'Follow System' resolves to for the given OS scheme."""
+    return SYSTEM_DARK if os_is_dark else SYSTEM_LIGHT
+
 # Module-level "which theme is live" state. Consumers call active(); the app
-# calls set_active() (via apply_theme in dashboard) on startup and on a switch.
+# calls apply_selection() (via apply_theme in dashboard) on startup and switches.
+# `_selected` is the user's pick (a preset name OR SYSTEM); `_active_*` is the
+# concrete palette in force (SYSTEM resolved against the OS scheme by the caller).
+_selected = DEFAULT_NAME
 _active_name = DEFAULT_NAME
 _active_palette = MIDNIGHT_SALMON
 
@@ -204,6 +259,26 @@ _active_palette = MIDNIGHT_SALMON
 def names() -> list:
     """Preset display names, in catalogue order."""
     return list(PRESETS)
+
+
+def selected() -> str:
+    """The user's current selection — a preset name or SYSTEM."""
+    return _selected
+
+
+def apply_selection(selected_name: str, concrete_name: str) -> Palette:
+    """Record the user's selection and set the resolved concrete palette.
+
+    `selected_name` is what the user picked (a preset name or SYSTEM);
+    `concrete_name` is the preset actually shown (the caller resolves SYSTEM
+    against the OS scheme first). Unknown concretes fall back to the default.
+    """
+    global _selected, _active_name, _active_palette
+    _selected = selected_name
+    if concrete_name not in PRESETS:
+        concrete_name = DEFAULT_NAME
+    _active_name, _active_palette = concrete_name, PRESETS[concrete_name]
+    return _active_palette
 
 
 def get(name: str) -> Palette:
@@ -222,11 +297,13 @@ def set_active(name: str) -> Palette:
     Pure state — emits no signal and restyles nothing. The app's apply_theme()
     orchestrates the refresh/restyle after calling this.
     """
-    global _active_name, _active_palette
+    global _active_name, _active_palette, _selected
     if name in PRESETS:
-        _active_name, _active_palette = name, PRESETS[name]
+        _active_name = _selected = name
+        _active_palette = PRESETS[name]
     else:
-        _active_name, _active_palette = DEFAULT_NAME, MIDNIGHT_SALMON
+        _active_name = _selected = DEFAULT_NAME
+        _active_palette = MIDNIGHT_SALMON
     return _active_palette
 
 
@@ -372,7 +449,7 @@ QLineEdit, QSpinBox {
     background-color: #0e1116; color: #e6edf3;
     border: 1px solid #374151; border-radius: 6px;
     padding: 4px 8px;
-    selection-background-color: #CE7D6B; selection-color: #0a0d12;
+    selection-background-color: #CE7D6B; selection-color: #0a0a0a;
 }
 QLineEdit:focus, QSpinBox:focus { border-color: #CE7D6B; }
 QLineEdit:disabled, QSpinBox:disabled {

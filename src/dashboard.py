@@ -153,42 +153,75 @@ VIEW_ORDER = ("full", "compact", "mini")
 STYLESHEET = theme.build_qss(theme.active())
 
 
-def apply_theme(name: str) -> None:
-    """Switch the whole app to preset ``name`` and restyle every live widget in
+_applying_theme = False
+
+
+def apply_theme(selected: str) -> None:
+    """Switch the whole app to ``selected`` and restyle every live widget in
     place — no restart. Persists the choice.
 
-    Safe to call at startup before any widgets exist: it just sets the active
-    palette and refreshes the module colour caches, so widgets built afterward
-    come up themed. On a live switch it also walks every existing widget and
-    swaps the old stylesheet strings for the freshly-built ones, then repaints
-    the custom-painted widgets (which read the module QColors at paint time).
+    ``selected`` is a preset name OR ``theme.SYSTEM``. For Follow System we clear
+    any colour-scheme override so Qt reports the OS scheme, resolve to the
+    matching dark/light preset, and keep tracking it (see the OS-scheme signal
+    wired in Dashboard). For a fixed preset we pin the OS colour-scheme hint to
+    the palette's light/dark nature so native / un-QSS'd surfaces (menus,
+    tooltips, message boxes — notably on macOS) match.
+
+    Safe to call at startup before any widgets exist: it sets the active palette
+    and refreshes the module colour caches, so widgets built afterward come up
+    themed. On a live switch it walks every existing widget, swaps the old
+    stylesheet strings for the freshly-built ones, and repaints the
+    custom-painted widgets (which read the module QColors at paint time).
     """
-    global STYLESHEET
-    old_base, old_shelf, old_compact = (
-        STYLESHEET, session_shelf.SHELF_STYLESHEET, session_shelf.COMPACT_STYLESHEET)
-
-    theme.set_active(name)
-    app_settings.set_theme(theme.active_name())
-    statviz.refresh_theme()
-    session_shelf.refresh_theme()
-    STYLESHEET = theme.build_qss(theme.active())
-
-    app = QApplication.instance()
-    if app is None:
+    global STYLESHEET, _applying_theme
+    if _applying_theme:
         return
-    pairs = (
-        (old_base, STYLESHEET),
-        (old_shelf, session_shelf.SHELF_STYLESHEET),
-        (old_compact, session_shelf.COMPACT_STYLESHEET),
-    )
-    for w in app.allWidgets():
-        sheet = w.styleSheet()
-        if sheet:
-            for old, new in pairs:
-                if sheet == old:
-                    w.setStyleSheet(new)
-                    break
-        w.update()  # repaint custom-painted widgets that read module QColors
+    _applying_theme = True
+    try:
+        app = QApplication.instance()
+        sh = app.styleHints() if app is not None else None
+
+        if selected == theme.SYSTEM:
+            # Clear any override so colorScheme() reflects the OS, then resolve.
+            if sh is not None:
+                sh.setColorScheme(Qt.ColorScheme.Unknown)
+            os_dark = sh.colorScheme() != Qt.ColorScheme.Light if sh else True
+            concrete = theme.system_target(os_dark)
+        else:
+            concrete = selected if selected in theme.PRESETS else theme.DEFAULT_NAME
+
+        old_base, old_shelf, old_compact = (
+            STYLESHEET, session_shelf.SHELF_STYLESHEET, session_shelf.COMPACT_STYLESHEET)
+
+        theme.apply_selection(selected, concrete)
+        app_settings.set_theme(theme.selected())
+        statviz.refresh_theme()
+        session_shelf.refresh_theme()
+        STYLESHEET = theme.build_qss(theme.active())
+
+        # Fixed preset: pin the OS colour-scheme hint to match. Follow System
+        # left its override cleared above so it keeps tracking the OS.
+        if sh is not None and selected != theme.SYSTEM:
+            sh.setColorScheme(Qt.ColorScheme.Light if theme.is_light(theme.active())
+                              else Qt.ColorScheme.Dark)
+
+        if app is None:
+            return
+        pairs = (
+            (old_base, STYLESHEET),
+            (old_shelf, session_shelf.SHELF_STYLESHEET),
+            (old_compact, session_shelf.COMPACT_STYLESHEET),
+        )
+        for w in app.allWidgets():
+            sheet = w.styleSheet()
+            if sheet:
+                for old, new in pairs:
+                    if sheet == old:
+                        w.setStyleSheet(new)
+                        break
+            w.update()  # repaint custom-painted widgets that read module QColors
+    finally:
+        _applying_theme = False
 
 
 def _tray_pixmap(pct: int) -> QPixmap:
@@ -1032,9 +1065,16 @@ class SettingsPanel(QWidget):
         for _tname in theme.names():
             opt = _ThemeOption(_tname, theme.get(_tname))
             opt.selected.connect(self._on_theme_selected)
-            opt.set_selected(_tname == theme.active_name())
+            opt.set_selected(_tname == theme.selected())
             appearance_layout.addWidget(opt)
             self._theme_options.append(opt)
+        # Follow System resolves to a dark/light preset per the OS scheme; its
+        # swatches show whatever it currently resolves to.
+        sys_opt = _ThemeOption(theme.SYSTEM, theme.active())
+        sys_opt.selected.connect(self._on_theme_selected)
+        sys_opt.set_selected(theme.selected() == theme.SYSTEM)
+        appearance_layout.addWidget(sys_opt)
+        self._theme_options.append(sys_opt)
 
         # `layout` is a moving cursor: each section appends to whichever tab page
         # it currently points at, reassigned at the section boundaries below.
@@ -1412,7 +1452,7 @@ class SettingsPanel(QWidget):
     def _on_theme_selected(self, name: str) -> None:
         apply_theme(name)
         for opt in self._theme_options:
-            opt.set_selected(opt._name == theme.active_name())
+            opt.set_selected(opt._name == theme.selected())
 
     def _refresh_cred_status(self) -> None:
         override = app_settings.get_credentials_override()
@@ -2172,6 +2212,12 @@ class Dashboard(QMainWindow):
         # invisibly at sign-in, and _maybe_warn_no_tray() surfaces a one-time
         # notice when the window is shown without a tray.
         self.tray_available = QSystemTrayIcon.isSystemTrayAvailable()
+
+        # When the user is on "Follow System", re-resolve the theme whenever the
+        # OS flips light/dark. Ignored for fixed presets (apply_theme no-ops the
+        # re-resolve because selected() != SYSTEM).
+        QApplication.instance().styleHints().colorSchemeChanged.connect(
+            self._on_os_scheme_changed)
 
         # Tray-flash state for the limit-reset notification.
         self._flash_timer = QTimer(self)
@@ -3512,6 +3558,12 @@ class Dashboard(QMainWindow):
         """Tray click / 'Show' / pop-to-front: re-show the last-used mode without
         re-persisting it (it's already the saved value)."""
         self._set_view_mode(getattr(self, "_view_mode", "full"), persist=False)
+
+    def _on_os_scheme_changed(self, _scheme=None) -> None:
+        """OS light/dark flipped. Only matters on Follow System — re-resolve to
+        the matching preset (apply_theme no-ops for fixed presets)."""
+        if theme.selected() == theme.SYSTEM:
+            apply_theme(theme.SYSTEM)
 
     def show_initial(self) -> None:
         """Launch into the last-used view mode directly (no full-window flash)."""

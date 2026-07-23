@@ -102,6 +102,32 @@ def test_get_unknown_returns_default():
     assert theme.get("nope") is MIDNIGHT_SALMON
 
 
+def test_light_presets_are_light_and_darks_are_dark():
+    for name in ("Daybreak", "Sepia"):
+        assert theme.is_light(theme.get(name)), name
+    for name in ("Midnight Salmon", "Nord", "Dracula", "Amber CRT"):
+        assert not theme.is_light(theme.get(name)), name
+
+
+def test_system_target_maps_scheme_to_a_real_preset():
+    assert theme.system_target(True) == theme.SYSTEM_DARK
+    assert theme.system_target(False) == theme.SYSTEM_LIGHT
+    assert theme.SYSTEM_DARK in theme.PRESETS
+    assert theme.SYSTEM_LIGHT in theme.PRESETS
+    assert not theme.is_light(theme.get(theme.SYSTEM_DARK))
+    assert theme.is_light(theme.get(theme.SYSTEM_LIGHT))
+
+
+def test_apply_selection_records_selection_and_resolves():
+    try:
+        theme.apply_selection(theme.SYSTEM, "Daybreak")
+        assert theme.selected() == theme.SYSTEM      # user's pick remembered
+        assert theme.active_name() == "Daybreak"     # resolved concrete palette
+        assert theme.active() is theme.PRESETS["Daybreak"]
+    finally:
+        theme.set_active(theme.DEFAULT_NAME)
+
+
 if __name__ == "__main__":
     import pytest
     raise SystemExit(pytest.main([__file__, "-q"]))

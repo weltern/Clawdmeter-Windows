@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import sys
 
-from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -21,12 +20,9 @@ def main() -> int:
     mock = "--mock" in sys.argv
     startup = run_at_startup.STARTUP_FLAG in sys.argv  # launched at sign-in
     app = QApplication(sys.argv)
-    # macOS draws un-QSS'd / native text from the system palette, which is BLACK
-    # in Light mode and clashes with the dark theme (some titles unreadable).
-    # Force the dark colour scheme so the palette matches the dark stylesheet.
-    # macOS only, so Windows/Linux appearance stays provably unchanged.
-    if sys.platform == "darwin":
-        app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
+    # The OS colour-scheme hint (for native / un-QSS'd surfaces — notably macOS
+    # native text) is set to match the active theme by apply_theme() below, so a
+    # light theme renders correctly on every platform.
     app.setApplicationName("Clawdmeter")
     app.setOrganizationName(app_settings.ORG)
     # Ties the app to packaging/clawdmeter.desktop so Wayland uses its icon

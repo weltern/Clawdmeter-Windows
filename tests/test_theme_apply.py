@@ -89,6 +89,16 @@ def test_apply_every_preset_without_error():
         _reset()
 
 
+def test_apply_follow_system_resolves_and_remembers_selection():
+    try:
+        dashboard.apply_theme(theme.SYSTEM)
+        assert theme.selected() == theme.SYSTEM
+        # Resolves to a real dark/light preset per the OS scheme.
+        assert theme.active_name() in (theme.SYSTEM_DARK, theme.SYSTEM_LIGHT)
+    finally:
+        _reset()
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
