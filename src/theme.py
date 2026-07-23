@@ -208,6 +208,50 @@ SEPIA = Palette(
     idle="#7f6d4d",
 )
 
+# Solarized Light — the classic ethanol-cream palette (AA-tuned for readability).
+SOLARIZED_LIGHT = Palette(
+    bg="#fdf6e3", bg_deep="#f2ecda", bg_deepest="#ede7d3",
+    surface="#eee8d5", surface_dim="#e6dfc8", surface_sunken="#dcd4bb",
+    border="#d9d0b8", border_dim="#b8ae95",
+    text="#46565c", text_dim="#5e727a", text_muted="#647171",
+    accent="#2073ae", accent_hover="#3a9bde",
+    warn="#8b6900", danger="#d3302d", danger_strong="#c02824", positive="#687700",
+    idle="#6d7777",
+)
+
+# Nord Light — Nord's "Snow Storm" light variant; darkened frost accent.
+NORD_LIGHT = Palette(
+    bg="#eceff4", bg_deep="#e2e7ee", bg_deepest="#dce3ec",
+    surface="#e5e9f0", surface_dim="#dbe1ea", surface_sunken="#cfd6e2",
+    border="#c3ccdb", border_dim="#a5b0c4",
+    text="#2e3440", text_dim="#3b4252", text_muted="#4c566a",
+    accent="#4f6c90", accent_hover="#6b8fbb",
+    warn="#806816", danger="#a2525a", danger_strong="#a84850", positive="#597145",
+    idle="#677183",
+)
+
+# Gruvbox Light — the warm cream Gruvbox light variant; orange accent.
+GRUVBOX_LIGHT = Palette(
+    bg="#fbf1c7", bg_deep="#f2e8bd", bg_deepest="#ece2b5",
+    surface="#ebdbb2", surface_dim="#e3d3a8", surface_sunken="#d5c4a1",
+    border="#d5c4a1", border_dim="#bdae93",
+    text="#3c3836", text_dim="#504945", text_muted="#6f6553",
+    accent="#af3a03", accent_hover="#c24610",
+    warn="#946110", danger="#9d0006", danger_strong="#820005", positive="#746f0d",
+    idle="#7c6f64",
+)
+
+# High Contrast Light — accessibility-first white; black text, deep accent.
+HIGH_CONTRAST_LIGHT = Palette(
+    bg="#ffffff", bg_deep="#ffffff", bg_deepest="#f4f4f4",
+    surface="#f0f0f0", surface_dim="#e8e8e8", surface_sunken="#dcdcdc",
+    border="#bcbcbc", border_dim="#8a8a8a",
+    text="#000000", text_dim="#2a2a2a", text_muted="#4a4a4a",
+    accent="#b03a1f", accent_hover="#c4472a",
+    warn="#8a5a00", danger="#c11414", danger_strong="#a30f0f", positive="#0f7a3d",
+    idle="#565656",
+)
+
 
 # Ordered catalogue. First entry is the default. To reorder or add a preset,
 # edit this dict — the Appearance picker and persistence read it directly.
@@ -222,6 +266,10 @@ PRESETS = {
     "Amber CRT": AMBER_CRT,
     "Daybreak": DAYBREAK,
     "Sepia": SEPIA,
+    "Solarized Light": SOLARIZED_LIGHT,
+    "Nord Light": NORD_LIGHT,
+    "Gruvbox Light": GRUVBOX_LIGHT,
+    "High Contrast Light": HIGH_CONTRAST_LIGHT,
 }
 DEFAULT_NAME = "Midnight Salmon"
 
