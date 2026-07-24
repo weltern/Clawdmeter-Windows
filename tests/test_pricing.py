@@ -166,6 +166,29 @@ def test_resolve_promotes_variant_once_its_date_arrives():
     assert "rate_changes" not in row
 
 
+def test_resolve_keeps_current_price_over_a_future_only_variant():
+    # An unqualified current price + a lone future "starting" row (unpaired
+    # format): today's real price must stay active, with the future row attached
+    # as a scheduled change -- NOT promoted early over the current price.
+    parsed = {
+        "Claude Sonnet 5": _rates(2.0),
+        "Claude Sonnet 5 starting September 1, 2026": _rates(3.0),
+    }
+    resolved = updater.resolve_time_boxed_variants(parsed, today="2026-07-12")
+    row = resolved["Claude Sonnet 5"]
+    assert row["input"] == 2.0                        # today's price preserved
+    assert row["rate_changes"][0]["effective_from"] == "2026-09-01"
+    assert row["rate_changes"][0]["input"] == 3.0
+
+
+def test_resolve_future_only_variant_with_no_current_keeps_model_visible():
+    # No current price exists at all -> fall back to the earliest future variant
+    # so the model doesn't silently vanish (documented lesser-evil).
+    parsed = {"Claude Sonnet 5 starting September 1, 2026": _rates(3.0)}
+    resolved = updater.resolve_time_boxed_variants(parsed, today="2026-07-12")
+    assert resolved["Claude Sonnet 5"]["input"] == 3.0
+
+
 def test_resolve_leaves_unqualified_names_untouched():
     parsed = {"Claude Opus 4.8": _rates(5.0)}
     resolved = updater.resolve_time_boxed_variants(parsed, today="2026-07-12")

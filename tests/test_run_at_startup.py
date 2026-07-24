@@ -108,6 +108,68 @@ def test_macos_plist_is_well_formed_xml(monkeypatch, tmp_path):
     assert "<key>RunAtLoad</key>" in text
 
 
+# --- Linux XDG autostart branch (forced on via monkeypatch so it runs anywhere) ---
+
+def _force_linux(monkeypatch, tmp_path):
+    """Route the platform dispatch to the Linux branch and sandbox the .desktop."""
+    monkeypatch.setattr(run_at_startup, "_is_linux", lambda: True)
+    monkeypatch.setattr(run_at_startup, "_is_macos", lambda: False)
+    monkeypatch.setattr(run_at_startup, "_autostart_dir", lambda: tmp_path)
+
+
+def test_linux_is_supported_when_forced(monkeypatch, tmp_path):
+    _force_linux(monkeypatch, tmp_path)
+    assert run_at_startup.is_supported() is True
+
+
+def test_linux_autostart_round_trip(monkeypatch, tmp_path):
+    _force_linux(monkeypatch, tmp_path)
+    desktop = tmp_path / run_at_startup.DESKTOP_FILE_NAME
+
+    assert run_at_startup.is_enabled() is False
+
+    ok, msg = run_at_startup.enable()
+    assert ok
+    assert desktop.exists()
+    assert run_at_startup.STARTUP_FLAG in msg
+    assert run_at_startup.is_enabled() is True
+
+    ok, _ = run_at_startup.disable()
+    assert ok
+    assert not desktop.exists()
+    assert run_at_startup.is_enabled() is False
+
+    # Disabling when already absent is a no-op success.
+    ok, _ = run_at_startup.disable()
+    assert ok
+
+
+def test_linux_desktop_entry_is_well_formed(monkeypatch, tmp_path):
+    _force_linux(monkeypatch, tmp_path)
+    run_at_startup.enable()
+    text = (tmp_path / run_at_startup.DESKTOP_FILE_NAME).read_text(encoding="utf-8")
+
+    assert text.startswith("[Desktop Entry]")
+    assert "Type=Application" in text
+    assert "X-GNOME-Autostart-enabled=true" in text
+    exec_line = next(ln for ln in text.splitlines() if ln.startswith("Exec="))
+    assert run_at_startup.STARTUP_FLAG in exec_line
+    assert exec_line.count('"') >= 2          # the binary/script path is quoted
+
+
+def test_linux_exec_escapes_special_chars(monkeypatch, tmp_path):
+    # A binary path with a space, a $ and a % must be quoted + escaped so the
+    # .desktop Exec= line can't be misparsed (freedesktop field-code rules).
+    _force_linux(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_at_startup.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(run_at_startup.sys, "executable", "/opt/Clawd $x/100% app")
+    monkeypatch.delenv("APPIMAGE", raising=False)
+    exec_cmd = run_at_startup._linux_exec()
+    assert "\\$" in exec_cmd                   # $ escaped
+    assert "%%" in exec_cmd                    # literal % doubled
+    assert exec_cmd.endswith(run_at_startup.STARTUP_FLAG)
+
+
 @requires_winreg
 def test_enable_is_enabled_disable_round_trip(temp_run_key):
     assert run_at_startup.is_enabled() is False

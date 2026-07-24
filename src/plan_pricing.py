@@ -152,4 +152,4 @@ def plan_amount(tier: str) -> float | None:
     """The live/derived monthly price for a plan tier, or None if it's not in
     the current override (unknown tier, or no live refresh has happened yet)."""
     entry = load_plan_prices().get(tier)
-    return entry["amount"] if entry else None
+    return entry.get("amount") if isinstance(entry, dict) else None

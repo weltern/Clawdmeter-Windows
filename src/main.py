@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 
@@ -66,7 +67,14 @@ def main() -> int:
     if sys_dark or sys_light:
         theme.set_system_targets(sys_dark or theme.SYSTEM_DARK,
                                  sys_light or theme.SYSTEM_LIGHT)
-    apply_theme(app_settings.get_theme())
+    try:
+        apply_theme(app_settings.get_theme())
+    except Exception:   # noqa: BLE001 - a broken saved/custom theme must never
+        # keep the app from launching; fall back to the built-in default.
+        logging.getLogger(__name__).exception(
+            "Saved theme failed to apply; falling back to the default theme")
+        app_settings.set_theme(theme.DEFAULT_NAME)
+        apply_theme(theme.DEFAULT_NAME)
 
     win = Dashboard(mock=mock)
     if startup:

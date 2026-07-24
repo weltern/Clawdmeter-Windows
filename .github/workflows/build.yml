@@ -69,16 +69,22 @@ jobs:
             echo "::error::glibc floor $floor exceeds 2.35 — would drop Ubuntu 22.04 / Debian 12 users. Build on ubuntu-22.04."
             exit 1
           fi
-      - name: Package tarball
+      - name: Assert Wayland plugin is bundled
+        # M3 guardrail. The onefile can't be ls'd for the plugin, so force the
+        # wayland platform and confirm Qt doesn't report it *missing*. Headless
+        # runners have no compositor, so a "cannot connect to display" error is
+        # expected and fine; only "could not load/find ... 'wayland'" means the
+        # Clawdmeter.spec keep-list dropped libqwayland-generic.so.
         run: |
-          v="${GITHUB_REF_NAME#v}"; [ "$GITHUB_REF_TYPE" = tag ] || v="dev"
-          name="Clawdmeter-${v}-linux-x86_64"
-          mkdir -p "pkg/$name"
-          cp dist/Clawdmeter packaging/clawdmeter.desktop packaging/install.sh "pkg/$name/"
-          cp assets/icon.png "pkg/$name/clawdmeter.png"
-          chmod +x "pkg/$name/Clawdmeter" "pkg/$name/install.sh"
-          tar czf "$name.tar.gz" -C pkg "$name"
-          sha256sum "$name.tar.gz" | tee "$name.tar.gz.sha256"
+          set +e
+          out="$(QT_QPA_PLATFORM=wayland timeout 8 dist/Clawdmeter --mock 2>&1)"
+          echo "$out"
+          if echo "$out" | grep -qiE 'could not (load|find) the qt platform plugin .?wayland'; then
+            echo "::error::Wayland platform plugin missing from the bundle (Clawdmeter.spec keep-list regression)"; exit 1
+          fi
+          echo "OK — wayland plugin present (no missing-plugin error)"
+      # The release tarball (Clawdmeter-<ver>-linux-x86_64.tar.gz + .sha256) is
+      # built by build.sh above, so there's no separate packaging step here.
       - uses: actions/upload-artifact@v4
         with:
           name: clawdmeter-linux

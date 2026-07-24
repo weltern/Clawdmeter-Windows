@@ -316,6 +316,22 @@ def resolve_time_boxed_variants(parsed: dict[str, dict[str, Any]], *,
         current = next((v for v in reversed(variants) if v[0] <= today), None)
         upcoming = [v for v in variants if v[0] > today]
         if current is None:            # every variant is still in the future
+            existing = out.get(base)
+            if existing is not None:
+                # A same-named unqualified current price already exists -- keep
+                # it as the active price and attach the future variants as
+                # scheduled changes, rather than promoting a not-yet-effective
+                # price over today's real one (would misreport actual spend).
+                existing["rate_changes"] = [
+                    {"effective_from": eff,
+                     **{k: v for k, v in fields.items()
+                        if k not in ("display_name", "status")}}
+                    for eff, fields in variants
+                ]
+                continue
+            # No current price at all -> fall back to the earliest future variant
+            # so the model doesn't silently vanish (lesser evil; the documented
+            # paired through+starting format never reaches this branch).
             current = variants[0]
             upcoming = variants[1:]
 

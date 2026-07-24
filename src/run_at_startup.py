@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 from xml.sax.saxutils import escape as _xml_escape
 
@@ -105,10 +106,20 @@ def _linux_exec() -> str:
     """
     if getattr(sys, "frozen", False):
         exe = os.environ.get("APPIMAGE") or sys.executable
-        return f'"{exe}" {STARTUP_FLAG}'
+        return f'{_desktop_exec_arg(exe)} {STARTUP_FLAG}'
     exe = sys.executable
     script = Path(__file__).resolve().parent / "main.py"
-    return f'"{exe}" "{script}" {STARTUP_FLAG}'
+    return f'{_desktop_exec_arg(exe)} {_desktop_exec_arg(str(script))} {STARTUP_FLAG}'
+
+
+def _desktop_exec_arg(s: str) -> str:
+    """Quote one Exec= argument per the freedesktop Desktop Entry spec: inside
+    double quotes, backslash-escape ``\\ " ` $``, and double a literal ``%`` (it
+    would otherwise be read as a field code). Handles exotic chars/spaces in a
+    binary path; a plain path is unaffected."""
+    s = (s.replace("\\", "\\\\").replace('"', '\\"')
+          .replace("`", "\\`").replace("$", "\\$").replace("%", "%%"))
+    return f'"{s}"'
 
 
 def _desktop_entry() -> str:
@@ -129,12 +140,26 @@ def _linux_is_enabled() -> bool:
     return _desktop_file_path().exists()
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text via temp-file + os.replace so a crash mid-write can't leave a
+    truncated autostart entry (sync_if_enabled rewrites this on every launch)."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, str(path))
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
 def _linux_enable() -> tuple[bool, str]:
     """Write (or refresh) the autostart .desktop entry. Returns (success, message)."""
     path = _desktop_file_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_desktop_entry(), encoding="utf-8")
+        _atomic_write_text(path, _desktop_entry())
     except OSError as exc:
         return False, f"Could not write the startup entry: {exc}"
     return True, _linux_exec()
@@ -226,7 +251,7 @@ def _macos_enable() -> tuple[bool, str]:
     path = _plist_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_plist_contents(), encoding="utf-8")
+        _atomic_write_text(path, _plist_contents())
     except OSError as exc:
         return False, f"Could not write the startup entry: {exc}"
     return True, " ".join(_macos_program_arguments())

@@ -114,8 +114,13 @@ if not _IS_WIN:
         n = _base(p).lower()
         return (n[3:] if n.startswith('lib') else n).split('.')[0]
 
+    # NB: the default Wayland platform plugin's file is libqwayland-generic.so
+    # (stem 'qwayland-generic'), NOT 'qwayland' -- keep both so a forced
+    # QT_QPA_PLATFORM=wayland session can actually load it instead of failing
+    # with "could not load the Qt platform plugin 'wayland'".
     _KEEP_PLAT = (('qcocoa', 'qoffscreen') if _IS_MAC
-                  else ('qxcb', 'qwayland', 'qwayland-egl', 'qoffscreen'))
+                  else ('qxcb', 'qwayland', 'qwayland-generic',
+                        'qwayland-egl', 'qoffscreen'))
     # Only PNG/.ico are used and PNG is built into Qt6Gui, so no image-format
     # plugin is needed off Windows (Linux/macOS take their window icon from the
     # .desktop entry / .app bundle, not a Qt .ico plugin).

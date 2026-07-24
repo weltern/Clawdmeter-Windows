@@ -996,8 +996,9 @@ def refresh_theme() -> None:
     """Recompute cached chrome colours + rebuild the shelf/compact stylesheets
     from the now-active palette (for a live theme switch). The app's
     apply_theme() re-applies SHELF_STYLESHEET/COMPACT_STYLESHEET to the live
-    widgets and repaints them afterward. Fixed colours (_BAR_HEAT, _BAR_OVERAGE,
-    _IDLE_COLOR / activity glows) are intentionally left untouched."""
+    widgets and repaints them afterward. This includes the palette-derived
+    _IDLE_COLOR, _BAR_HEAT ramp and _BAR_OVERAGE (they track the theme); only
+    the semantic ACTIVITY_COLORS glow map stays fixed across themes."""
     global _P, _BG, _TEXT, _MUTED, _IDLE_COLOR, _BAR_TRACK, _BAR_BORDER
     global _BAR_HEAT, _BAR_OVERAGE, SHELF_STYLESHEET, COMPACT_STYLESHEET
     _P = theme.active()

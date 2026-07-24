@@ -193,8 +193,8 @@ def get_custom_base() -> dict | None:
     try:
         data = json.loads(raw)
         return data if isinstance(data, dict) else None
-    except (ValueError, TypeError):
-        return None
+    except Exception:   # noqa: BLE001 - a corrupt persisted value (incl. deeply
+        return None     # nested JSON -> RecursionError) must never block startup
 
 
 def set_custom_base(base: dict) -> None:

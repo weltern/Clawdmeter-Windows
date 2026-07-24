@@ -23,11 +23,23 @@ fi
 ./.venv/bin/pyinstaller --clean --noconfirm Clawdmeter.spec
 
 BIN="dist/Clawdmeter"
-# Publish a SHA-256 next to the binary, in the "<hash>  <name>" form the in-app
-# updater (update_check.extract_sha256) reads back from the release notes.
-sha256sum "$BIN" | awk '{print $1"  Clawdmeter"}' > "$BIN.sha256"
+
+# Assemble the SAME artifact CI ships (mirrors build.yml "Package tarball"): the
+# shipped Linux asset is the .tar.gz, not the bare binary, so hash THAT in the
+# "<hash>  <name>" form the in-app updater (update_check.extract_sha256) reads
+# back from the release notes. Building the tarball here keeps a local release
+# consistent with CI instead of leaving a bare-binary hash that doesn't match.
+VER="$(grep -oE 'APP_VERSION *= *"[^"]+"' src/app_settings.py | grep -oE '[0-9][^"]*')"
+NAME="Clawdmeter-${VER:-dev}-linux-x86_64"
+rm -rf "pkg/$NAME" && mkdir -p "pkg/$NAME"
+cp "$BIN" packaging/clawdmeter.desktop packaging/install.sh "pkg/$NAME/"
+cp assets/icon.png "pkg/$NAME/clawdmeter.png"
+chmod +x "pkg/$NAME/Clawdmeter" "pkg/$NAME/install.sh"
+tar czf "$NAME.tar.gz" -C pkg "$NAME"
+sha256sum "$NAME.tar.gz" | tee "$NAME.tar.gz.sha256"
 
 echo ""
 echo "Built:   $BIN"
-echo "SHA-256: $(cut -d' ' -f1 "$BIN.sha256")"
-echo "Size:    $(du -m "$BIN" | cut -f1) MB"
+echo "Package: $NAME.tar.gz"
+echo "SHA-256: $(cut -d' ' -f1 "$NAME.tar.gz.sha256")"
+echo "Size:    $(du -m "$NAME.tar.gz" | cut -f1) MB"

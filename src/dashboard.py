@@ -1375,7 +1375,10 @@ class CustomThemeEditor(QDialog):
             return
         try:
             with open(path, "r", encoding="utf-8") as f:
-                text = f.read()
+                # Read one byte past the cap: parse_custom rejects anything over
+                # MAX_THEME_BYTES, so an over-size (or hostile) file is refused
+                # cleanly instead of being slurped whole.
+                text = f.read(theme.MAX_THEME_BYTES + 1)
         except OSError as e:
             QMessageBox.warning(self, "Import failed",
                                 f"Couldn't read the file:\n{e}")
@@ -1903,11 +1906,21 @@ class SettingsPanel(QWidget):
                              conn_layout, notif_layout, about_layout):
             _page_layout.addStretch(1)
 
+    def _refresh_dynamic_theme_colors(self) -> None:
+        """Re-render the shelf/compact from the last-seen states so the inline
+        (non-QSS) colours — session glows, activity dots — pick up the new
+        palette immediately instead of lagging until the next poll. Reuses the
+        normal per-poll render path, so no bespoke re-colour logic. Safe before
+        the first poll (nothing to render yet)."""
+        if hasattr(self, "_last_raw_states"):
+            self._apply_session_view()
+
     def _on_theme_selected(self, name: str) -> None:
         if name == theme.CUSTOM:
             self._ensure_custom_seeded()   # copy current theme on first use
         apply_theme(name)
         self._sync_theme_selection()
+        self._refresh_dynamic_theme_colors()
 
     def _ensure_custom_seeded(self) -> None:
         # First time the custom theme is used, seed it from whatever theme is
@@ -1920,17 +1933,24 @@ class SettingsPanel(QWidget):
         # Seed from the saved custom theme, or from the current theme the first
         # time ("copy the current theme"). Editing previews in the dialog only;
         # the app changes when the user presses Apply.
-        seed = app_settings.get_custom_base() or theme.custom_base_from(theme.active())
+        self._ensure_custom_seeded()
+        # theme.custom_base() is always the complete, sanitized 8-role base
+        # (set_custom_base fills missing/malformed roles), so the editor can't
+        # KeyError on a partial or corrupt persisted dict.
+        seed = theme.custom_base()
         dlg = CustomThemeEditor(seed, self.window())
         dlg.applied.connect(self._sync_theme_selection)
+        dlg.applied.connect(self._refresh_dynamic_theme_colors)
         dlg.exec()
         self._sync_theme_selection()
+        self._refresh_dynamic_theme_colors()
 
     def _on_system_targets_changed(self) -> None:
         # If Follow System is active, re-resolve to the new target right away.
         if theme.selected() == theme.SYSTEM:
             apply_theme(theme.SYSTEM)
         self._sync_theme_selection()
+        self._refresh_dynamic_theme_colors()
 
     def _sync_theme_selection(self) -> None:
         sel = theme.selected()
@@ -1962,17 +1982,29 @@ class SettingsPanel(QWidget):
         needlessly refreshed into a rate-limit error."""
         path = credentials_path()
         exp = token_refresh.token_expiry_ms(path)
-        needs_refresh = token_refresh.is_expired(path)
-        self.refresh_token_btn.setEnabled(needs_refresh)
-        if needs_refresh:
-            self.refresh_token_btn.setText("Refresh token now")
-            self.refresh_token_btn.setToolTip("")
-        else:
-            self.refresh_token_btn.setText("Token valid — refresh disabled")
+        if token_refresh._macos_keychain_active():
+            # On macOS the token lives in the login Keychain and write-back isn't
+            # implemented, so a manual refresh could only ever return the "not
+            # supported" message. Disable the button rather than enable a dead one.
+            needs_refresh = False
+            self.refresh_token_btn.setEnabled(False)
+            self.refresh_token_btn.setText("Managed by the macOS Keychain")
             self.refresh_token_btn.setToolTip(
-                "Disabled because your token is still valid — it refreshes "
-                "automatically when it expires."
+                "On macOS the token is stored in the login Keychain — run "
+                "`claude` to refresh it; Clawdmeter re-reads it automatically."
             )
+        else:
+            needs_refresh = token_refresh.is_expired(path)
+            self.refresh_token_btn.setEnabled(needs_refresh)
+            if needs_refresh:
+                self.refresh_token_btn.setText("Refresh token now")
+                self.refresh_token_btn.setToolTip("")
+            else:
+                self.refresh_token_btn.setText("Token valid — refresh disabled")
+                self.refresh_token_btn.setToolTip(
+                    "Disabled because your token is still valid — it refreshes "
+                    "automatically when it expires."
+                )
         if exp is None:
             self.token_status.setText("Token expiry unknown.")
             return
@@ -4055,6 +4087,7 @@ class Dashboard(QMainWindow):
         the matching preset (apply_theme no-ops for fixed presets)."""
         if theme.selected() == theme.SYSTEM:
             apply_theme(theme.SYSTEM)
+            self._refresh_dynamic_theme_colors()
 
     def show_initial(self) -> None:
         """Launch into the last-used view mode directly (no full-window flash)."""
@@ -4075,6 +4108,11 @@ class Dashboard(QMainWindow):
         flag so it doesn't nag on every open.
         """
         if self.tray_available:
+            return
+        # Never pop a modal under the offscreen platform (CI launch-smoke): with
+        # no one to dismiss it, the dialog would block the event loop yet the
+        # smoke only checks "still alive at 8s", so a real hang could slip by.
+        if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
             return
         settings = app_settings._settings()
         if settings.value("ui/tray_notice_shown", False, type=bool):
@@ -4172,6 +4210,10 @@ class Dashboard(QMainWindow):
         # closing must actually exit, not hide the window into nowhere).
         # isVisible() reports the icon's requested state, not whether a tray host
         # exists, so gate on the authoritative isSystemTrayAvailable() flag.
+        # Re-query now rather than trusting the __init__ snapshot: a tray host can
+        # register after startup (Linux autostart racing the panel), and the icon
+        # is always show()n, so it docks the moment a host appears.
+        self.tray_available = QSystemTrayIcon.isSystemTrayAvailable()
         if app_settings.get_quit_on_close() or not getattr(self, "tray_available", True):
             event.accept()
             self._real_quit()

@@ -9,9 +9,24 @@ immediately instead of duplicating.
 
 from __future__ import annotations
 
+import os
+import sys
+
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
-SERVER_NAME = "Clawdmeter.singleton"
+
+def _server_name() -> str:
+    base = "Clawdmeter.singleton"
+    if sys.platform == "win32":
+        return base
+    # Off Windows the socket lives in a shared filesystem namespace (e.g. /tmp),
+    # so scope it to the current user — otherwise two users logged into the same
+    # box would collide (one pinging the other's instance, or racing the listen).
+    uid = os.getuid() if hasattr(os, "getuid") else os.environ.get("USER", "user")
+    return f"{base}.{uid}"
+
+
+SERVER_NAME = _server_name()
 
 
 def activate_running_instance(timeout_ms: int = 300) -> bool:

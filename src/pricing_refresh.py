@@ -95,6 +95,10 @@ def fetch_model_registry(token: str, timeout: float = 15.0) -> dict[str, str]:
             if not data.get("has_more"):
                 break
             after_id = data.get("last_id")
+            if not after_id:
+                # Malformed page: has_more=True but no cursor. Stop rather than
+                # re-request the same first page forever (would hang the thread).
+                break
     return registry
 
 
@@ -146,12 +150,20 @@ class PricingRefresher(QThread):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._stop = False
+        # On a sustained fetch/parse failure the daily throttle (keyed on the
+        # last *success*) stays due, so without this the cycle would re-hit the
+        # network every _WAKE_SECONDS. Back off instead, capped at the daily gate.
+        self._fail_count = 0
+        self._retry_not_before = 0.0
 
     def stop(self) -> None:
         self._stop = True
 
     def _due(self) -> bool:
-        return (time.time() - app_settings.get_last_pricing_refresh()) >= CHECK_INTERVAL_SECONDS
+        now = time.time()
+        if now < self._retry_not_before:
+            return False   # in a post-failure backoff window
+        return (now - app_settings.get_last_pricing_refresh()) >= CHECK_INTERVAL_SECONDS
 
     def _fetch_registry(self) -> dict[str, str] | None:
         """Best-effort: None (not an error) if there's no session token, or the
@@ -177,10 +189,16 @@ class PricingRefresher(QThread):
             registry = self._fetch_registry()
             new_map = pricing_updater.build_price_map(parsed, registry=registry)
         except Exception as exc:   # noqa: BLE001 - a bad page/network must never
-            # crash this thread; a run of failures just retries next wake cycle
-            # rather than falsely marking today as checked (mirrors UpdateChecker).
+            # crash this thread; back off (5min, 10min, ... capped at the daily
+            # gate) instead of re-hitting the network every wake cycle, since the
+            # success-keyed throttle stays due through a sustained failure.
+            self._fail_count += 1
+            self._retry_not_before = time.time() + min(
+                300 * self._fail_count, CHECK_INTERVAL_SECONDS)
             log.warning("Live pricing refresh failed, will retry: %s", exc)
         else:
+            self._fail_count = 0
+            self._retry_not_before = 0.0
             app_settings.set_last_pricing_refresh(time.time())
 
             path = cache_path()
@@ -220,7 +238,12 @@ class PricingRefresher(QThread):
             self.msleep(1000)
 
         while not self._stop:
-            self._refresh_once()   # throttled internally via _due()
+            try:
+                self._refresh_once()   # throttled internally via _due()
+            except Exception as exc:   # noqa: BLE001 - the module contract is
+                # "never crash this thread"; an unguarded write OSError (AV lock,
+                # disk full) must degrade to bundled prices, not kill the poller.
+                log.warning("Pricing refresh cycle errored, will retry: %s", exc)
             for _ in range(_WAKE_SECONDS):
                 if self._stop:
                     return

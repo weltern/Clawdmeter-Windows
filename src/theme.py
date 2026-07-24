@@ -393,10 +393,11 @@ CUSTOM_ROLES = ("bg", "surface", "border", "text",
 def derive_palette(base: dict) -> Palette:
     """Build a full Palette from the 8 user-edited base roles, deriving the
     shade/variant roles. Works for a light or dark base (direction flips off
-    bg luminance). Text-ish derived roles are clamped to WCAG AA on bg so a
-    custom theme can't produce unreadable secondary text."""
-    bg, surface, border, text = (base["bg"], base["surface"],
-                                 base["border"], base["text"])
+    bg luminance). The primary and derived text roles are all clamped to WCAG
+    AA on bg so a custom or *imported* theme can never produce unreadable text
+    (the in-picker contrast warning is advisory; this is the hard floor)."""
+    bg, surface, border = base["bg"], base["surface"], base["border"]
+    text = ensure_contrast(base["text"], base["bg"], 4.5)
     accent, warn, danger, positive = (base["accent"], base["warn"],
                                       base["danger"], base["positive"])
     black, white = "#000000", "#ffffff"
@@ -432,10 +433,20 @@ def custom_base() -> dict:
     return dict(_custom_base)
 
 
+def _valid_hex(v: object) -> bool:
+    return isinstance(v, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", v) is not None
+
+
 def set_custom_base(base: dict) -> None:
-    """Replace the custom theme's base colours (missing roles keep the default)."""
+    """Replace the custom theme's base colours. A missing *or malformed* role
+    falls back to the default, so a corrupt persisted value or a hand-edited
+    theme file can never feed an invalid hex into derive_palette (which would
+    crash colour math at startup)."""
     global _custom_base
-    _custom_base = {r: base.get(r, _DEFAULT_CUSTOM[r]) for r in CUSTOM_ROLES}
+    if not isinstance(base, dict):
+        base = {}
+    _custom_base = {r: (base.get(r) if _valid_hex(base.get(r)) else _DEFAULT_CUSTOM[r])
+                    for r in CUSTOM_ROLES}
 
 
 def custom_base_from(p: "Palette") -> dict:
@@ -459,6 +470,11 @@ def _resolve(name: str) -> Palette:
 
 _THEME_FORMAT = 1
 
+# A real theme is 8 short hex strings (~250 bytes; ~500 pretty-printed with the
+# wrapper). This generous cap rejects a hostile/huge file before json.loads --
+# and, crucially, before deeply-nested JSON can exhaust the recursion limit.
+MAX_THEME_BYTES = 64 * 1024
+
 
 def serialize_custom(base: dict) -> str:
     """A custom theme's base colours as a shareable, pretty-printed JSON string."""
@@ -471,10 +487,17 @@ def serialize_custom(base: dict) -> str:
 def parse_custom(text: str) -> "dict | None":
     """Parse a theme-file string into a validated base dict, or None if it isn't
     a valid theme (bad JSON, a missing role, or a malformed colour). Accepts
-    either the wrapped ``{"base": {...}}`` form or a bare ``{role: hex}`` map."""
+    either the wrapped ``{"base": {...}}`` form or a bare ``{role: hex}`` map.
+
+    A theme file is untrusted, shareable input, so every failure mode -- bad
+    JSON, wrong type, an oversized file, or deeply-nested JSON (which makes
+    json.loads raise RecursionError, a RuntimeError subclass) -- must return
+    None rather than propagate and crash the app on Import."""
+    if not isinstance(text, str) or len(text) > MAX_THEME_BYTES:
+        return None
     try:
         data = json.loads(text)
-    except (ValueError, TypeError):
+    except Exception:   # noqa: BLE001 - untrusted input; incl. RecursionError
         return None
     if not isinstance(data, dict):
         return None
