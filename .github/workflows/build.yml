@@ -70,19 +70,23 @@ jobs:
             exit 1
           fi
       - name: Assert Wayland plugin is bundled
-        # M3 guardrail. The onefile can't be ls'd for the plugin, so force the
-        # wayland platform and confirm Qt doesn't report it *missing*. Headless
-        # runners have no compositor, so a "cannot connect to display" error is
-        # expected and fine; only "could not load/find ... 'wayland'" means the
-        # Clawdmeter.spec keep-list dropped libqwayland-generic.so.
+        # Regression guard for the spec keep-list. Launch under the offscreen
+        # platform (works headless) so the onefile extracts to /tmp/_MEI*, then
+        # assert the Wayland plugin file is present. NB: forcing
+        # QT_QPA_PLATFORM=wayland is NOT a valid check here -- with no compositor
+        # on the runner it errors whether or not the plugin is bundled.
         run: |
           set +e
-          out="$(QT_QPA_PLATFORM=wayland timeout 8 dist/Clawdmeter --mock 2>&1)"
-          echo "$out"
-          if echo "$out" | grep -qiE 'could not (load|find) the qt platform plugin .?wayland'; then
-            echo "::error::Wayland platform plugin missing from the bundle (Clawdmeter.spec keep-list regression)"; exit 1
+          QT_QPA_PLATFORM=offscreen timeout 8 dist/Clawdmeter --mock >/dev/null 2>&1 &
+          pid=$!; sleep 5
+          plat="$(ls -d /tmp/_MEI*/PySide6/Qt/plugins/platforms 2>/dev/null | head -1)"
+          echo "bundled platform plugins: $(ls "$plat" 2>/dev/null | tr '\n' ' ')"
+          kill $pid 2>/dev/null
+          if [ -f "$plat/libqwayland.so" ]; then
+            echo "OK — libqwayland.so bundled"
+          else
+            echo "::error::libqwayland.so missing from the bundle (Clawdmeter.spec keep-list regression)"; exit 1
           fi
-          echo "OK — wayland plugin present (no missing-plugin error)"
       # The release tarball (Clawdmeter-<ver>-linux-x86_64.tar.gz + .sha256) is
       # built by build.sh above, so there's no separate packaging step here.
       - uses: actions/upload-artifact@v4
