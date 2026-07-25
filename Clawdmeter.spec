@@ -30,7 +30,10 @@ a = Analysis(
         # via _MEIPASS/pricing/price_map.json (see src/pricing/__init__.py).
         ('src/pricing/price_map.json', 'pricing'),
     ],
-    hiddenimports=[],
+    # macOS: NSColorSampler is reached via a lazy `from AppKit import ...`, so
+    # PyInstaller's static analysis misses it -- force-collect AppKit (its pyobjc
+    # hook pulls in Foundation + pyobjc-core). No-op on Windows/Linux.
+    hiddenimports=(['AppKit'] if _IS_MAC else []),
     hookspath=[],
     runtime_hooks=[],
     excludes=[

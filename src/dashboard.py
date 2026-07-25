@@ -153,7 +153,14 @@ def _should_release_autofit(height_changed, fitting, armed, max_involved, titleb
 VIEW_ORDER = ("full", "compact", "mini")
 
 
-STYLESHEET = theme.build_qss(theme.active())
+# The frameless windows draw a 1px #root border to define their edge -- good on
+# Windows/Linux, but on macOS it reads as a stray dark line around the window
+# (the OS already gives frameless windows a shadow). Make it transparent there.
+_ROOT_BORDER_OVERRIDE = (
+    "\nQWidget#root { border-color: transparent; }" if sys.platform == "darwin" else "")
+
+
+STYLESHEET = theme.build_qss(theme.active()) + _ROOT_BORDER_OVERRIDE
 
 
 _applying_theme = False
@@ -202,7 +209,7 @@ def apply_theme(selected: str) -> None:
         app_settings.set_theme(theme.selected())
         statviz.refresh_theme()
         session_shelf.refresh_theme()
-        STYLESHEET = theme.build_qss(theme.active())
+        STYLESHEET = theme.build_qss(theme.active()) + _ROOT_BORDER_OVERRIDE
 
         # Fixed preset: pin the OS colour-scheme hint to match. Follow System
         # left its override cleared above so it keeps tracking the OS.

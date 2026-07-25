@@ -1,2 +1,6 @@
 PySide6==6.11.1
 httpx==0.27.2
+# macOS only: the native NSColorSampler system eyedropper (AppKit) for the theme
+# editor's colour picker. The marker keeps it off Windows/Linux, where the DIY
+# screenshot-overlay eyedropper is used instead.
+pyobjc-framework-Cocoa>=10.3 ; sys_platform == "darwin"
