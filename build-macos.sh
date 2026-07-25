@@ -80,9 +80,61 @@ rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 shasum -a 256 "$ZIP" | awk '{print $1"  Clawdmeter-macos.zip"}' > "$ZIP.sha256"
 
+# --- package: drag-to-install .dmg ------------------------------------------
+# The disk image is what a user actually downloads: open it and you get a window
+# with Clawdmeter on the left and an Applications alias on the right — drag
+# across to install, the way VS Code / Slack / Docker ship.
+#
+# dmgbuild (not create-dmg) because it writes the window's .DS_Store directly
+# instead of driving Finder over AppleScript, so this works on a headless/SSH
+# build box. Set SKIP_DMG=1 to build just the .app + zip.
+DMG="dist/Clawdmeter.dmg"
+if [ "${SKIP_DMG:-0}" = "1" ]; then
+    echo "==> SKIP_DMG=1 — not building the disk image"
+    DMG=""
+else
+    echo "==> Building $DMG"
+    # The [badge_icons] extra pulls pyobjc-framework-Quartz. Without it dmgbuild
+    # SILENTLY skips badge_icon and the mounted volume gets the generic white
+    # drive icon instead of Clawd — verified the hard way.
+    pip install --quiet "dmgbuild[badge_icons]>=1.6" 2>/dev/null || \
+        uv pip install --quiet "dmgbuild[badge_icons]>=1.6" || true
+
+    # HiDPI background: one TIFF holding the 1x and 2x pages. Without tiffutil
+    # dmg_settings.py falls back to the plain 1x PNG.
+    if command -v tiffutil >/dev/null 2>&1 \
+       && [ -f packaging/dmg-background.png ] \
+       && [ -f packaging/dmg-background@2x.png ]; then
+        tiffutil -cathidpicheck packaging/dmg-background.png \
+            "packaging/dmg-background@2x.png" \
+            -out packaging/dmg-background.tiff >/dev/null 2>&1 || \
+            echo "    (tiffutil failed — falling back to the 1x background)"
+    fi
+
+    rm -f "$DMG"
+    if dmgbuild -s packaging/dmg_settings.py -D app="$APP" -D root="$PWD" \
+                "Clawdmeter" "$DMG"; then
+        shasum -a 256 "$DMG" | awk '{print $1"  Clawdmeter.dmg"}' > "$DMG.sha256"
+        # dmgbuild degrades quietly when an optional piece is missing; say so
+        # rather than shipping a half-styled image without noticing.
+        if ! hdiutil imageinfo "$DMG" -plist >/dev/null 2>&1; then
+            echo "    WARNING: $DMG did not verify with hdiutil"
+        fi
+    else
+        echo "ERROR: dmgbuild failed — the .app and .zip above are still good." >&2
+        DMG=""
+    fi
+    # Regenerable artifact; keep the tree clean for the next build.
+    rm -f packaging/dmg-background.tiff
+fi
+
 echo ""
 echo "Built:   $APP"
 echo "Zipped:  $ZIP"
 echo "SHA-256: $(cut -d' ' -f1 "$ZIP.sha256")"
 echo "Size:    $(du -m "$ZIP" | cut -f1) MB"
 echo "Arch:    $(file "$APP/Contents/MacOS/Clawdmeter" | sed 's/.*: //')"
+if [ -n "$DMG" ] && [ -f "$DMG" ]; then
+    echo "Disk image: $DMG ($(du -m "$DMG" | cut -f1) MB)"
+    echo "DMG SHA-256: $(cut -d' ' -f1 "$DMG.sha256")"
+fi
