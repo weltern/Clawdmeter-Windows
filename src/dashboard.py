@@ -232,6 +232,13 @@ def apply_theme(selected: str) -> None:
                     if sheet == old:
                         w.setStyleSheet(new)
                         break
+            # Windows whose stylesheet is the base sheet PLUS a platform append
+            # (the macOS rounded-corner rule on mini/compact) never equal `old`,
+            # so the exact-match swap above skips them — they rebuild themselves
+            # from the freshly-built globals here. Broadcasting it from the walk
+            # (rather than from a caller) means no theme entry point can miss it.
+            if hasattr(w, "apply_theme_style"):
+                w.apply_theme_style()
             # Custom-painted labels that cache a themed colour (session/compact
             # name + "working on" lines) re-read the palette here.
             if hasattr(w, "refresh_theme_color"):
@@ -1974,20 +1981,15 @@ class SettingsPanel(QWidget):
             _page_layout.addStretch(1)
 
     def _refresh_dynamic_theme_colors(self) -> None:
-        """Re-render the shelf/compact from the last-seen states so the inline
-        (non-QSS) colours — session glows, activity dots — pick up the new
-        palette immediately instead of lagging until the next poll. Reuses the
-        normal per-poll render path, so no bespoke re-colour logic. Safe before
-        the first poll (nothing to render yet)."""
-        if hasattr(self, "_last_raw_states"):
-            self._apply_session_view()
-        # The mini/compact windows carry a macOS radius append on their stylesheet,
-        # so apply_theme's generic "swap widgets whose sheet == old" pass skips
-        # them — re-apply their theme-updated stylesheet explicitly here.
-        if hasattr(self, "mini"):
-            self.mini.apply_theme_style()
-        if hasattr(self, "compact_view"):
-            self.compact_view.apply_theme_style()
+        """Ask the owning Dashboard to re-render its dynamic (non-QSS) colours.
+
+        The state this needs (`_last_raw_states`, the shelf render path) lives on
+        the Dashboard, not on this panel — an earlier version of this method read
+        those off ``self`` behind ``hasattr`` guards, which made it a silent
+        no-op. Stylesheet re-application is handled by ``apply_theme`` itself."""
+        win = self.window()
+        if hasattr(win, "refresh_dynamic_theme_colors"):
+            win.refresh_dynamic_theme_colors()
 
     def _on_theme_selected(self, name: str) -> None:
         if name == theme.CUSTOM:
@@ -4193,12 +4195,22 @@ class Dashboard(QMainWindow):
         re-persisting it (it's already the saved value)."""
         self._set_view_mode(getattr(self, "_view_mode", "full"), persist=False)
 
+    def refresh_dynamic_theme_colors(self) -> None:
+        """Re-render the shelf/compact from the last-seen states so the inline
+        (non-QSS) colours — session glows, activity dots — pick up the new
+        palette immediately instead of lagging until the next poll. Reuses the
+        normal per-poll render path, so no bespoke re-colour logic. Safe before
+        the first poll (nothing to render yet). Stylesheets are handled by
+        apply_theme's widget walk."""
+        if hasattr(self, "_last_raw_states"):
+            self._apply_session_view()
+
     def _on_os_scheme_changed(self, _scheme=None) -> None:
         """OS light/dark flipped. Only matters on Follow System — re-resolve to
         the matching preset (apply_theme no-ops for fixed presets)."""
         if theme.selected() == theme.SYSTEM:
             apply_theme(theme.SYSTEM)
-            self._refresh_dynamic_theme_colors()
+            self.refresh_dynamic_theme_colors()
 
     def show_initial(self) -> None:
         """Launch into the last-used view mode directly (no full-window flash)."""

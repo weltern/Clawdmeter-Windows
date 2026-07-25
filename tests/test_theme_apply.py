@@ -144,6 +144,57 @@ def test_custom_editor_previews_then_applies():
         ed.deleteLater()
 
 
+def test_macos_radius_windows_still_follow_theme_switch(monkeypatch):
+    # Regression (macOS-only, found on the M2): the mini/compact windows append a
+    # `border-radius` rule to their stylesheet for the native rounded HUD look, so
+    # apply_theme's exact-match swap (`sheet == old`) never matches them. The
+    # explicit re-theme hook that was meant to cover that lived on SettingsPanel
+    # but read `self.mini`/`self.compact_view` — Dashboard attributes — behind
+    # hasattr guards, so it was a silent no-op and the two views kept the old
+    # palette's colours on every live switch. apply_theme now broadcasts
+    # apply_theme_style() during its widget walk, so no entry point can miss it.
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    monkeypatch.setattr(session_shelf.sys, "platform", "darwin")
+    dashboard.apply_theme("Nord")
+    mini = dashboard.MiniWidget()
+    compact = session_shelf.CompactView()
+    try:
+        assert "border-radius:13px" in mini.styleSheet()      # the append is on
+        assert "border-radius:13px" in compact.styleSheet()
+
+        dashboard.apply_theme("Daybreak")
+        day = theme.get("Daybreak")
+        # Rebuilt from the NEW palette, and still rounded.
+        assert mini.styleSheet() == (
+            dashboard.STYLESHEET + "\nQWidget#miniRoot{border-radius:13px}")
+        assert compact.styleSheet() == (
+            session_shelf.COMPACT_STYLESHEET
+            + "\nQWidget#compactRoot{border-radius:13px}")
+        assert day.bg.lower() in mini.styleSheet().lower()
+        assert day.bg.lower() in compact.styleSheet().lower()
+    finally:
+        _reset()
+        mini.deleteLater()
+        compact.deleteLater()
+
+
+def test_settings_panel_theme_hook_reaches_the_dashboard():
+    # The panel's hook must delegate to the window that actually owns the shelf
+    # state; the old version silently did nothing when those attributes were
+    # missing from `self`.
+    assert hasattr(dashboard.Dashboard, "refresh_dynamic_theme_colors")
+    panel = dashboard.SettingsPanel.__new__(dashboard.SettingsPanel)
+    calls = []
+
+    class _Win:
+        def refresh_dynamic_theme_colors(self):
+            calls.append(True)
+
+    panel.window = lambda: _Win()
+    dashboard.SettingsPanel._refresh_dynamic_theme_colors(panel)
+    assert calls == [True]
+
+
 def test_apply_follow_system_resolves_and_remembers_selection():
     try:
         dashboard.apply_theme(theme.SYSTEM)
