@@ -12,6 +12,7 @@ owns the multiplied mascot/activity layer.
 
 from __future__ import annotations
 
+import sys
 import time
 from datetime import datetime
 
@@ -41,6 +42,7 @@ from PySide6.QtGui import (
     QAction, QColor, QFont, QFontMetrics, QIcon, QPainter,
 )
 
+import macos_window
 import theme
 import winutil
 from mood import GROUP_ANIMS
@@ -1136,9 +1138,18 @@ class CompactView(QWidget):
         self.setWindowTitle("Clawdmeter")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(COMPACT_STYLESHEET)
-        self.setWindowFlags(
-            Qt.Window | Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-        )
+        if sys.platform == "darwin":
+            # macOS: a rounded HUD panel like the mini (NOT a native window with
+            # traffic lights) -- keeps our own title bar (mascot/title/view
+            # buttons/✕). round_window() rounds + shadows it on show; drop Qt.Tool
+            # (which auto-hides on focus loss). Round the border to match.
+            self.setStyleSheet(
+                COMPACT_STYLESHEET + "\nQWidget#compactRoot{border-radius:13px}")
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint
+                                | Qt.WindowStaysOnTopHint)
+        else:
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.Tool
+                                | Qt.WindowStaysOnTopHint)
         icon_path = assets_root() / "icon.png"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
@@ -1212,6 +1223,24 @@ class CompactView(QWidget):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(
             lambda p: self._menu.exec(self.mapToGlobal(p)))
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        # macOS: round the HUD panel + give it a native shadow (no traffic lights).
+        if sys.platform == "darwin" and not getattr(self, "_macos_rounded", False):
+            self._macos_rounded = True
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: macos_window.round_window(self, 13))
+
+    def apply_theme_style(self) -> None:
+        """Re-apply the (theme-updated) COMPACT_STYLESHEET + repaint. apply_theme's
+        generic swap misses us on macOS because the radius append changes our
+        stylesheet so it no longer matches the module global it's looking for."""
+        qss = COMPACT_STYLESHEET
+        if sys.platform == "darwin":
+            qss += "\nQWidget#compactRoot{border-radius:13px}"
+        self.setStyleSheet(qss)
+        self.update()
 
     def _tbtn(self, glyph: str, tip: str) -> QToolButton:
         b = QToolButton()

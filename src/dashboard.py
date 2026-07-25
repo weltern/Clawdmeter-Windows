@@ -359,12 +359,22 @@ class MiniWidget(QWidget):
         self.setWindowTitle("Clawdmeter")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(STYLESHEET)
-        # Opaque background matching the main window (#0e1116). Intentionally NOT a
-        # WA_TranslucentBackground window: translucent compositing needs Qt's bundled
-        # opengl32sw.dll fallback in the frozen build, which the spec prunes for size.
-        self.setWindowFlags(
-            Qt.Window | Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-        )
+        if sys.platform == "darwin":
+            # macOS: stay OPAQUE (WA_TranslucentBackground makes the panel render
+            # fully transparent on the frozen build). round_window() gives it native
+            # rounded corners (via the content layer) + shadow on show; the QSS
+            # radius rounds the salmon border to match. Drop Qt.Tool -- on macOS a
+            # Tool window auto-hides when the app loses focus, bad for an always-on
+            # mini.
+            self.setStyleSheet(STYLESHEET + "\nQWidget#miniRoot{border-radius:13px}")
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint
+                                | Qt.WindowStaysOnTopHint)
+        else:
+            # Opaque background (#0e1116). Intentionally NOT WA_TranslucentBackground
+            # off macOS: translucent compositing needs Qt's bundled opengl32sw.dll
+            # in the frozen build, which the spec prunes for size.
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.Tool
+                                | Qt.WindowStaysOnTopHint)
         icon_path = assets_root() / "icon.png"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
@@ -406,7 +416,10 @@ class MiniWidget(QWidget):
         line = QHBoxLayout()
         line.setSpacing(7)
         pct = QLabel("-", objectName=pct_object)
-        pct.setMinimumWidth(42)
+        # Reserve room for three digits ("100%") so the mini's width doesn't jump
+        # when the session meter crosses into triple digits; right-aligned so the
+        # number stays put against the reset text.
+        pct.setMinimumWidth(56)
         pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         reset = QLabel("", objectName="miniReset")
         reset.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -470,6 +483,21 @@ class MiniWidget(QWidget):
         self.layout().activate()
         hint = self.sizeHint()
         self.setFixedSize(hint.width() + self._WIDTH_SLACK_PX, hint.height())
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        if sys.platform == "darwin" and not getattr(self, "_macos_rounded", False):
+            self._macos_rounded = True
+            QTimer.singleShot(0, lambda: macos_window.round_window(self, 13))
+
+    def apply_theme_style(self) -> None:
+        """Re-apply the (theme-updated) stylesheet + repaint. apply_theme's generic
+        swap misses us because the macOS radius append changes our stylesheet."""
+        qss = STYLESHEET
+        if sys.platform == "darwin":
+            qss += "\nQWidget#miniRoot{border-radius:13px}"
+        self.setStyleSheet(qss)
+        self.update()
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
@@ -661,7 +689,9 @@ class TitleBar(QWidget):
         self._press_pos: QPoint | None = None
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(8, 0, 0, 0)
+        # On macOS the traffic lights occupy the top-left, spilling ~24px past the
+        # nav rail into this bar, so pad the wordmark right to clear them.
+        row.setContentsMargins(30 if sys.platform == "darwin" else 8, 0, 0, 0)
         row.setSpacing(8)
 
         # The app icon now lives at the top of the nav rail (so it survives the
@@ -685,14 +715,18 @@ class TitleBar(QWidget):
 
         self.set_active_mode("full")
 
-        self.min_btn = self._tool_btn(chr(0xF2D1), "Minimize")        # ChromeMinimize
-        self.min_btn.clicked.connect(self._win.showMinimized)
-        row.addWidget(self.min_btn)
+        # On macOS the native traffic-light buttons own minimize/close, so we
+        # don't draw our own (they'd be redundant + non-native). Windows/Linux
+        # keep them since those platforms have no window controls when frameless.
+        if sys.platform != "darwin":
+            self.min_btn = self._tool_btn(chr(0xF2D1), "Minimize")    # ChromeMinimize
+            self.min_btn.clicked.connect(self._win.showMinimized)
+            row.addWidget(self.min_btn)
 
-        self.close_btn = self._tool_btn(chr(0xF00D), "Close")         # ChromeClose
-        self.close_btn.setObjectName("closeBtn")
-        self.close_btn.clicked.connect(self._win.close)
-        row.addWidget(self.close_btn)
+            self.close_btn = self._tool_btn(chr(0xF00D), "Close")     # ChromeClose
+            self.close_btn.setObjectName("closeBtn")
+            self.close_btn.clicked.connect(self._win.close)
+            row.addWidget(self.close_btn)
 
     def _tool_btn(self, glyph: str, tip: str) -> QToolButton:
         b = QToolButton()
@@ -1344,6 +1378,14 @@ class CustomThemeEditor(QDialog):
         self._refresh_all()
         self._select_role(self._active_role)
 
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        # macOS: round the frameless dialog + give it a native shadow so it's not
+        # a hard square (no traffic lights needed -- it has its own Close button).
+        if sys.platform == "darwin" and not getattr(self, "_macos_rounded", False):
+            self._macos_rounded = True
+            QTimer.singleShot(0, lambda: macos_window.round_window(self, 12))
+
     def mousePressEvent(self, e) -> None:
         # Frameless-window drag: buttons, the picker and the role rows consume
         # their own clicks, so this only fires on the dialog's empty/header
@@ -1939,6 +1981,13 @@ class SettingsPanel(QWidget):
         the first poll (nothing to render yet)."""
         if hasattr(self, "_last_raw_states"):
             self._apply_session_view()
+        # The mini/compact windows carry a macOS radius append on their stylesheet,
+        # so apply_theme's generic "swap widgets whose sheet == old" pass skips
+        # them — re-apply their theme-updated stylesheet explicitly here.
+        if hasattr(self, "mini"):
+            self.mini.apply_theme_style()
+        if hasattr(self, "compact_view"):
+            self.compact_view.apply_theme_style()
 
     def _on_theme_selected(self, name: str) -> None:
         if name == theme.CUSTOM:
@@ -2426,12 +2475,19 @@ class NavRail(QWidget):
             self._group.addButton(b, page)
         return b
 
+    # macOS: start the rail below the native title-bar row so its right-edge
+    # divider runs BETWEEN the mascot and the traffic lights instead of cutting
+    # through them; the lights sit in the freed top-left corner.
+    TOP_INSET = 28 if sys.platform == "darwin" else 0
+
     def reposition(self) -> None:
-        """Anchor to the parent's left edge, full height."""
+        """Anchor to the parent's left edge, full height (below the macOS
+        title-bar row on Mac)."""
         p = self.parentWidget()
         if not p:
             return
-        self.setGeometry(0, 0, self.COLLAPSED, p.height())
+        self.setGeometry(0, self.TOP_INSET, self.COLLAPSED,
+                         p.height() - self.TOP_INSET)
 
 
 _PLAN_LABELS = {
@@ -2514,11 +2570,13 @@ class Dashboard(QMainWindow):
         super().__init__()
         self.setWindowTitle("Clawdmeter")
         if sys.platform == "darwin":
-            # macOS: keep a NATIVE window (rounded corners + shadow + no borderless
-            # edge seam) and hide/transparent its title bar via macos_window.style()
-            # on show, drawing our own chrome edge-to-edge -- how Mac apps do custom
-            # title bars. Frameless (borderless) is used on Windows/Linux only.
+            # macOS: a native window (rounded corners + shadow + real traffic
+            # lights); macos_window.style() makes the titlebar transparent + full-
+            # size content on show, and WA_ContentsMarginsRespectsSafeArea (below)
+            # drops Qt's 28px safe-area inset so our chrome fills to the top edge,
+            # onto the traffic-lights row. Frameless is Windows/Linux only.
             self.setWindowFlags(Qt.Window)
+            self.setAttribute(Qt.WA_ContentsMarginsRespectsSafeArea, False)
         else:
             self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         # The window height tracks its content (see _fit_window_height): it grows
@@ -2542,6 +2600,11 @@ class Dashboard(QMainWindow):
         root = QWidget(objectName="root")
         self.setCentralWidget(root)
         self._root = root
+        if sys.platform == "darwin":
+            # Let our content fill to the very top edge (under the titlebar) rather
+            # than being auto-inset by the ~28px title-bar safe area. We clear the
+            # traffic lights ourselves via the nav-rail top pad + title-bar left pad.
+            root.setAttribute(Qt.WA_ContentsMarginsRespectsSafeArea, False)
         # Full-height nav rail down the left (overlay, created after content); the
         # rest of the UI sits in a right column whose left edge is reserved for the
         # collapsed rail. Keeping the rail outside the title bar means it — and the
@@ -3848,14 +3911,25 @@ class Dashboard(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        # macOS: once the native window exists, style it as a transparent-titlebar
-        # full-content window (native rounding/shadow, no borderless seam).
         if sys.platform == "darwin" and not getattr(self, "_macos_styled", False):
             self._macos_styled = True
-            macos_window.style(self)
+            # Transparent titlebar + full-size content view (native traffic lights
+            # kept), deferred past Qt's own setup so the style-mask change sticks.
+            QTimer.singleShot(
+                0, lambda: macos_window.style(self, theme.active().bg_deep))
         # Arm user-resize detection only after the show settles, so the initial
         # show geometry isn't mistaken for a manual height drag.
         QTimer.singleShot(0, lambda: setattr(self, "_fit_armed", True))
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        # A macOS fullscreen/zoom transition wipes our transparent-titlebar
+        # styling; re-apply it once the window is back to a normal state.
+        if sys.platform == "darwin":
+            from PySide6.QtCore import QEvent
+            if event.type() == QEvent.Type.WindowStateChange and not self.isFullScreen():
+                QTimer.singleShot(
+                    0, lambda: macos_window.style(self, theme.active().bg_deep))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
