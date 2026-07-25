@@ -248,6 +248,26 @@ def test_set_topmost_falls_back_to_qt_flag_without_pyobjc(monkeypatch):
     assert len(touched) == 1
 
 
+def test_auto_hide_titlebar_is_forced_off_on_macos(monkeypatch):
+    # macOS draws the traffic lights in the NSWindow titlebar region, not in our
+    # TitleBar widget — collapsing the widget to 0 strands them over the content.
+    # _apply_auto_hide is the single gate, so a value persisted on Windows and
+    # synced to a Mac must still come up disabled.
+    monkeypatch.setattr(dashboard, "AUTO_HIDE_SUPPORTED", False)
+    applied = []
+
+    class _D:
+        _auto_hide_enabled = False
+
+        def __getattr__(self, name):        # any collaborator it would touch
+            applied.append(name)
+            raise AssertionError(f"auto-hide ran on macOS (touched {name!r})")
+
+    # on=True must be squashed to the current value and return before doing work.
+    dashboard.Dashboard._apply_auto_hide(_D(), True)
+    assert applied == []
+
+
 def test_macos_set_level_noops_off_darwin(monkeypatch):
     import macos_window
     monkeypatch.setattr(macos_window.sys, "platform", "win32")

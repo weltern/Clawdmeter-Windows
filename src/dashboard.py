@@ -678,6 +678,16 @@ class ResetToast(QWidget):
             super().mousePressEvent(e)
 
 
+# Auto-hide is unavailable on macOS. The traffic lights are drawn by AppKit in
+# the NSWindow's titlebar region, NOT by our TitleBar widget, so collapsing the
+# widget to height 0 doesn't remove them — it strands them over the content with
+# the wordmark and view buttons gone. Apple's HIG is also explicit that the
+# traffic lights must never be hidden or repositioned, and the small-footprint
+# need auto-hide serves is already covered on macOS by the compact and mini HUD
+# views. Gated in one place (_apply_auto_hide) so no caller can switch it on.
+AUTO_HIDE_SUPPORTED = sys.platform != "darwin"
+
+
 class TitleBar(QWidget):
     """Custom frameless title bar: icon, drag area, view + window buttons."""
 
@@ -1671,8 +1681,13 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.aot_check)
 
         self.auto_hide_check = QCheckBox("Auto-hide title bar")
-        self.auto_hide_check.setChecked(app_settings.get_auto_hide_titlebar())
+        self.auto_hide_check.setChecked(
+            app_settings.get_auto_hide_titlebar() and AUTO_HIDE_SUPPORTED)
         self.auto_hide_check.toggled.connect(self._on_auto_hide_toggled)
+        # Hidden rather than disabled on macOS: a permanently greyed-out control
+        # invites "why can't I turn this on?", and the answer is "this isn't a
+        # thing on your platform" (see AUTO_HIDE_SUPPORTED).
+        self.auto_hide_check.setVisible(AUTO_HIDE_SUPPORTED)
         layout.addWidget(self.auto_hide_check)
 
         self.quit_on_close_check = QCheckBox("Quit on close (don't minimize to tray)")
@@ -3317,7 +3332,12 @@ class Dashboard(QMainWindow):
         height is animated in lockstep so the content area never changes
         size — title bar growth pushes the bottom edge down, not into
         content.
+
+        The single gate for AUTO_HIDE_SUPPORTED: forced off on macOS however it
+        is reached (settings toggle, or a value persisted on another platform
+        and synced over).
         """
+        on = on and AUTO_HIDE_SUPPORTED
         if self._auto_hide_enabled == on:
             return
         self._auto_hide_enabled = on
