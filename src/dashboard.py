@@ -79,6 +79,7 @@ from poller import (
     UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH,
     token_source_description,
 )
+import macos_window
 import remote_notify
 import stats
 import statviz
@@ -2512,7 +2513,14 @@ class Dashboard(QMainWindow):
     def __init__(self, mock: bool = False) -> None:
         super().__init__()
         self.setWindowTitle("Clawdmeter")
-        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        if sys.platform == "darwin":
+            # macOS: keep a NATIVE window (rounded corners + shadow + no borderless
+            # edge seam) and hide/transparent its title bar via macos_window.style()
+            # on show, drawing our own chrome edge-to-edge -- how Mac apps do custom
+            # title bars. Frameless (borderless) is used on Windows/Linux only.
+            self.setWindowFlags(Qt.Window)
+        else:
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         # The window height tracks its content (see _fit_window_height): it grows
         # and shrinks with the mascot shelf so there's no dead space below the
         # bars. This low floor only stops a manual drag from clipping badly; the
@@ -3840,6 +3848,11 @@ class Dashboard(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        # macOS: once the native window exists, style it as a transparent-titlebar
+        # full-content window (native rounding/shadow, no borderless seam).
+        if sys.platform == "darwin" and not getattr(self, "_macos_styled", False):
+            self._macos_styled = True
+            macos_window.style(self)
         # Arm user-resize detection only after the show settles, so the initial
         # show geometry isn't mistaken for a manual height drag.
         QTimer.singleShot(0, lambda: setattr(self, "_fit_armed", True))
