@@ -18,10 +18,43 @@ import sys
 _STYLE_FULL_SIZE_CONTENT_VIEW = 1 << 15   # NSWindowStyleMaskFullSizeContentView
 _TITLE_HIDDEN = 1                         # NSWindowTitleHidden
 _COLLECTION_FULLSCREEN_NONE = 1 << 9      # NSWindowCollectionBehaviorFullScreenNone
+_LEVEL_NORMAL = 0                         # NSNormalWindowLevel
+_LEVEL_FLOATING = 3                       # NSFloatingWindowLevel (kCGFloatingWindowLevel)
 
 
 def is_supported() -> bool:
     return sys.platform == "darwin"
+
+
+def set_level(widget, floating: bool) -> bool:
+    """Toggle always-on-top by setting the NSWindow's LEVEL, in place.
+
+    The cross-platform way -- flipping ``Qt.WindowStaysOnTopHint`` -- makes Qt
+    tear down and rebuild the native window, which throws away everything
+    ``style()`` did (transparent titlebar, full-size content view) and leaves a
+    stock NSWindow behind. Setting the level touches one property on the window
+    that is already there: no recreation, no flicker, nothing to re-apply. It is
+    the exact macOS counterpart of the SetWindowPos path winutil uses on Windows
+    for the same reason.
+
+    Returns True if the level was set; False off macOS / without pyobjc, so the
+    caller can fall back to the portable flag toggle.
+    """
+    if not is_supported():
+        return False
+    try:
+        import objc
+    except Exception:   # noqa: BLE001
+        return False
+    try:
+        view = objc.objc_object(c_void_p=int(widget.winId()))
+        win = view.window()
+    except Exception:   # noqa: BLE001
+        return False
+    if win is None:
+        return False
+    win.setLevel_(_LEVEL_FLOATING if floating else _LEVEL_NORMAL)
+    return True
 
 
 def round_window(widget, radius: float = 13.0) -> bool:
@@ -86,19 +119,12 @@ def style(widget, bg_hex: str | None = None) -> bool:
     # Disable native fullscreen (green button -> zoom instead). Fullscreen resets
     # the transparent-titlebar style and its exit event fires unreliably, so a
     # small utility window should just zoom -- which preserves the style.
-    win.setCollectionBehavior_(_COLLECTION_FULLSCREEN_NONE)
+    # OR the bit in rather than assigning it, so whatever collection-behaviour
+    # flags Qt already set (Spaces / Mission Control / window cycling) survive —
+    # same pattern as the style-mask line above.
+    win.setCollectionBehavior_(
+        int(win.collectionBehavior()) | _COLLECTION_FULLSCREEN_NONE)
     if bg_hex:
         r, g, b = (int(bg_hex[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
         win.setBackgroundColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0))
-    # DIAGNOSTIC: is the content area reserving space for the title bar? If
-    # contentLayoutRect is inset from the full contentView, Qt can't put our
-    # chrome at y=0 (that's the "strip") and true Option B needs the lights moved.
-    try:
-        cv = win.contentView()
-        print(f"[macwin] frame={win.frame().size.width:.0f}x{win.frame().size.height:.0f} "
-              f"contentView={cv.frame().size.width:.0f}x{cv.frame().size.height:.0f} "
-              f"contentLayoutRect_h={win.contentLayoutRect().size.height:.0f}",
-              file=sys.stderr, flush=True)
-    except Exception:   # noqa: BLE001 - diagnostic only
-        pass
     return True

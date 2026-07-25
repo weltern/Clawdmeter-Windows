@@ -1311,6 +1311,10 @@ class CustomThemeEditor(QDialog):
     }
     _FG_ROLES = ("text", "accent", "warn", "danger", "positive")
 
+    # Single source of truth: the native content-layer mask (round_window) and
+    # the QSS border-radius must agree or the border gets clipped at the corners.
+    MACOS_RADIUS = 12
+
     def __init__(self, seed_base: dict, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Custom theme")
@@ -1320,7 +1324,8 @@ class CustomThemeEditor(QDialog):
         # lets its empty/header areas drag the window (child widgets keep theirs).
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.setObjectName("root")
-        self.setStyleSheet(STYLESHEET)   # the current app theme; only the preview shows custom
+        # The current app theme; only the preview shows the custom colours.
+        self.apply_theme_style()
         self.setMinimumWidth(540)
         self._working = dict(seed_base)   # edited in place; committed on Apply
         self._active_role = "accent"
@@ -1385,13 +1390,28 @@ class CustomThemeEditor(QDialog):
         self._refresh_all()
         self._select_role(self._active_role)
 
+    def apply_theme_style(self) -> None:
+        """Re-apply the (theme-updated) stylesheet + repaint.
+
+        On macOS round_window() masks the dialog's content layer to MACOS_RADIUS,
+        so the QSS has to round #root's 1px border to the same radius or the
+        border is drawn square and chopped off at each corner. That append also
+        means apply_theme's exact-match swap can't see us — which is why this is
+        a method: apply_theme() broadcasts it during its widget walk."""
+        qss = STYLESHEET
+        if sys.platform == "darwin":
+            qss += f"\nQWidget#root{{border-radius:{self.MACOS_RADIUS}px}}"
+        self.setStyleSheet(qss)
+        self.update()
+
     def showEvent(self, e) -> None:
         super().showEvent(e)
         # macOS: round the frameless dialog + give it a native shadow so it's not
         # a hard square (no traffic lights needed -- it has its own Close button).
         if sys.platform == "darwin" and not getattr(self, "_macos_rounded", False):
             self._macos_rounded = True
-            QTimer.singleShot(0, lambda: macos_window.round_window(self, 12))
+            QTimer.singleShot(
+                0, lambda: macos_window.round_window(self, self.MACOS_RADIUS))
 
     def mousePressEvent(self, e) -> None:
         # Frameless-window drag: buttons, the picker and the role rows consume
@@ -3911,14 +3931,30 @@ class Dashboard(QMainWindow):
         self._auto_fit_height = True
         self._fit_window_height()
 
+    def _macos_apply_native_chrome(self) -> None:
+        """Put the NSWindow back the way we want it: transparent titlebar, and
+        the persisted always-on-top level. Safe to call repeatedly."""
+        macos_window.style(self, theme.active().bg_deep)
+        macos_window.set_level(self, app_settings.get_always_on_top())
+
+    def apply_theme_style(self) -> None:
+        """Repaint the native NSWindow background in the new palette on a live
+        theme switch. Picked up by apply_theme()'s widget-walk broadcast; the
+        window's QSS is handled by the normal swap. No-op off macOS."""
+        if sys.platform == "darwin":
+            macos_window.style(self, theme.active().bg_deep)
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if sys.platform == "darwin" and not getattr(self, "_macos_styled", False):
-            self._macos_styled = True
+        if sys.platform == "darwin":
             # Transparent titlebar + full-size content view (native traffic lights
             # kept), deferred past Qt's own setup so the style-mask change sticks.
-            QTimer.singleShot(
-                0, lambda: macos_window.style(self, theme.active().bg_deep))
+            # Re-applied on EVERY show rather than latched once: anything that
+            # makes Qt rebuild the NSWindow hands us a stock window, and a latch
+            # keyed on the Python object (or on winId(), which is the NSView and
+            # survives the rebuild) would skip the repair. style() is idempotent,
+            # so paying it per show is cheaper than another stale-latch bug.
+            QTimer.singleShot(0, self._macos_apply_native_chrome)
         # Arm user-resize detection only after the show settles, so the initial
         # show geometry isn't mistaken for a manual height drag.
         QTimer.singleShot(0, lambda: setattr(self, "_fit_armed", True))

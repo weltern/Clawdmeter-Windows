@@ -178,6 +178,103 @@ def test_macos_radius_windows_still_follow_theme_switch(monkeypatch):
         compact.deleteLater()
 
 
+def test_custom_editor_rounds_and_follows_theme_on_macos(monkeypatch):
+    # Regression: round_window() masks the dialog's content layer to
+    # MACOS_RADIUS, so the QSS must round #root's 1px border to the same value
+    # or it is drawn square and clipped at each corner. And because that append
+    # breaks apply_theme's exact-match swap, the dialog needs the same
+    # apply_theme_style() broadcast hook the mini/compact windows got.
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    dashboard.apply_theme("Nord")
+    ed = dashboard.CustomThemeEditor(theme.custom_base_from(theme.MIDNIGHT_SALMON))
+    try:
+        radius = f"border-radius:{dashboard.CustomThemeEditor.MACOS_RADIUS}px"
+        assert radius in ed.styleSheet()
+        dashboard.apply_theme("Daybreak")
+        assert ed.styleSheet() == (
+            dashboard.STYLESHEET + f"\nQWidget#root{{{radius}}}")
+        assert theme.get("Daybreak").bg.lower() in ed.styleSheet().lower()
+    finally:
+        theme.set_custom_base(theme.custom_base_from(theme.MIDNIGHT_SALMON))
+        _reset()
+        ed.deleteLater()
+
+
+def test_set_topmost_on_macos_never_touches_qt_window_flags(monkeypatch):
+    # Regression: Always-on-top used to flip Qt.WindowStaysOnTopHint, which makes
+    # Qt tear down and rebuild the NSWindow — silently discarding the transparent
+    # titlebar / full-size content view from macos_window.style(). The window came
+    # back as stock chrome for the rest of the session. On macOS we now set the
+    # NSWindow level in place instead, so the native window is never rebuilt.
+    import winutil
+
+    touched, levels = [], []
+    monkeypatch.setattr(winutil, "is_windows", lambda: False)
+    monkeypatch.setattr(winutil.macos_window, "set_level",
+                        lambda w, on: levels.append(on) or True)
+
+    class _W:
+        def setWindowFlag(self, *a):
+            touched.append(a)          # must never happen on macOS
+
+        def isVisible(self):
+            return True
+
+    winutil.set_topmost(_W(), True)
+    assert levels == [True]
+    assert touched == [], "Qt window flag toggled — this rebuilds the NSWindow"
+
+
+def test_set_topmost_falls_back_to_qt_flag_without_pyobjc(monkeypatch):
+    # Linux, or macOS without pyobjc: set_level returns False and we must still
+    # fall back to the portable flag-toggle path.
+    import winutil
+
+    touched = []
+    monkeypatch.setattr(winutil, "is_windows", lambda: False)
+    monkeypatch.setattr(winutil.macos_window, "set_level", lambda w, on: False)
+
+    class _W:
+        def setWindowFlag(self, *a):
+            touched.append(a)
+
+        def isVisible(self):
+            return False           # short-circuits before the re-show
+
+        def geometry(self):
+            return None            # captured before the early return
+
+    winutil.set_topmost(_W(), True)
+    assert len(touched) == 1
+
+
+def test_macos_set_level_noops_off_darwin(monkeypatch):
+    import macos_window
+    monkeypatch.setattr(macos_window.sys, "platform", "win32")
+    assert macos_window.set_level(object(), True) is False
+
+
+def test_dashboard_repaints_native_window_bg_on_theme_switch():
+    # The NSWindow background is painted from theme.active().bg_deep at show
+    # time; without this hook a live theme switch left the old colour behind
+    # until the next minimize/zoom.
+    assert hasattr(dashboard.Dashboard, "apply_theme_style")
+    calls = []
+    monkey = type("W", (), {"apply_theme_style": dashboard.Dashboard.apply_theme_style})()
+    monkey_style = dashboard.macos_window.style
+    dashboard.macos_window.style = lambda w, bg=None: calls.append(bg) or True
+    old_platform = dashboard.sys.platform
+    try:
+        dashboard.sys.platform = "darwin"
+        dashboard.apply_theme("Nord")
+        monkey.apply_theme_style()
+        assert calls == [theme.get("Nord").bg_deep]
+    finally:
+        dashboard.sys.platform = old_platform
+        dashboard.macos_window.style = monkey_style
+        _reset()
+
+
 def test_settings_panel_theme_hook_reaches_the_dashboard():
     # The panel's hook must delegate to the window that actually owns the shelf
     # state; the old version silently did nothing when those attributes were

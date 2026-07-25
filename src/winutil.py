@@ -18,6 +18,8 @@ import sys
 
 from PySide6.QtCore import Qt, QTimer
 
+import macos_window   # no-ops off macOS; imports nothing heavy
+
 
 # WM_NCHITTEST result codes.
 HTCLIENT = 1
@@ -75,11 +77,20 @@ def set_topmost(widget, on: bool) -> None:
             wt.HWND(int(widget.winId())), wt.HWND(insert_after), 0, 0, 0, 0, flags
         )
         return
-    # Off Windows, toggling WindowStaysOnTopHint recreates the native window.
-    # On macOS that hides a frameless Tool window and a bare show() doesn't bring
-    # it back (it vanishes until re-summoned from the tray). Preserve geometry and
-    # force it visible + frontmost, both immediately and deferred one event-loop
-    # tick so the flag change has settled before the re-show.
+    # macOS: set the NSWindow's level in place. Toggling the Qt flag would make
+    # Qt rebuild the native window, which silently discards the transparent
+    # titlebar / full-size content view that macos_window.style() applied — the
+    # window came back as stock chrome for the rest of the session. Setting the
+    # level is the AppKit-native equivalent of the SetWindowPos path above.
+    if macos_window.set_level(widget, on):
+        return
+
+    # Everything else (Linux, or macOS without pyobjc): toggling
+    # WindowStaysOnTopHint recreates the native window, which hides a frameless
+    # Tool window and a bare show() doesn't bring it back (it vanishes until
+    # re-summoned from the tray). Preserve geometry and force it visible +
+    # frontmost, both immediately and deferred one event-loop tick so the flag
+    # change has settled before the re-show.
     was_visible = widget.isVisible()
     geo = widget.geometry()
     widget.setWindowFlag(Qt.WindowStaysOnTopHint, on)
