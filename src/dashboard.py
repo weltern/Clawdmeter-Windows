@@ -1265,6 +1265,11 @@ class CustomThemeEditor(QDialog):
     def __init__(self, seed_base: dict, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Custom theme")
+        # Frameless to match Clawdmeter's main window (no native OS title bar,
+        # which looked out of place — esp. on macOS). The #root objectName gives
+        # it the themed panel background + 1px border, and mousePressEvent below
+        # lets its empty/header areas drag the window (child widgets keep theirs).
+        self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.setObjectName("root")
         self.setStyleSheet(STYLESHEET)   # the current app theme; only the preview shows custom
         self.setMinimumWidth(540)
@@ -1330,6 +1335,18 @@ class CustomThemeEditor(QDialog):
 
         self._refresh_all()
         self._select_role(self._active_role)
+
+    def mousePressEvent(self, e) -> None:
+        # Frameless-window drag: buttons, the picker and the role rows consume
+        # their own clicks, so this only fires on the dialog's empty/header
+        # background -> move the whole window. startSystemMove is cross-platform
+        # (Windows/macOS/X11/Wayland), matching the main window's drag.
+        if e.button() == Qt.LeftButton:
+            handle = self.windowHandle()
+            if handle is not None:
+                handle.startSystemMove()
+                return
+        super().mousePressEvent(e)
 
     def _select_role(self, role: str) -> None:
         self._active_role = role

@@ -9,13 +9,43 @@ in (e.g. when a different theme role is selected to edit).
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import tempfile
+
 from PySide6.QtCore import Qt, Signal, QPoint, QPointF, QRect, QRectF
 from PySide6.QtGui import (
-    QColor, QFont, QGuiApplication, QLinearGradient, QPainter, QPen,
+    QColor, QFont, QGuiApplication, QLinearGradient, QPainter, QPen, QPixmap,
 )
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
+    QHBoxLayout, QLabel, QLineEdit, QPushButton, QToolTip, QVBoxLayout, QWidget,
 )
+
+
+def _macos_grab_screen(dpr: float) -> QPixmap:
+    """Freeze the main display via the native ``screencapture`` CLI. Qt's
+    ``QScreen.grabWindow(0)`` returns a black image on macOS 14/15 even with
+    Screen Recording permission (it uses the CGWindowList API Apple restricted),
+    so the CLI -- which uses the modern capture path -- is the reliable route.
+    Returns a null QPixmap on any failure so the caller can degrade gracefully."""
+    fd, tmp = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        subprocess.run(["/usr/sbin/screencapture", "-x", tmp],
+                       timeout=8, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        pm = QPixmap(tmp)
+    except Exception:   # noqa: BLE001 - any failure -> null pixmap -> degrade
+        pm = QPixmap()
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    if not pm.isNull():
+        pm.setDevicePixelRatio(dpr)
+    return pm
 
 
 class _SVSquare(QWidget):
@@ -169,7 +199,21 @@ class ColorPicker(QWidget):
         self.hex.editingFinished.connect(self._from_hex)
 
     def _launch_eyedropper(self) -> None:
-        self._eyedrop = EyedropperOverlay(self)   # owned by the picker (modal-safe)
+        overlay = EyedropperOverlay(self)   # owned by the picker (modal-safe)
+        if not overlay.ok:
+            # Screen capture unavailable -- on macOS this means Screen Recording
+            # isn't granted yet (or was just granted and needs an app restart to
+            # take effect). Tell the user instead of flashing a black overlay.
+            msg = ("Screen capture is unavailable. On macOS, grant Screen "
+                   "Recording to Clawdmeter in System Settings > Privacy & "
+                   "Security, then restart the app.") if sys.platform == "darwin" \
+                else "Screen capture is unavailable on this display."
+            self.eyedropper.setToolTip(msg)
+            QToolTip.showText(
+                self.eyedropper.mapToGlobal(QPoint(0, self.eyedropper.height())),
+                msg, self.eyedropper)
+            return
+        self._eyedrop = overlay
         self._eyedrop.picked.connect(self._on_eyedropped)
         self._eyedrop.show()
         self._eyedrop.raise_()
@@ -236,14 +280,26 @@ class EyedropperOverlay(QWidget):
         self.setCursor(Qt.CrossCursor)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
-        # Freeze the whole virtual desktop (all screens) as one pixmap BEFORE we
-        # show, so the overlay never appears in its own capture.
-        vg = QRect()
-        for s in QGuiApplication.screens():
-            vg = vg.united(s.geometry())
+        # Freeze the desktop as one pixmap BEFORE we show, so the overlay never
+        # appears in its own capture. `ok` is False if the grab failed (e.g. no
+        # macOS Screen Recording permission) -- the caller then degrades instead
+        # of showing a black overlay.
+        screen = QGuiApplication.primaryScreen()
+        if sys.platform == "darwin":
+            # grabWindow(0) is broken on modern macOS; capture the main display
+            # natively. Single-display only (the common case).
+            vg = screen.geometry()
+            self._pm = _macos_grab_screen(screen.devicePixelRatio() or 1.0)
+        else:
+            # X11/Windows: grab the whole virtual desktop (all screens).
+            vg = QRect()
+            for s in QGuiApplication.screens():
+                vg = vg.united(s.geometry())
+            self._pm = screen.grabWindow(0, vg.x(), vg.y(), vg.width(), vg.height())
         self._vg = vg
-        self._pm = QGuiApplication.primaryScreen().grabWindow(
-            0, vg.x(), vg.y(), vg.width(), vg.height())
+        self.ok = self._pm is not None and not self._pm.isNull()
+        if not self.ok:
+            return
         self._dpr = self._pm.devicePixelRatio() or 1.0
         self._img = self._pm.toImage()
         self.setGeometry(vg)
