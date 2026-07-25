@@ -9,6 +9,13 @@ import sys
 
 block_cipher = None
 
+# macOS architecture slice. build-macos.sh sets CLAWD_TARGET_ARCH=universal2 when
+# the interpreter it is building with carries both slices, so one .app runs
+# natively on Apple Silicon AND Intel — Apple's recommended way to ship, and one
+# download means a user never has to know their own CPU. Unset (the default) =
+# build for whatever this machine is, which keeps Windows/Linux untouched.
+_TARGET_ARCH = os.environ.get("CLAWD_TARGET_ARCH") or None
+
 # Platform flags for the size-pruning and packaging logic below. Everything is
 # structured so a future macOS build is an additive branch, not a rewrite.
 _IS_WIN = sys.platform == 'win32'
@@ -227,7 +234,7 @@ if _IS_MAC:
         upx=False,
         console=False,
         disable_windowed_traceback=False,
-        target_arch=None,
+        target_arch=_TARGET_ARCH,
         codesign_identity=None,
         entitlements_file=None,
         icon=_ICON,
@@ -287,7 +294,7 @@ else:
         runtime_tmpdir=None,
         console=False,
         disable_windowed_traceback=False,
-        target_arch=None,
+        target_arch=_TARGET_ARCH,
         codesign_identity=None,
         entitlements_file=None,
         icon=_ICON,

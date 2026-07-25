@@ -3,15 +3,47 @@
 # dist/Clawdmeter-macos.zip (+ .sha256) suitable for distribution/testing.
 #
 # Must run ON macOS — PyInstaller's BUNDLE step (the .app) only works there.
-# The build VM is Intel x86_64, so this yields an x86_64 .app that also runs on
-# Apple Silicon via Rosetta 2. A native arm64/universal2 build needs arm64
-# Python + PySide6, which requires real Apple Silicon hardware (see the plan).
 #
-# Uses `uv` when available (matches the test-VM setup: sudo-free uv + Python
-# 3.12); falls back to a plain `python3 -m venv`. Override the interpreter with
-# PYTHON=/path/to/python3.
+# ARCHITECTURE: this aims for a single universal2 .app (arm64 + x86_64), which
+# is what Apple recommends and what Firefox/Slack ship — one download, and the
+# user never has to know which CPU their Mac has. It happens automatically when
+# the interpreter carries both slices: every one of our compiled dependencies
+# (PySide6, pyobjc) already ships universal2 wheels, so the interpreter is the
+# only thing that decides. `uv`-managed CPython is single-arch, so install the
+# python.org build, which is universal2:
+#
+#     curl -LO https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg
+#     sudo installer -pkg python-3.12.10-macos11.pkg -target /
+#
+# It is picked up automatically from /Library/Frameworks. Without it the build
+# still works and simply produces a single-arch .app for this machine.
+#
+# Uses `uv` when available; falls back to a plain `python3 -m venv`. Override
+# the interpreter with PYTHON=/path/to/python3.
 set -euo pipefail
 cd "$(dirname "$0")"
+
+# --- pick an interpreter ----------------------------------------------------
+# True when the given Mach-O carries BOTH the arm64 and x86_64 slices.
+# Deliberately grep and not `case`: macOS ships bash 3.2, whose parser closes a
+# $( ) at the first unbalanced ')' — so a case pattern inside a command
+# substitution is a syntax error there.
+_is_universal() {
+    _iu="$(lipo -archs "$1" 2>/dev/null)" || return 1
+    printf '%s' "$_iu" | grep -q arm64 && printf '%s' "$_iu" | grep -q x86_64
+}
+
+# Prefer a universal2 python.org framework build so the .app gets both slices.
+if [ -z "${PYTHON:-}" ]; then
+    for _fw in /Library/Frameworks/Python.framework/Versions/3.1[3210]/bin/python3; do
+        [ -x "$_fw" ] || continue
+        if _is_universal "$_fw"; then
+            PYTHON="$_fw"
+            echo "==> Using universal2 interpreter: $PYTHON"
+            break
+        fi
+    done
+fi
 
 # --- venv + deps ------------------------------------------------------------
 if command -v uv >/dev/null 2>&1; then
@@ -52,6 +84,35 @@ if [ ! -f assets/icon.icns ] && [ -f assets/icon.png ] \
     done
     iconutil -c icns "$ICONSET" -o assets/icon.icns || \
         echo "    (iconutil failed — building without a bundle icon)"
+fi
+
+# --- architecture: universal2 when every input has both slices ---------------
+# PyInstaller validates arch slices strictly and aborts the whole build if any
+# collected binary is missing one, so check first and report WHICH dependency
+# is single-arch rather than letting it fail deep in the collect phase.
+if _is_universal "$(command -v python)"; then
+    _bad=0
+    _badlist=""
+    for _f in $(find .venv/lib/python*/site-packages \
+                     \( -name '*.so' -o -name '*.dylib' \) 2>/dev/null); do
+        if ! _is_universal "$_f"; then
+            _bad=$((_bad + 1))
+            if [ "$_bad" -le 5 ]; then
+                _badlist="$_badlist    $_f ($(lipo -archs "$_f" 2>/dev/null))
+"
+            fi
+        fi
+    done
+    if [ "$_bad" -eq 0 ]; then
+        export CLAWD_TARGET_ARCH=universal2
+        echo "==> Building universal2 (arm64 + x86_64)"
+    else
+        echo "==> $_bad single-arch dependencies — building for this machine only:"
+        printf '%s' "$_badlist"
+    fi
+else
+    echo "==> Interpreter is $(lipo -archs "$(command -v python)" 2>/dev/null) only — building single-arch."
+    echo "    For a universal .app, install the python.org universal2 build (see header)."
 fi
 
 # --- build ------------------------------------------------------------------
@@ -133,7 +194,8 @@ echo "Built:   $APP"
 echo "Zipped:  $ZIP"
 echo "SHA-256: $(cut -d' ' -f1 "$ZIP.sha256")"
 echo "Size:    $(du -m "$ZIP" | cut -f1) MB"
-echo "Arch:    $(file "$APP/Contents/MacOS/Clawdmeter" | sed 's/.*: //')"
+echo "Arch:    $(lipo -archs "$APP/Contents/MacOS/Clawdmeter" 2>/dev/null || \
+                 file "$APP/Contents/MacOS/Clawdmeter" | sed 's/.*: //')"
 if [ -n "$DMG" ] && [ -f "$DMG" ]; then
     echo "Disk image: $DMG ($(du -m "$DMG" | cut -f1) MB)"
     echo "DMG SHA-256: $(cut -d' ' -f1 "$DMG.sha256")"
