@@ -4195,14 +4195,6 @@ class Dashboard(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        # TEMPORARY layout instrumentation — see session_shelf._dbg (remove
-        # before release, task #16).
-        session_shelf._dbg(
-            f"[window] win_h={self.height()} win_w={self.width()} "
-            f"minH={self.minimumHeight()} titlebar={self.title_bar.height()} "
-            f"content_minHint={self._content.minimumSizeHint().height()} "
-            f"shelf_active={getattr(self, '_shelf_active', None)} "
-            f"page={self._pages.currentIndex()}")
         # Keep the auto-hide collapsed-height baseline in step with manual resizes
         # (only when no title-bar animation is in flight, so animation ticks don't
         # poison it). Must run regardless of _auto_fit_height — it matters most

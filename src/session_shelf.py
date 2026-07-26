@@ -111,28 +111,6 @@ _GLOW_PAD = 14
 _TILE_V_MARGINS = _GLOW_PAD + 4
 
 
-# --- TEMPORARY layout instrumentation (remove before release) ---------------
-# Set CLAWD_DEBUG_LAYOUT=1 to dump real geometry on every resize. Guessing at
-# these numbers is what made the shelf work take all afternoon; measuring found
-# the Qt.AlignTop bug in one pass. Writes to CLAWD_DEBUG_LAYOUT_FILE or
-# ~/clawd-layout.log. Inert unless the env var is set.
-import os as _os
-
-_DEBUG_LAYOUT = bool(_os.environ.get("CLAWD_DEBUG_LAYOUT"))
-_DEBUG_LAYOUT_PATH = (_os.environ.get("CLAWD_DEBUG_LAYOUT_FILE")
-                      or _os.path.expanduser("~/clawd-layout.log"))
-
-
-def _dbg(line: str) -> None:
-    if not _DEBUG_LAYOUT:
-        return
-    try:
-        with open(_DEBUG_LAYOUT_PATH, "a", encoding="utf-8") as fh:
-            print(line, file=fh)
-    except OSError:
-        pass
-
-
 def _ago_text(last_event_ts: float | None) -> str:
     """Human 'last active Nm ago' from an event timestamp, for idle tiles."""
     if not last_event_ts:
@@ -1113,13 +1091,6 @@ class SessionShelf(QWidget):
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
         self._layout_tiles()
-        # TEMPORARY layout instrumentation (remove before release, task #16).
-        _dbg(f"[shelf] shelf_h={self.height()} scroll_h={self._scroll.height()} "
-             f"viewport_h={self._scroll.viewport().height()} "
-             f"row_h={self._row_widget.height()} "
-             f"scroll_minH={self._scroll.minimumHeight()} "
-             f"minHint={self.minimumSizeHint().height()} "
-             f"tiles={len(self._tiles)} sprite_size={self._sprite_size}")
 
     def _layout_tiles(self) -> None:
         """Size every mascot identically, from ONE calculation for the shelf.
@@ -1169,11 +1140,6 @@ class SessionShelf(QWidget):
         for t in tiles:
             t.set_sprite_box(edge)
             t.set_presentation(bool(edge), agents_as_mascots)
-        # TEMPORARY layout instrumentation (remove before release, task #16).
-        _dbg(f"[layout] vp={vp.width()}x{h} tiles={len(tiles)} per_tile_w={w} "
-             f"text_h={text_h} room={room} agents_h={agents_h} "
-             f"agents_as_mascots={agents_as_mascots} EDGE={edge} "
-             f"(min {self.MIN_MASCOT}, agents need {self.AGENTS_NEED_MASCOT})")
 
     def reserved_current(self) -> int:
         """Currently reserved scroll height (may be mid height-animation)."""
