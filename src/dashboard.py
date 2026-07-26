@@ -109,7 +109,7 @@ from transcript import (
     account_window_tokens,
     fmt_tokens,
 )
-from uiutil import (bar_warn_thresholds,
+from uiutil import (bar_warn_thresholds, make_popup,
                     format_minutes as _format_minutes, heat as _heat)
 
 
@@ -438,18 +438,15 @@ class MiniWidget(QWidget):
         self.weekly_pct, self.weekly_reset, self.weekly_bar = self._row(stack, "miniPctSub")
         row.addLayout(stack, 1)
 
-        menu = QMenu(self)
-        act_expand = QAction("Expand", self)
-        act_expand.triggered.connect(self.expand_requested.emit)
-        act_quit = QAction("Quit", self)
-        act_quit.triggered.connect(self.quit_requested.emit)
-        menu.addAction(act_expand)
-        menu.addSeparator()
-        menu.addAction(act_quit)
+        # ThemedPopup, not QMenu — a menu's panel cannot be painted opaque on
+        # macOS (see ThemedPopup for the attempts that failed on hardware).
+        menu = make_popup(self)
+        menu.set_items([("Expand", self.expand_requested.emit),
+                        ("Quit", self.quit_requested.emit)])
         self._menu = menu
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(
-            lambda pos: self._menu.exec(self.mapToGlobal(pos))
+            lambda pos: self._menu.popup_at(self.mapToGlobal(pos))
         )
         self.setToolTip("Session (top) · Weekly (bottom)\nDouble-click to expand · drag to move")
 
@@ -1182,6 +1179,23 @@ class _ThemedCombo(QComboBox):
 
     def showPopup(self) -> None:
         p = theme.active()
+        if sys.platform == "darwin":
+            # macOS draws a combo's popup container with the same vibrancy
+            # material as a menu panel, so it renders translucent and neither a
+            # stylesheet nor painting its NSWindow fixes it (both confirmed on
+            # hardware). Substitute the popup that DOES render solid — the combo
+            # itself is untouched, so currentText / currentIndexChanged and every
+            # caller keep working exactly as before.
+            if getattr(self, "_mac_popup", None) is None:
+                self._mac_popup = make_popup(self)
+            # Carry the per-preset swatch icons through — they live on the
+            # combo's items and a text-only list would drop them.
+            self._mac_popup.set_items(
+                [(self.itemText(i), lambda idx=i: self.setCurrentIndex(idx),
+                  self.itemIcon(i)) for i in range(self.count())],
+                icon_size=self.iconSize())
+            self._mac_popup.popup_under(self)
+            return
         self.view().setStyleSheet(
             f"QAbstractItemView{{background:{p.surface_dim};color:{p.text};"
             f"border:1px solid {p.border};border-radius:8px;padding:5px;outline:none;}}"
@@ -1193,6 +1207,11 @@ class _ThemedCombo(QComboBox):
         win = self.view().window()
         if win is not None:   # the popup container — paint it the theme colour
             win.setStyleSheet(f"background:{p.surface_dim};")
+            # macOS: the container is its own NSWindow and the stylesheet alone
+            # leaves it translucent, exactly as it did for the menus. Paint the
+            # native window and round it to match the rest of the chrome.
+            macos_window.paint_window(win, p.surface_dim)
+            macos_window.round_window(win, 8)
 
 
 class _PresetRow(QFrame):
@@ -2074,8 +2093,12 @@ class SettingsPanel(QWidget):
         self.notify_push_add_btn.setText("+ Add a channel  ▾")
         self.notify_push_add_btn.setCursor(Qt.PointingHandCursor)
         self.notify_push_add_btn.setPopupMode(QToolButton.InstantPopup)
-        self.notify_push_add_menu = QMenu(self.notify_push_add_btn)
-        self.notify_push_add_btn.setMenu(self.notify_push_add_menu)
+        # A ThemedPopup, not a QMenu: a menu's panel cannot be made opaque on
+        # macOS (see ThemedPopup for the four attempts that failed on hardware).
+        self.notify_push_add_menu = make_popup(self.notify_push_add_btn)
+        self.notify_push_add_btn.setPopupMode(QToolButton.DelayedPopup)
+        self.notify_push_add_btn.clicked.connect(
+            lambda: self.notify_push_add_menu.popup_under(self.notify_push_add_btn))
         push_box.addWidget(self.notify_push_add_btn, alignment=Qt.AlignLeft)
 
         self.notify_push_test_btn = QPushButton("Send test notification")
@@ -2483,11 +2506,12 @@ class SettingsPanel(QWidget):
         self._refresh_push_add_menu()
 
     def _refresh_push_add_menu(self) -> None:
-        self.notify_push_add_menu.clear()
         remaining = [p for p in app_settings.PUSH_PROVIDERS if p not in self._push_rows]
-        for p in remaining:
-            act = self.notify_push_add_menu.addAction(PUSH_CHANNEL_NAMES.get(p, p))
-            act.triggered.connect(lambda _checked=False, prov=p: self._add_push_channel(prov))
+        self.notify_push_add_menu.set_items([
+            (PUSH_CHANNEL_NAMES.get(p, p),
+             lambda prov=p: self._add_push_channel(prov))
+            for p in remaining
+        ])
         self.notify_push_add_btn.setEnabled(bool(remaining))
 
     def _add_push_channel(self, provider: str) -> None:
@@ -3005,7 +3029,7 @@ class Dashboard(QMainWindow):
         self._tray = QSystemTrayIcon(self)
         self._tray.setIcon(tray_icon(icon_path) if icon_path.exists()
                            else tray_icon(_tray_pixmap(0)))
-        tray_menu = QMenu(self)
+        tray_menu = QMenu(self)   # native NSMenu on macOS; unaffected
         self._tray_menu = tray_menu   # keep a reference so it isn't GC'd
         show_action = QAction("Show", self)
         show_action.triggered.connect(self._restore_view)

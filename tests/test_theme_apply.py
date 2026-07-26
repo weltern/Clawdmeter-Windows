@@ -331,3 +331,97 @@ if __name__ == "__main__":
         fn()
         print(f"ok  {fn.__name__}")
     print(f"\n{len(fns)} passed")
+
+
+def test_popup_menus_are_styled_and_follow_the_theme():
+    # Regression (macOS): an unstyled QMenu has no background of its own and
+    # renders translucent — the "+ Add a channel" list was see-through over the
+    # button behind it. Every QMenu in the app relies on this one rule.
+    for name in ("Midnight Salmon", "Nord", "Daybreak"):
+        p = theme.get(name)
+        qss = theme.build_qss(p)
+        assert "QMenu {" in qss, f"{name}: QMenu unstyled — it will be transparent"
+        block = qss.split("QMenu {", 1)[1].split("}", 1)[0]
+        assert p.surface.lower() in block.lower(), (
+            f"{name}: QMenu background is not the palette's surface, so it "
+            "will not re-theme"
+        )
+        assert "QMenu::item:selected" in qss, f"{name}: no hover state"
+
+
+def test_the_popup_replacement_is_macos_only(monkeypatch):
+    # The custom popup exists solely because macOS paints a QMenu's panel with a
+    # vibrancy material that ignores the stylesheet. Windows and Linux render
+    # menus correctly, and swapping the native widget there would trade working
+    # arrow-key navigation and accessibility for nothing.
+    import uiutil
+    monkeypatch.setattr(uiutil.sys, "platform", "darwin")
+    assert type(uiutil.make_popup()).__name__ == "ThemedPopup"
+    for plat in ("win32", "linux"):
+        monkeypatch.setattr(uiutil.sys, "platform", plat)
+        assert type(uiutil.make_popup()).__name__ == "_MenuPopup", plat
+
+
+def test_both_popup_kinds_share_the_same_api(monkeypatch):
+    # The call sites must not care which they got.
+    import uiutil
+    picked = []
+    for plat in ("darwin", "win32"):
+        monkeypatch.setattr(uiutil.sys, "platform", plat)
+        popup = uiutil.make_popup()
+        for meth in ("set_items", "popup_at", "popup_under", "hide"):
+            assert hasattr(popup, meth), f"{plat}: missing {meth}"
+        popup.set_items([("Quit", lambda: picked.append(plat))])
+
+
+def test_macos_combo_popup_is_substituted_but_selection_still_works(monkeypatch):
+    # macOS draws a combo's popup container with the same vibrancy material as a
+    # menu panel, so it renders translucent. The combo itself is untouched — only
+    # the popup is swapped — so currentText/currentIndexChanged keep working.
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    c = dashboard._ThemedCombo()
+    try:
+        c.addItems(["Nord", "Dracula", "Gruvbox"])
+        changed = []
+        c.currentIndexChanged.connect(lambda i: changed.append(i))
+        c.showPopup()
+        assert type(c._mac_popup).__name__ == "ThemedPopup"
+        assert [b.text() for b in c._mac_popup._buttons] == [
+            "Nord", "Dracula", "Gruvbox"]
+        c._mac_popup._buttons[1].click()
+        assert c.currentText() == "Dracula"
+        assert changed == [1], "the combo must still emit its signal"
+    finally:
+        c.deleteLater()
+
+
+def test_off_macos_the_combo_keeps_its_native_popup(monkeypatch):
+    monkeypatch.setattr(dashboard.sys, "platform", "win32")
+    c = dashboard._ThemedCombo()
+    try:
+        c.addItems(["Nord"])
+        c.showPopup()
+        assert getattr(c, "_mac_popup", None) is None, (
+            "Windows/Linux combo popups render fine and must not be replaced"
+        )
+        c.hidePopup()
+    finally:
+        c.deleteLater()
+
+
+def test_the_macos_combo_popup_keeps_the_preset_swatches(monkeypatch):
+    # The swatches live as QIcons on the combo's items; the substituted popup
+    # must carry them through or the theme picker loses its previews.
+    from PySide6.QtCore import QSize
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    c = dashboard._ThemedCombo()
+    try:
+        c.setIconSize(QSize(38, 14))
+        for n in ("Nord", "Dracula"):
+            c.addItem(dashboard._PresetRow._swatch_icon(n), n)
+        c.showPopup()
+        for b in c._mac_popup._buttons:
+            assert not b.icon().isNull(), f"{b.text()} lost its swatch"
+            assert b.iconSize() == QSize(38, 14)
+    finally:
+        c.deleteLater()

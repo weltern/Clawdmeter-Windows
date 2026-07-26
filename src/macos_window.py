@@ -69,6 +69,41 @@ def make_overlay(widget) -> bool:
     return True
 
 
+def paint_window(widget, bg_hex: str) -> bool:
+    """Force a popup's NSWindow opaque and fill it with ``bg_hex``.
+
+    Qt stylesheets do not reach a QMenu on macOS: the native style paints menus
+    itself with a vibrancy backdrop, so background-color is ignored and the menu
+    renders see-through. Handing it a Fusion style was not enough either —
+    verified on hardware. The popup is its own NSWindow, so paint it the way the
+    toast is painted, which does work on this platform.
+
+    No-op off macOS / without pyobjc.
+    """
+    if not is_supported():
+        return False
+    try:
+        import objc
+        from AppKit import NSColor
+    except Exception:   # noqa: BLE001
+        return False
+    try:
+        view = objc.objc_object(c_void_p=int(widget.winId()))
+        win = view.window()
+    except Exception:   # noqa: BLE001
+        return False
+    if win is None:
+        return False
+    try:
+        r, g, b = (int(bg_hex[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
+    except (ValueError, IndexError):
+        return False
+    win.setOpaque_(True)
+    win.setBackgroundColor_(
+        NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0))
+    return True
+
+
 def set_level(widget, floating: bool) -> bool:
     """Toggle always-on-top by setting the NSWindow's LEVEL, in place.
 

@@ -48,7 +48,7 @@ import theme
 import winutil
 from mood import GROUP_ANIMS
 from sprite_player import SpritePlayer, assets_root
-from uiutil import (WARN_PCT_DEFAULT, bar_warn_thresholds,
+from uiutil import (WARN_PCT_DEFAULT, bar_warn_thresholds, make_popup,
                     format_minutes, heat)
 from transcript import (
     ACTIVITY_ANIMS,
@@ -1450,18 +1450,14 @@ class CompactView(QWidget):
         self._scroll.setWidget(self._list_widget)
         outer.addWidget(self._scroll, 1)
 
-        menu = QMenu(self)
-        act_full = QAction("Full view", self)
-        act_full.triggered.connect(self.grow_requested.emit)
-        act_quit = QAction("Quit", self)
-        act_quit.triggered.connect(self.quit_requested.emit)
-        menu.addAction(act_full)
-        menu.addSeparator()
-        menu.addAction(act_quit)
+        # ThemedPopup, not QMenu — see uiutil.ThemedPopup.
+        menu = make_popup(self)
+        menu.set_items([("Full view", self.grow_requested.emit),
+                        ("Quit", self.quit_requested.emit)])
         self._menu = menu
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(
-            lambda p: self._menu.exec(self.mapToGlobal(p)))
+            lambda p: self._menu.popup_at(self.mapToGlobal(p)))
 
     def showEvent(self, e) -> None:
         super().showEvent(e)
