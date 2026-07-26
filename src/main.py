@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 import app_settings
 import pricing_refresh
+import macos_launch
 import run_at_startup
 import single_instance
 import theme
@@ -36,6 +37,11 @@ def main() -> int:
     # exit instead of starting a duplicate process that lingers in the tray.
     if single_instance.activate_running_instance():
         return 0
+
+    # macOS: fold any legacy LaunchAgent plist into an SMAppService registration
+    # (no-op elsewhere, and on a Mac that never had one). After the
+    # single-instance check so only the surviving process touches it.
+    run_at_startup.migrate_macos_login_item()
 
     # Apply persisted credentials override before the poller starts.
     cred = app_settings.get_credentials_override()
@@ -77,18 +83,33 @@ def main() -> int:
         apply_theme(theme.DEFAULT_NAME)
 
     win = Dashboard(mock=mock)
-    if startup:
-        # Sign-in launch: stay in the tray (don't pop the window). The poller,
-        # update checker and transcript watcher already start in __init__.
-        run_at_startup.sync_if_enabled()  # keep the entry pointed at this .exe
-        # ...unless there's no system tray to stay in (some Linux DEs): a hidden
-        # tray-less launch would be invisible and unrecoverable, so show the
-        # window instead. Gated off Windows so the Windows sign-in path is
-        # provably unchanged (it always has a tray regardless).
-        if sys.platform != "win32" and not getattr(win, "tray_available", True):
-            win.show_initial()
+
+    def _begin(startup: bool) -> None:
+        """Show the window, or stay in the tray for a sign-in launch."""
+        if startup:
+            # Sign-in launch: stay in the tray (don't pop the window). The
+            # poller, update checker and transcript watcher already start in
+            # __init__.
+            run_at_startup.sync_if_enabled()  # keep the entry pointed at this .exe
+            # ...unless there's no system tray to stay in (some Linux DEs): a
+            # hidden tray-less launch would be invisible and unrecoverable, so
+            # show the window instead. Gated off Windows so the Windows sign-in
+            # path is provably unchanged (it always has a tray regardless).
+            if sys.platform != "win32" and not getattr(win, "tray_available", True):
+                win.show_initial()
+        else:
+            win.show_initial()   # launch directly into the last-used view mode
+
+    if startup or sys.platform != "darwin":
+        _begin(startup)
     else:
-        win.show_initial()   # launch directly into the last-used view mode
+        # macOS: SMAppService launches us with no arguments, so --startup never
+        # arrives and the sign-in launch is only identifiable from the Apple
+        # Event delivered during exec(). Defer the decision until it lands
+        # rather than showing the dashboard at every login. macos_launch always
+        # answers — via the notification, or a fallback timer — so this cannot
+        # strand the app windowless.
+        macos_launch.detect(_begin)
 
     # Listen for later launches so they surface this window instead of
     # spawning a duplicate. Kept on `app` so it isn't garbage-collected.

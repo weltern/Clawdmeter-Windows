@@ -13,12 +13,20 @@ major desktop (GNOME, KDE, XFCE, …) honors at login. The presence of that file
 is the single source of truth there. The Windows code paths below are unchanged
 from the Windows-only version; the Linux branches are purely additive.
 
-macOS uses a per-user LaunchAgent — a ``com.clawdmeter.startup.plist`` under
-``~/Library/LaunchAgents`` with ``RunAtLoad`` — which ``launchd`` runs at login.
-As with Linux, the presence of that plist is the single source of truth; the
-macOS branches are purely additive and mirror the Linux ones. (Writing the file
-is enough for the *next* login — we don't ``launchctl load`` it, matching the
-file-presence model and avoiding cross-version ``launchctl`` quirks.)
+macOS prefers ``SMAppService`` (see ``macos_login_item``), which registers the
+.app itself and surfaces it in System Settings › General › Login Items as
+"Clawdmeter". Where that isn't available — a dev checkout, or macOS 12 and
+earlier — it falls back to a per-user LaunchAgent: a
+``com.clawdmeter.startup.plist`` under ``~/Library/LaunchAgents`` with
+``RunAtLoad``, which ``launchd`` runs at login. (Writing the file is enough for
+the *next* login — we don't ``launchctl load`` it, matching the file-presence
+model and avoiding cross-version ``launchctl`` quirks.)
+
+A build that predates SMAppService support left a plist behind, and that plist
+still launches the app. So on macOS "enabled" means *either* mechanism is live,
+turning it off clears both, and ``migrate_macos_login_item`` converts a
+leftover plist to a registration on the next launch — otherwise the two would
+fight and the app would start twice at login.
 
 The stored command points at the running executable plus ``--startup`` so the
 login launch goes straight to the tray instead of popping the window open.
@@ -31,6 +39,8 @@ import sys
 import tempfile
 from pathlib import Path
 from xml.sax.saxutils import escape as _xml_escape
+
+import macos_login_item
 
 try:
     import winreg  # Windows-only; None everywhere else.
@@ -243,10 +253,16 @@ def _plist_contents() -> str:
 
 
 def _macos_is_enabled() -> bool:
-    return _plist_path().exists()
+    """True if *either* mechanism will launch us at login.
+
+    A leftover plist from a pre-SMAppService build launches the app just as
+    surely as a registration does, so ignoring it would leave the checkbox
+    reading "off" on a Mac that starts Clawdmeter every morning.
+    """
+    return macos_login_item.is_enabled() or _plist_path().exists()
 
 
-def _macos_enable() -> tuple[bool, str]:
+def _macos_write_plist() -> tuple[bool, str]:
     """Write (or refresh) the LaunchAgent plist. Returns (success, message)."""
     path = _plist_path()
     try:
@@ -257,7 +273,7 @@ def _macos_enable() -> tuple[bool, str]:
     return True, " ".join(_macos_program_arguments())
 
 
-def _macos_disable() -> tuple[bool, str]:
+def _macos_remove_plist() -> tuple[bool, str]:
     """Remove the LaunchAgent plist. Treats an already-absent file as success."""
     try:
         _plist_path().unlink()
@@ -268,15 +284,63 @@ def _macos_disable() -> tuple[bool, str]:
     return True, ""
 
 
+def _macos_enable() -> tuple[bool, str]:
+    """Turn run-at-login on, preferring SMAppService over the plist."""
+    if not macos_login_item.available():
+        return _macos_write_plist()
+    ok, msg = macos_login_item.register()
+    if not ok:
+        return ok, msg
+    # Registered: any plist from an older build would now start a second copy.
+    _macos_remove_plist()
+    return True, msg
+
+
+def _macos_disable() -> tuple[bool, str]:
+    """Turn run-at-login off through both mechanisms.
+
+    Both are attempted regardless of which one reports enabled — the user asked
+    for "don't start at login", and leaving either behind would break that.
+    """
+    plist_ok, plist_msg = _macos_remove_plist()
+    if not macos_login_item.available():
+        return plist_ok, plist_msg
+    sm_ok, sm_msg = macos_login_item.unregister()
+    if not sm_ok:
+        return False, sm_msg
+    return plist_ok, plist_msg
+
+
 def _macos_sync_if_enabled() -> None:
-    """If autostart is on, rewrite the plist to the current binary location.
+    """Keep the fallback plist pointed at the current binary location.
 
     A ``.app`` gets moved or replaced on update; re-pointing the plist on each
-    frozen launch keeps ``ProgramArguments`` from going stale. Frozen-only so a
-    dev run never overwrites a real user's plist with a python path.
+    frozen launch keeps ``ProgramArguments`` from going stale. SMAppService
+    needs none of this — it tracks the bundle, not a path — so this only runs
+    for the plist fallback. Frozen-only so a dev run never overwrites a real
+    user's plist with a python path.
     """
-    if getattr(sys, "frozen", False) and _macos_is_enabled():
-        _macos_enable()
+    if (getattr(sys, "frozen", False)
+            and not macos_login_item.available()
+            and _plist_path().exists()):
+        _macos_write_plist()
+
+
+def migrate_macos_login_item() -> None:
+    """Convert a legacy LaunchAgent plist into an SMAppService registration.
+
+    Runs on every frozen macOS launch, not just login launches: a user who
+    enabled run-at-login on an older build otherwise keeps the plist forever,
+    since nothing else would ever look at it. No-op everywhere else, and a
+    failed registration leaves the plist alone so the feature keeps working.
+    """
+    if not (_is_macos() and getattr(sys, "frozen", False)):
+        return
+    if not macos_login_item.available() or not _plist_path().exists():
+        return
+    ok, _ = macos_login_item.register()
+    if ok:
+        _macos_remove_plist()
 
 
 # --- Public, platform-dispatching API --------------------------------------

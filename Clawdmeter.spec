@@ -40,7 +40,9 @@ a = Analysis(
     # macOS: NSColorSampler is reached via a lazy `from AppKit import ...`, so
     # PyInstaller's static analysis misses it -- force-collect AppKit (its pyobjc
     # hook pulls in Foundation + pyobjc-core). No-op on Windows/Linux.
-    hiddenimports=(['AppKit'] if _IS_MAC else []),
+    # ServiceManagement is likewise reached lazily (SMAppService, for the
+    # login item), so name it explicitly too.
+    hiddenimports=(['AppKit', 'ServiceManagement'] if _IS_MAC else []),
     hookspath=[],
     runtime_hooks=[],
     excludes=[

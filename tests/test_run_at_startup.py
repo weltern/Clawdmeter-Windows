@@ -208,3 +208,148 @@ def test_disable_when_absent_is_success(temp_run_key):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# --- macOS SMAppService branch ---------------------------------------------
+# The plist tests above still exercise the fallback: macos_login_item.available()
+# is False off a frozen Mac, so _force_macos alone routes to the plist.
+
+class _FakeLoginItem:
+    """Stands in for the macos_login_item module."""
+
+    def __init__(self, avail=True, register_ok=True):
+        self._avail = avail
+        self._register_ok = register_ok
+        self.enabled = False
+        self.registered = 0
+        self.unregistered = 0
+
+    def available(self):
+        return self._avail
+
+    def is_enabled(self):
+        return self.enabled
+
+    def register(self):
+        self.registered += 1
+        if not self._register_ok:
+            return False, "denied"
+        self.enabled = True
+        return True, "registered as a login item"
+
+    def unregister(self):
+        self.unregistered += 1
+        self.enabled = False
+        return True, ""
+
+
+def _force_macos_sm(monkeypatch, tmp_path, **kw):
+    _force_macos(monkeypatch, tmp_path)
+    fake = _FakeLoginItem(**kw)
+    monkeypatch.setattr(run_at_startup, "macos_login_item", fake)
+    monkeypatch.setattr(run_at_startup.sys, "frozen", True, raising=False)
+    return fake
+
+
+def test_macos_enable_prefers_smappservice_over_a_plist(monkeypatch, tmp_path):
+    fake = _force_macos_sm(monkeypatch, tmp_path)
+    ok, _ = run_at_startup.enable()
+    assert ok and fake.registered == 1
+    # No plist written: two live mechanisms would launch the app twice.
+    assert not (tmp_path / run_at_startup.PLIST_FILE_NAME).exists()
+    assert run_at_startup.is_enabled() is True
+
+
+def test_macos_enable_clears_a_legacy_plist(monkeypatch, tmp_path):
+    fake = _force_macos_sm(monkeypatch, tmp_path)
+    plist = tmp_path / run_at_startup.PLIST_FILE_NAME
+    plist.write_text("<plist/>", encoding="utf-8")
+
+    ok, _ = run_at_startup.enable()
+    assert ok and fake.registered == 1
+    assert not plist.exists()
+
+
+def test_macos_a_legacy_plist_still_reads_as_enabled(monkeypatch, tmp_path):
+    """It launches the app at login, whatever SMAppService thinks."""
+    _force_macos_sm(monkeypatch, tmp_path)
+    (tmp_path / run_at_startup.PLIST_FILE_NAME).write_text("<plist/>",
+                                                           encoding="utf-8")
+    assert run_at_startup.is_enabled() is True
+
+
+def test_macos_disable_clears_both_mechanisms(monkeypatch, tmp_path):
+    fake = _force_macos_sm(monkeypatch, tmp_path)
+    fake.enabled = True
+    plist = tmp_path / run_at_startup.PLIST_FILE_NAME
+    plist.write_text("<plist/>", encoding="utf-8")
+
+    ok, _ = run_at_startup.disable()
+    assert ok and fake.unregistered == 1
+    assert not plist.exists()
+    assert run_at_startup.is_enabled() is False
+
+
+def test_macos_enable_failure_does_not_delete_the_plist(monkeypatch, tmp_path):
+    """A refused registration must leave the working plist in place."""
+    _force_macos_sm(monkeypatch, tmp_path, register_ok=False)
+    plist = tmp_path / run_at_startup.PLIST_FILE_NAME
+    plist.write_text("<plist/>", encoding="utf-8")
+
+    ok, msg = run_at_startup.enable()
+    assert ok is False and msg == "denied"
+    assert plist.exists()
+
+
+def test_macos_migration_converts_a_legacy_plist(monkeypatch, tmp_path):
+    fake = _force_macos_sm(monkeypatch, tmp_path)
+    plist = tmp_path / run_at_startup.PLIST_FILE_NAME
+    plist.write_text("<plist/>", encoding="utf-8")
+
+    run_at_startup.migrate_macos_login_item()
+    assert fake.registered == 1
+    assert not plist.exists()
+    assert run_at_startup.is_enabled() is True
+
+
+def test_macos_migration_is_a_no_op_without_a_plist(monkeypatch, tmp_path):
+    fake = _force_macos_sm(monkeypatch, tmp_path)
+    run_at_startup.migrate_macos_login_item()
+    assert fake.registered == 0
+    assert run_at_startup.is_enabled() is False
+
+
+def test_macos_migration_keeps_the_plist_if_registering_fails(monkeypatch, tmp_path):
+    fake = _force_macos_sm(monkeypatch, tmp_path, register_ok=False)
+    plist = tmp_path / run_at_startup.PLIST_FILE_NAME
+    plist.write_text("<plist/>", encoding="utf-8")
+
+    run_at_startup.migrate_macos_login_item()
+    assert fake.registered == 1
+    assert plist.exists()          # run-at-login keeps working either way
+
+
+def test_macos_sync_leaves_smappservice_alone(monkeypatch, tmp_path):
+    """Re-pointing ProgramArguments is a plist problem; SMAppService tracks the
+    bundle, so sync must not resurrect a plist for a registered app."""
+    _force_macos_sm(monkeypatch, tmp_path)
+    run_at_startup.sync_if_enabled()
+    assert not (tmp_path / run_at_startup.PLIST_FILE_NAME).exists()
+
+
+def test_macos_sync_still_repoints_the_fallback_plist(monkeypatch, tmp_path):
+    _force_macos_sm(monkeypatch, tmp_path, avail=False)
+    plist = tmp_path / run_at_startup.PLIST_FILE_NAME
+    plist.write_text("stale", encoding="utf-8")
+
+    run_at_startup.sync_if_enabled()
+    assert "RunAtLoad" in plist.read_text(encoding="utf-8")
+
+
+def test_macos_migration_is_a_no_op_off_macos(monkeypatch, tmp_path):
+    fake = _force_macos_sm(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_at_startup, "_is_macos", lambda: False)
+    (tmp_path / run_at_startup.PLIST_FILE_NAME).write_text("x", encoding="utf-8")
+
+    run_at_startup.migrate_macos_login_item()
+    assert fake.registered == 0
