@@ -125,3 +125,68 @@ def test_nonzero_returncode_still_reads_as_no_credentials(monkeypatch):
     for rc in (36, 44, 45):
         monkeypatch.setattr(mk.subprocess, "run", _fake_run(returncode=rc, stdout=""))
         assert mk.read_credentials() is None
+
+
+# --- Security-framework path (macOS) ----------------------------------------
+
+def test_framework_path_is_preferred_over_the_cli(monkeypatch):
+    # The CLI must not run when the framework can answer: the dialog would name
+    # "security" instead of Clawdmeter, and an Always Allow grant would attach
+    # to that shared binary rather than to us.
+    monkeypatch.setattr(mk, "is_macos", lambda: True)
+    monkeypatch.setattr(mk, "_read_via_framework", lambda: "from-framework")
+    monkeypatch.setattr(mk.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("CLI ran despite the framework working")))
+    assert mk.read_credentials() == "from-framework"
+
+
+def test_falls_back_to_the_cli_only_when_the_binding_is_absent(monkeypatch):
+    # _read_via_framework returns the sentinel False for "binding not bundled".
+    monkeypatch.setattr(mk, "is_macos", lambda: True)
+    monkeypatch.setattr(mk, "_read_via_framework", lambda: False)
+    monkeypatch.setattr(mk.subprocess, "run", _fake_run(returncode=0, stdout="from-cli"))
+    assert mk.read_credentials() == "from-cli"
+
+
+def test_framework_none_is_not_treated_as_missing_binding(monkeypatch):
+    # None means "no credentials" and must NOT trigger the CLI fallback —
+    # otherwise a denied read would pop a second prompt naming "security".
+    monkeypatch.setattr(mk, "is_macos", lambda: True)
+    monkeypatch.setattr(mk, "_read_via_framework", lambda: None)
+    monkeypatch.setattr(mk.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("CLI ran after a definitive None")))
+    assert mk.read_credentials() is None
+
+
+def test_single_flight_covers_the_framework_path_too(monkeypatch):
+    monkeypatch.setattr(mk, "is_macos", lambda: True)
+    started, release, calls = threading.Event(), threading.Event(), []
+
+    def slow_framework():
+        calls.append(1)
+        started.set()
+        release.wait(5)
+        return "blob"
+
+    monkeypatch.setattr(mk, "_read_via_framework", slow_framework)
+    t = threading.Thread(target=mk.read_credentials, daemon=True)
+    t.start()
+    assert started.wait(5)
+    assert mk.read_credentials() is None      # second read bails immediately
+    assert len(calls) == 1
+    release.set()
+    t.join(5)
+
+
+def test_lock_is_released_if_the_framework_path_raises(monkeypatch):
+    monkeypatch.setattr(mk, "is_macos", lambda: True)
+    monkeypatch.setattr(mk, "_read_via_framework",
+                        lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    try:
+        mk.read_credentials()
+    except RuntimeError:
+        pass
+    monkeypatch.setattr(mk, "_read_via_framework", lambda: "ok")
+    assert mk.read_credentials() == "ok", "lock left held after an exception"

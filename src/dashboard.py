@@ -2216,13 +2216,27 @@ class SettingsPanel(QWidget):
             # implemented, so a manual refresh could only ever return the "not
             # supported" message. Disable the button rather than enable a dead one.
             needs_refresh = False
-            self.refresh_token_btn.setEnabled(False)
-            self.refresh_token_btn.setText("Managed by the macOS Keychain")
-            self.refresh_token_btn.setToolTip(
+            keychain_note = (
                 "On macOS the token is stored in the login Keychain — run "
                 "`claude` to refresh it; Clawdmeter re-reads it automatically."
             )
+            self.refresh_token_btn.setEnabled(False)
+            self.refresh_token_btn.setText("Managed by the macOS Keychain")
+            self.refresh_token_btn.setToolTip(keychain_note)
+            # The checkbox has to be disabled for the same reason as the button:
+            # auto-refresh cannot run on macOS, so leaving it clickable — and
+            # ticked, since it defaults on — tells the user their token is being
+            # refreshed automatically when nothing of the sort is happening.
+            # Shown unchecked to match reality, WITHOUT writing the setting:
+            # blockSignals keeps the stored (Windows/Linux) preference intact.
+            self.auto_refresh_check.setEnabled(False)
+            self.auto_refresh_check.setToolTip(keychain_note)
+            self.auto_refresh_check.blockSignals(True)
+            self.auto_refresh_check.setChecked(False)
+            self.auto_refresh_check.blockSignals(False)
         else:
+            self.auto_refresh_check.setEnabled(True)
+            self.auto_refresh_check.setToolTip("")
             needs_refresh = token_refresh.is_expired(path)
             self.refresh_token_btn.setEnabled(needs_refresh)
             if needs_refresh:
