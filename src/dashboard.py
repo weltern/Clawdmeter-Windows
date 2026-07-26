@@ -564,9 +564,20 @@ class ResetToast(QWidget):
         self._on_click = None  # optional per-message click action (else `clicked`)
         # Frameless, on-top, no taskbar entry, and — critically — never steal
         # focus/activation from whatever the user is doing when it pops.
-        self.setWindowFlags(
-            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-        )
+        if sys.platform == "darwin":
+            # Drop Qt.Tool on macOS: a Tool window auto-hides when the app loses
+            # focus, and the app is BY DEFINITION not frontmost when an alert
+            # matters — so the toast vanished exactly when it needed to be seen,
+            # leaving "pop the window to front" as the only thing that actually
+            # notified you. Same fix the mini and compact HUDs already carry.
+            # WA_ShowWithoutActivating below still keeps it from stealing focus.
+            self.setWindowFlags(
+                Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+            )
+        else:
+            self.setWindowFlags(
+                Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+            )
         # Opaque, like the main/mini windows. NOT WA_TranslucentBackground:
         # the slim frozen build prunes opengl32sw.dll, without which translucent
         # compositing renders wrong. windowOpacity (the fade) is a separate OS
@@ -607,6 +618,15 @@ class ResetToast(QWidget):
         self._dismiss_timer = QTimer(self)
         self._dismiss_timer.setSingleShot(True)
         self._dismiss_timer.timeout.connect(self.dismiss)
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        # Re-applied on every show, not latched: anything that makes Qt rebuild
+        # the native window would otherwise silently lose this, and the call is
+        # idempotent. Without it the toast cannot be drawn on another app's
+        # fullscreen Space, so macOS switches Spaces to show it — which looks
+        # like the fullscreen app being yanked away.
+        macos_window.make_overlay(self)
 
     def show_message(self, title: str, body: str, on_click=None) -> None:
         """Show (or re-show) the toast with new text and restart the timer.
@@ -1931,7 +1951,12 @@ class SettingsPanel(QWidget):
         self.notify_sound_check.setChecked(app_settings.get_reset_notify_sound())
         self.notify_sound_check.toggled.connect(self._on_notify_sound_toggled)
         toast_box.addWidget(self.notify_sound_check)
-        self.notify_popup_check = QCheckBox("Pop the window to front")
+        self.notify_popup_check = QCheckBox(
+            "Bring the Clawdmeter dashboard to the front")
+        self.notify_popup_check.setToolTip(
+            "Raises the main Clawdmeter window on an alert. The toast already "
+            "appears on top of other apps, so turn this on only if you want "
+            "the full dashboard in front of you.")
         self.notify_popup_check.setChecked(app_settings.get_reset_notify_popup())
         self.notify_popup_check.toggled.connect(self._on_notify_popup_toggled)
         toast_box.addWidget(self.notify_popup_check)

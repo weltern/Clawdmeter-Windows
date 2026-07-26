@@ -20,10 +20,53 @@ _TITLE_HIDDEN = 1                         # NSWindowTitleHidden
 _COLLECTION_FULLSCREEN_NONE = 1 << 9      # NSWindowCollectionBehaviorFullScreenNone
 _LEVEL_NORMAL = 0                         # NSNormalWindowLevel
 _LEVEL_FLOATING = 3                       # NSFloatingWindowLevel (kCGFloatingWindowLevel)
+# NSWindowCollectionBehavior bits for an overlay that must appear over whatever
+# the user is currently in, including another app's fullscreen Space.
+_COLLECTION_CAN_JOIN_ALL_SPACES = 1 << 0  # NSWindowCollectionBehaviorCanJoinAllSpaces
+_COLLECTION_STATIONARY = 1 << 4           # NSWindowCollectionBehaviorStationary
+_COLLECTION_IGNORES_CYCLE = 1 << 6        # NSWindowCollectionBehaviorIgnoresCycle
+_COLLECTION_FULLSCREEN_AUXILIARY = 1 << 8  # NSWindowCollectionBehaviorFullScreenAuxiliary
 
 
 def is_supported() -> bool:
     return sys.platform == "darwin"
+
+
+def make_overlay(widget) -> bool:
+    """Let a transient overlay (the alert toast) appear over whatever the user
+    is currently in — including another app's fullscreen window.
+
+    macOS Spaces are isolated: a fullscreen app gets its own Space, and a window
+    that has not opted in cannot be drawn there. Showing it instead SWITCHES the
+    user to the window's Space, which reads as the fullscreen app being yanked
+    away — alarming, and the opposite of an unobtrusive notification.
+
+    ``CanJoinAllSpaces`` + ``FullScreenAuxiliary`` is Apple's documented recipe
+    for exactly this; ``Stationary`` keeps the toast pinned to its screen corner
+    through Space transitions, and ``IgnoresCycle`` keeps a transient popup out
+    of Cmd-` window cycling. Idempotent; no-op off macOS / without pyobjc.
+    """
+    if not is_supported():
+        return False
+    try:
+        import objc
+    except Exception:   # noqa: BLE001
+        return False
+    try:
+        view = objc.objc_object(c_void_p=int(widget.winId()))
+        win = view.window()
+    except Exception:   # noqa: BLE001
+        return False
+    if win is None:
+        return False
+    win.setCollectionBehavior_(
+        int(win.collectionBehavior())
+        | _COLLECTION_CAN_JOIN_ALL_SPACES
+        | _COLLECTION_FULLSCREEN_AUXILIARY
+        | _COLLECTION_STATIONARY
+        | _COLLECTION_IGNORES_CYCLE
+    )
+    return True
 
 
 def set_level(widget, floating: bool) -> bool:
