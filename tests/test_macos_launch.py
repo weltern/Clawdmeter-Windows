@@ -108,3 +108,25 @@ def test_detect_falls_back_when_cocoa_is_missing(monkeypatch):
     seen = []
     macos_launch.detect(seen.append)
     assert seen == [False]
+
+
+def test_the_reopen_four_char_codes_match_apple_s():
+    assert macos_launch.KCORE_EVENT_CLASS == 0x61657674          # 'aevt'
+    assert macos_launch.KAE_REOPEN_APPLICATION == 0x72617070     # 'rapp'
+
+
+def test_a_known_launch_source_is_used_verbatim(monkeypatch):
+    """The LaunchAgent fallback still passes --startup, so there is nothing to
+    work out — but the reopen handler must still get installed."""
+    monkeypatch.setattr(macos_launch.sys, "platform", "win32")
+    seen = []
+    macos_launch.detect(seen.append, known=True)
+    # Off macOS `known` is moot; the platform answer wins and stays False.
+    assert seen == [False]
+
+
+def test_detect_tolerates_a_reopen_callback_off_macos(monkeypatch):
+    monkeypatch.setattr(macos_launch.sys, "platform", "win32")
+    seen = []
+    macos_launch.detect(seen.append, on_reopen=lambda: seen.append("reopen"))
+    assert seen == [False]      # no Cocoa, no handler, no crash

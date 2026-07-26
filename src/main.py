@@ -100,7 +100,7 @@ def main() -> int:
         else:
             win.show_initial()   # launch directly into the last-used view mode
 
-    if startup or sys.platform != "darwin":
+    if sys.platform != "darwin":
         _begin(startup)
     else:
         # macOS: SMAppService launches us with no arguments, so --startup never
@@ -108,8 +108,14 @@ def main() -> int:
         # Event delivered during exec(). Defer the decision until it lands
         # rather than showing the dashboard at every login. macos_launch always
         # answers — via the notification, or a fallback timer — so this cannot
-        # strand the app windowless.
-        macos_launch.detect(_begin)
+        # strand the app windowless. `known` covers the LaunchAgent fallback,
+        # which does still pass --startup.
+        #
+        # on_reopen is wired here too because it has to be installed from the
+        # same launch notification, and it matters most in exactly the state
+        # this change creates: running in the menu bar with no window.
+        macos_launch.detect(_begin, on_reopen=win._show_window,
+                            known=True if startup else None)
 
     # Listen for later launches so they surface this window instead of
     # spawning a duplicate. Kept on `app` so it isn't garbage-collected.

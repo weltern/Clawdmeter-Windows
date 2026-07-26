@@ -38,6 +38,8 @@ import sys
 KAE_OPEN_APPLICATION = int.from_bytes(b"oapp", "big")
 KEY_AE_PROP_DATA = int.from_bytes(b"prdt", "big")
 KEY_AE_LAUNCHED_AS_LOGIN_ITEM = int.from_bytes(b"lgit", "big")
+KCORE_EVENT_CLASS = int.from_bytes(b"aevt", "big")
+KAE_REOPEN_APPLICATION = int.from_bytes(b"rapp", "big")
 
 # How long to wait for the notification before assuming a normal launch. It
 # fires within milliseconds in practice; this only matters if a future macOS
@@ -88,12 +90,23 @@ class _Decision:
         self._callback(is_login_launch)
 
 
-def detect(callback, *, fallback_ms: int = FALLBACK_MS) -> None:
-    """Call ``callback(is_login_launch)`` once, as soon as it can be known.
+def detect(callback, *, on_reopen=None, known: bool | None = None,
+           fallback_ms: int = FALLBACK_MS) -> None:
+    """Wire up the two macOS launch signals. Call *before* ``QApplication.exec()``.
 
-    Must be called *before* ``QApplication.exec()`` — the notification fires
-    inside it. Off macOS, or if the Cocoa bindings aren't available, the answer
-    is an immediate False, which is the safe direction: the window shows.
+    ``callback(is_login_launch)`` runs exactly once, as soon as the answer is
+    knowable. Pass ``known`` when the launch source is already settled (the
+    ``--startup`` flag from the LaunchAgent fallback) and it is used verbatim —
+    the reopen handler is still installed.
+
+    ``on_reopen()`` runs each time the user opens the app while it is already
+    running. macOS re-activates the existing process instead of starting a
+    second one, so the single-instance IPC that surfaces the window on Windows
+    and Linux never fires here; without this, an app sitting in the menu bar
+    with no window simply ignores being opened.
+
+    Off macOS, or with no Cocoa bindings, the answer is an immediate False,
+    which is the safe direction: the window shows.
     """
     decision = _Decision(callback)
     if sys.platform != "darwin":
@@ -108,14 +121,42 @@ def detect(callback, *, fallback_ms: int = FALLBACK_MS) -> None:
 
     class _LaunchWatcher(NSObject):
         def onLaunch_(self, _note):
-            evt = NSAppleEventManager.sharedAppleEventManager().currentAppleEvent()
-            decision.settle(is_login_launch_event(evt))
+            if not decision.settled:
+                evt = (NSAppleEventManager.sharedAppleEventManager()
+                       .currentAppleEvent())
+                decision.settle(is_login_launch_event(evt))
+            if on_reopen is not None:
+                self.installReopenHandler()
+
+        def installReopenHandler(self):
+            # AppKit claims kAEReopenApplication during finishLaunching, so this
+            # has to run after that or it gets overwritten — which is why it
+            # lives in this notification rather than next to the QApplication.
+            # It replaces AppKit's handler: measured behaviour without it is
+            # that re-opening does nothing at all, so there is nothing to chain.
+            try:
+                (NSAppleEventManager.sharedAppleEventManager()
+                 .setEventHandler_andSelector_forEventClass_andEventID_(
+                     self, b"handleReopen:withReplyEvent:",
+                     KCORE_EVENT_CLASS, KAE_REOPEN_APPLICATION))
+            except Exception:      # noqa: BLE001 - reopen is a convenience
+                pass
+
+        def handleReopen_withReplyEvent_(self, _event, _reply):
+            try:
+                on_reopen()
+            except Exception:      # noqa: BLE001 - never raise into an AE handler
+                pass
 
     watcher = _LaunchWatcher.alloc().init()
     _watchers.append(watcher)
     NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
         watcher, b"onLaunch:", "NSApplicationDidFinishLaunchingNotification",
         None)
+
+    if known is not None:
+        decision.settle(known)
+        return
 
     # Belt and braces: never leave the app windowless because a notification
     # didn't arrive.
