@@ -2782,7 +2782,13 @@ class Dashboard(QMainWindow):
         # and shrinks with the mascot shelf so there's no dead space below the
         # bars. This low floor only stops a manual drag from clipping badly; the
         # actual height is driven by the fit.
-        self._min_window_h = 430
+        # Width floor only. The HEIGHT floor is left to Qt: every child now
+        # declares an honest minimum (the mascots are elastic, the bars and the
+        # tile's name/activity/status rows are not), so the layout's own
+        # minimumSizeHint is the true floor. The old hard-coded 430 was BELOW
+        # what the children needed, which is why Qt clipped them instead of
+        # refusing the drag — the mascots were sawn in half by the window edge.
+        self._min_window_h = 0
         # Width: ~3 shelf tiles (130px sprites + margins/spacing) fit without
         # scrolling; overflow scrolls horizontally inside the shelf's QScrollArea,
         # so the window never balloons sideways.
@@ -2845,7 +2851,9 @@ class Dashboard(QMainWindow):
         sprite_row.addStretch(1)
         sprite_row.addWidget(self.sprite)
         sprite_row.addStretch(1)
-        layout.addWidget(self.hero)
+        # stretch 1 to match the shelf it shares this slot with, so spare
+        # height collects around the mascot rather than under the bars.
+        layout.addWidget(self.hero, 1)
 
         # Shelf of per-session mascots, shown whenever >=1 session is live. It
         # lives in the same slot as the hero and the two toggle visibility so
@@ -2882,7 +2890,10 @@ class Dashboard(QMainWindow):
         status_row.addStretch(1)
         self.status_container.setVisible(False)
         layout.addWidget(self.status_container)
-        layout.addStretch(1)
+        # Deliberately NO trailing stretch. Spare vertical space belongs to the
+        # mascot area above (hero/shelf, both stretch 1), not below the last bar
+        # — with a stretch here the slack was split 50/50 and every pixel of
+        # extra height opened a void under WEEKLY.
 
         # Page stack (Dashboard + Stats) inside the content area. content_box
         # reserves the collapsed rail's width on the left so content never sits
@@ -4160,6 +4171,14 @@ class Dashboard(QMainWindow):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        # TEMPORARY layout instrumentation — see session_shelf._dbg (remove
+        # before release, task #16).
+        session_shelf._dbg(
+            f"[window] win_h={self.height()} win_w={self.width()} "
+            f"minH={self.minimumHeight()} titlebar={self.title_bar.height()} "
+            f"content_minHint={self._content.minimumSizeHint().height()} "
+            f"shelf_active={getattr(self, '_shelf_active', None)} "
+            f"page={self._pages.currentIndex()}")
         # Keep the auto-hide collapsed-height baseline in step with manual resizes
         # (only when no title-bar animation is in flight, so animation ticks don't
         # poison it). Must run regardless of _auto_fit_height — it matters most

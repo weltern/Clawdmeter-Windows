@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QMenu,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -87,6 +88,7 @@ QLabel#tileActivity {{
     font-size: 11px; font-weight: 600; letter-spacing: 1px;
 }}
 QLabel#tileDot {{ font-size: 11px; }}
+QLabel#tileAgentsText {{ font-size: 10px; color: {_MUTED}; }}
 QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 0 2px; }}
 QScrollBar::handle:horizontal {{
     background: {_P.border}; border-radius: 4px; min-width: 24px;
@@ -104,6 +106,31 @@ SHELF_STYLESHEET = _build_shelf_qss()
 # clipped at the tile's top edge. The mascot sits with internal margin now
 # (consistent-crop), so the glow only needs a little extra room above.
 _GLOW_PAD = 14
+
+# The tile column's vertical padding: _GLOW_PAD above, 4 below.
+_TILE_V_MARGINS = _GLOW_PAD + 4
+
+
+# --- TEMPORARY layout instrumentation (remove before release) ---------------
+# Set CLAWD_DEBUG_LAYOUT=1 to dump real geometry on every resize. Guessing at
+# these numbers is what made the shelf work take all afternoon; measuring found
+# the Qt.AlignTop bug in one pass. Writes to CLAWD_DEBUG_LAYOUT_FILE or
+# ~/clawd-layout.log. Inert unless the env var is set.
+import os as _os
+
+_DEBUG_LAYOUT = bool(_os.environ.get("CLAWD_DEBUG_LAYOUT"))
+_DEBUG_LAYOUT_PATH = (_os.environ.get("CLAWD_DEBUG_LAYOUT_FILE")
+                      or _os.path.expanduser("~/clawd-layout.log"))
+
+
+def _dbg(line: str) -> None:
+    if not _DEBUG_LAYOUT:
+        return
+    try:
+        with open(_DEBUG_LAYOUT_PATH, "a", encoding="utf-8") as fh:
+            print(line, file=fh)
+    except OSError:
+        pass
 
 
 def _ago_text(last_event_ts: float | None) -> str:
@@ -466,7 +493,24 @@ class AgentMascot(QWidget):
 
 class SessionTile(QWidget):
     """One session: glowing mascot + project name + activity + status dot,
-    plus a row of small child mascots when the session has live subagents."""
+    plus a row of small child mascots when the session has live subagents.
+
+    The mascot and the subagent row are ELASTIC — they scale with the tile and
+    drop out when it gets short. The name, activity and status rows are not:
+    they are the facts you read at a glance, so they are what survives.
+
+    Dropping something out is a discrete decision, which Qt's continuous layout
+    cannot express on its own — a sprite told to shrink just keeps shrinking,
+    which is how the mascots ended up 20px tall instead of gone. Hence the two
+    thresholds below, with a deliberate gap between them: hiding a child changes
+    the layout, which changes the height, so without hysteresis the tile would
+    sit on the boundary flickering the mascot in and out forever.
+    """
+
+    # Height the mascot needs before it is worth drawing at all, and the (higher)
+    # height at which it comes back. The gap is the hysteresis band.
+    SPRITE_HIDE_BELOW = 72
+    SPRITE_SHOW_ABOVE = 96
 
     # A single status dot reused for both states — the glyph stays, only its
     # color changes (warm/active accent when live, dim grey when idle).
@@ -494,8 +538,21 @@ class SessionTile(QWidget):
         # layout still allocates the tile its sizeHint width when unconstrained.
         col.setSizeConstraint(QLayout.SetNoConstraint)
         self.setMinimumWidth(0)
+        # Fill the shelf's height. Without this the tile sized itself to its
+        # CONTENT and sat at the top of the strip, so the density check read a
+        # ~70px tile inside a 500px shelf, concluded there was no room for a
+        # mascot, and left the rest as a void above the bars. The tile has to
+        # occupy the space before it can decide what fits in it.
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
-        self.sprite = SpritePlayer(size=sprite_size)
+        # Scale-to-fit: the mascot renders into whatever height the layout
+        # gives it, rather than pinning a size that the window then has to grow
+        # to accommodate. min_size 0 is what makes "collapse to text-only" a
+        # LAYOUT outcome instead of a special case — when the shelf runs out of
+        # room the sprite shrinks away and the name / activity / status rows,
+        # which have real minimums of their own, are what survive.
+        self.sprite = SpritePlayer(size=sprite_size, scale_to_fit=True,
+                                   min_size=0)
         # The drop shadow is the colored "glow" behind the mascot. Offset 0 so
         # it haloes evenly; the color is swapped per activity in update_state.
         self._glow = QGraphicsDropShadowEffect(self)
@@ -503,7 +560,12 @@ class SessionTile(QWidget):
         self._glow.setOffset(0, 0)
         self._glow.setColor(QColor(_IDLE_COLOR))
         self.sprite.setGraphicsEffect(self._glow)
-        col.addWidget(self.sprite, 0, Qt.AlignHCenter)
+        # NO alignment flag: like Qt.AlignTop on the tile, Qt.AlignHCenter here
+        # pinned the sprite's WIDTH to its sizeHint, so the mascot could never
+        # render wider than 110px however wide the tile got. The QLabel already
+        # centres its own pixmap (setAlignment in SpritePlayer), so the flag
+        # bought nothing and cost the whole horizontal axis.
+        col.addWidget(self.sprite, 0)   # FIXED box; the shelf sizes it
 
         # Title label: elides at rest, scrolls on hover, full text in a tooltip.
         self.project_label = ScrollingLabel()
@@ -518,6 +580,13 @@ class SessionTile(QWidget):
         act_row.setAlignment(Qt.AlignHCenter)
         self.status_dot = QLabel(self._DOT, objectName="tileDot")
         self.activity_label = QLabel("", objectName="tileActivity")
+        # Fixed height: a QLabel defaults to Preferred and will happily absorb
+        # spare vertical space, which pushed the name / activity / status lines
+        # apart whenever the mascot was hidden and its stretch went unused.
+        # ScrollingLabel already pins its own height; these two did not.
+        for _lbl in (self.status_dot, self.activity_label):
+            _lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            _lbl.setFixedHeight(_lbl.sizeHint().height())
         act_row.addWidget(self.status_dot)
         act_row.addWidget(self.activity_label)
         col.addLayout(act_row)
@@ -529,6 +598,14 @@ class SessionTile(QWidget):
                                         letter_spacing=0, max_w=self._label_max_w)
         col.addWidget(self.sub_label, 0, Qt.AlignHCenter)
 
+        # Text stand-in for the subagent mascots, used when the tile is too short
+        # to draw them: "3 subagents" says the same thing in one line.
+        self.agents_label = QLabel("", objectName="tileAgentsText")
+        self.agents_label.setAlignment(Qt.AlignHCenter)
+        self.agents_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.agents_label.hide()
+        col.addWidget(self.agents_label, 0, Qt.AlignHCenter)
+
         # Row of child mascots for live subagents — hidden until the session has any.
         self._agents: dict[str, AgentMascot] = {}
         self._agents_box = QWidget()
@@ -538,6 +615,11 @@ class SessionTile(QWidget):
         self._agents_row.setAlignment(Qt.AlignHCenter)
         self._agents_box.hide()
         col.addWidget(self._agents_box)
+        # Slack collects HERE, below everything. With the sprite taking it
+        # instead, a tile with two text rows gave its mascot more height than a
+        # tile with three, so the session names started at different heights and
+        # the activity/status lines under them never lined up.
+        col.addStretch(1)
 
     def has_agents(self) -> bool:
         return bool(self._agents)
@@ -563,7 +645,52 @@ class SessionTile(QWidget):
                 self._agents[aid] = m
                 self._agents_row.addWidget(m, 0, Qt.AlignVCenter)
             m.update_state(agent)
-        self._agents_box.setVisible(bool(self._agents))
+        # Presentation is decided shelf-wide; ask the shelf to re-run it rather
+        # than deciding locally, or a tile gaining agents overrides the uniform
+        # sizing and hides its own mascot.
+        shelf = self.parent()
+        while shelf is not None and not hasattr(shelf, "_layout_tiles"):
+            shelf = shelf.parent()
+        if shelf is not None:
+            shelf._layout_tiles()
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        # Sizing is decided shelf-wide (SessionShelf._layout_tiles) so every tile
+        # agrees; the tile only applies what it is told.
+        pass
+
+    def _text_rows_height(self) -> int:
+        """Height of the rows that never drop out: name, activity, status."""
+        return (self.project_label.sizeHint().height()
+                + self.activity_label.sizeHint().height()
+                + self.sub_label.sizeHint().height()
+                + 16)   # the column's spacing/margins around them
+
+    def set_presentation(self, show_sprite: bool, agents_as_mascots: bool) -> None:
+        """Apply the shelf's shelf-wide decision. The tile no longer decides for
+        itself — each tile has a different amount of text and a different agent
+        count, so per-tile decisions produced a row that disagreed with itself."""
+        self._sprite_shown = show_sprite
+        self.sprite.setVisible(show_sprite)
+        n = len(self._agents)
+        self._agents_box.setVisible(bool(n) and agents_as_mascots)
+        self.agents_label.setVisible(bool(n) and not agents_as_mascots)
+        if n and not agents_as_mascots:
+            self.agents_label.setText(f"{n} subagent{'s' if n != 1 else ''}")
+
+    def set_sprite_box(self, px: int) -> None:
+        """Fix the mascot's box to ``px``, uniform across the shelf.
+
+        The shelf computes ONE value for every tile from the worst case, so the
+        mascots are identical and every tile's text starts at the same y —
+        including tiles carrying a subagent row, which used to steal height from
+        their own mascot and leave it smaller than its neighbours'.
+        """
+        if px <= 0:
+            self.sprite.setFixedHeight(0)
+            return
+        self.sprite.setFixedHeight(px)
 
     def set_sprite_size(self, px: int) -> None:
         # set_size (not setFixedSize) so the mascot pixmap re-scales too; it
@@ -618,6 +745,10 @@ class SessionTile(QWidget):
             anims = ACTIVITY_ANIMS.get(state.activity) or _IDLE_ANIMS
             self.sprite.set_anims(f"{self._session_id}:{state.activity.value}", anims)
 
+        # An empty sub-line keeps its row height and leaves a blank gap above
+        # whatever follows it (the "N subagents" line), so hide it outright.
+        self.sub_label.setVisible(bool(self.sub_label.text()))
+
     def stop(self) -> None:
         self.sprite.stop()
         for m in self._agents.values():
@@ -666,6 +797,14 @@ class SessionTile(QWidget):
 
 class SessionShelf(QWidget):
     """Header + horizontal scroll row of SessionTiles, diffed by session id."""
+
+    # Smallest mascot worth drawing. Below this the whole shelf goes text-only
+    # rather than rendering something unreadable.
+    MIN_MASCOT = 72
+
+    # Mascot size the parent must still reach for subagent mascots to be worth
+    # drawing alongside it. Below this the tile shows "N subagents" instead.
+    AGENTS_NEED_MASCOT = 144
 
     # Uniform sprite size by session count — one big mascot looks great solo,
     # but a row of six must stay compact enough to fit the scroll viewport.
@@ -784,6 +923,7 @@ class SessionShelf(QWidget):
         # animations running as they're repositioned.
         self._reorder_live(incoming)
 
+        self._layout_tiles()
         self._sync_height(old_size, size)
         self.header.setText(f"ACTIVE SESSIONS — {len(self._tiles)}")
 
@@ -859,10 +999,10 @@ class SessionShelf(QWidget):
             if w is None or w in leaving:
                 continue
             if seen == logical_index:
-                self._row.insertWidget(i, tile, 0, Qt.AlignTop)
+                self._row.insertWidget(i, tile, 1)
                 return
             seen += 1
-        self._row.addWidget(tile, 0, Qt.AlignTop)
+        self._row.addWidget(tile, 1)
 
     def _reorder_live(self, incoming) -> None:
         desired = [self._tiles[sid] for sid in incoming if sid in self._tiles]
@@ -875,7 +1015,7 @@ class SessionShelf(QWidget):
         for w in current:
             self._row.removeWidget(w)
         for i, tile in enumerate(desired):
-            self._row.insertWidget(i, tile, 0, Qt.AlignTop)
+            self._row.insertWidget(i, tile, 1)
 
     def _sync_height(self, old_size: int | None, new_size: int) -> None:
         """Keep the reserved shelf height in step with the tile size so the quota
@@ -884,7 +1024,11 @@ class SessionShelf(QWidget):
         changes. The height is derived analytically from the target sprite size,
         not from the live layout, so a tile mid enter-animation (width clamped to
         0) can't report a stale, clipped height."""
-        target = self._reserved_height_for(new_size)
+        # The shelf no longer RESERVES height for the mascots: they scale into
+        # whatever the layout hands them (SpritePlayer scale_to_fit). Reserving
+        # a mascot-derived height is what made the window grow and shrink as
+        # sessions came and went, and left dead space when it could not.
+        target = self._reserved_height_for(0)
         start = self._scroll.minimumHeight()
         if old_size is None:
             # First fill — snap, no animation.
@@ -943,11 +1087,93 @@ class SessionShelf(QWidget):
         return self._tile_oh
 
     def _reserved_height_for(self, sprite_size: int) -> int:
+        if not sprite_size:
+            # Text-only floor: the name / activity / status rows. The mascot is
+            # elastic above this; these rows are not.
+            #
+            # Measured from a real tile's text rows, NOT from
+            # _tile_overhead() — that derives the labels' height by subtracting
+            # the sprite size from the tile's sizeHint, which stopped holding
+            # once the sprite became scale-to-fit: it returned 0, so this floor
+            # silently evaluated to 33px instead of the intended ~130 and the
+            # last line clipped. Instrumentation caught it; arithmetic had not.
+            #
+            # TILE_V_MARGINS is the column's own padding (_GLOW_PAD top + 4
+            # bottom); 14 is horizontal-scrollbar allowance. The 1.5x is
+            # deliberate headroom (Nick's call 2026-07-26).
+            tile = next(iter(self._tiles.values()), None)
+            rows = tile._text_rows_height() if tile is not None else 60
+            return int((rows + _TILE_V_MARGINS + 14) * 1.5)
         # mascot + label overhead + an agents row (when any tile has subagents)
         # + row margins (8) + horizontal-scrollbar room (14). Kept uniform across
         # tiles so rows line up and labels are never clipped.
         agents_extra = self._agent_extra() if self._any_agents() else 0
         return sprite_size + self._tile_overhead() + agents_extra + 8 + 14
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._layout_tiles()
+        # TEMPORARY layout instrumentation (remove before release, task #16).
+        _dbg(f"[shelf] shelf_h={self.height()} scroll_h={self._scroll.height()} "
+             f"viewport_h={self._scroll.viewport().height()} "
+             f"row_h={self._row_widget.height()} "
+             f"scroll_minH={self._scroll.minimumHeight()} "
+             f"minHint={self.minimumSizeHint().height()} "
+             f"tiles={len(self._tiles)} sprite_size={self._sprite_size}")
+
+    def _layout_tiles(self) -> None:
+        """Size every mascot identically, from ONE calculation for the shelf.
+
+        Per-tile sizing could never satisfy "all the same size" or "the names
+        line up": each tile carries a different amount of text (an idle session
+        has a "last active" line, a live one may not) and a different number of
+        subagents, so each was left a different amount of room for its mascot.
+        Computing the box once from the WORST case and handing it to every tile
+        fixes both at their source.
+
+        One pure function of (container, count), applied in a single place —
+        rather than per-widget arithmetic scattered through resize handlers.
+        """
+        tiles = list(self._tiles.values())
+        if not tiles:
+            return
+        # Measure the VIEWPORT, not the tiles. A tile's height depends on the
+        # sprite box we are about to set, so feeding it back in makes this
+        # function's output its own input — it converged on one value, then
+        # collapsed to 0 on a second pass. The viewport is fixed by the window
+        # and is genuinely independent.
+        vp = self._scroll.viewport()
+        h = vp.height()
+        w = vp.width() // max(1, len(tiles))
+        if h <= 0 or w <= 0:
+            return                      # not laid out yet; nothing to size
+        text_h = max(t._text_rows_height() for t in tiles)
+        # Subagent mascots are drawn only if they fit WITHOUT eating into the
+        # mascot box — otherwise every tile falls back to the "N subagents"
+        # line, so one session sprouting agents cannot shrink its own mascot
+        # below its neighbours'.
+        agents_h = self._agent_extra() if self._any_agents() else 0
+        room = h - text_h - _TILE_V_MARGINS
+        # Subagent mascots have to EARN their space: they are only drawn if the
+        # parent mascot is still comfortably sized afterwards, not merely above
+        # the bare legibility floor. Otherwise a tile with agents spent its
+        # height on three tiny children and a shrunken parent.
+        agents_as_mascots = (bool(agents_h)
+                             and (room - agents_h) >= self.AGENTS_NEED_MASCOT)
+        if agents_as_mascots:
+            room -= agents_h
+        edge = min(w - 8, room)
+        edge = max(0, edge - (edge % 4))     # quantised: exactly equal, crisper
+        if edge < self.MIN_MASCOT:
+            edge = 0                          # text-only
+        for t in tiles:
+            t.set_sprite_box(edge)
+            t.set_presentation(bool(edge), agents_as_mascots)
+        # TEMPORARY layout instrumentation (remove before release, task #16).
+        _dbg(f"[layout] vp={vp.width()}x{h} tiles={len(tiles)} per_tile_w={w} "
+             f"text_h={text_h} room={room} agents_h={agents_h} "
+             f"agents_as_mascots={agents_as_mascots} EDGE={edge} "
+             f"(min {self.MIN_MASCOT}, agents need {self.AGENTS_NEED_MASCOT})")
 
     def reserved_current(self) -> int:
         """Currently reserved scroll height (may be mid height-animation)."""
