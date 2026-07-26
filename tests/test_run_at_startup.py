@@ -353,3 +353,64 @@ def test_macos_migration_is_a_no_op_off_macos(monkeypatch, tmp_path):
 
     run_at_startup.migrate_macos_login_item()
     assert fake.registered == 0
+
+
+def test_removing_the_plist_also_unloads_the_launchd_job(monkeypatch, tmp_path):
+    """Deleting the file alone leaves launchd holding a runatload job pointing
+    at the old binary — which is how a migrated Mac ended up starting two
+    copies of Clawdmeter at every sign-in."""
+    _force_macos_sm(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_at_startup.sys, "platform", "darwin")
+    monkeypatch.setattr(run_at_startup.os, "getuid", lambda: 501, raising=False)
+    calls = []
+    monkeypatch.setattr(run_at_startup.subprocess, "run",
+                        lambda cmd, **kw: calls.append(cmd))
+    plist = tmp_path / run_at_startup.PLIST_FILE_NAME
+    plist.write_text("<plist/>", encoding="utf-8")
+
+    run_at_startup.disable()
+
+    assert calls == [["launchctl", "bootout",
+                      f"gui/501/{run_at_startup.LAUNCH_AGENT_LABEL}"]]
+    assert not plist.exists()
+
+
+def test_the_migration_unloads_the_old_job_too(monkeypatch, tmp_path):
+    _force_macos_sm(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_at_startup.sys, "platform", "darwin")
+    monkeypatch.setattr(run_at_startup.os, "getuid", lambda: 501, raising=False)
+    calls = []
+    monkeypatch.setattr(run_at_startup.subprocess, "run",
+                        lambda cmd, **kw: calls.append(cmd))
+    (tmp_path / run_at_startup.PLIST_FILE_NAME).write_text("<plist/>",
+                                                           encoding="utf-8")
+
+    run_at_startup.migrate_macos_login_item()
+    assert calls and calls[0][:2] == ["launchctl", "bootout"]
+
+
+def test_bootout_is_never_attempted_off_macos(monkeypatch, tmp_path):
+    _force_macos_sm(monkeypatch, tmp_path)          # dispatch forced, platform not
+    calls = []
+    monkeypatch.setattr(run_at_startup.subprocess, "run",
+                        lambda cmd, **kw: calls.append(cmd))
+    (tmp_path / run_at_startup.PLIST_FILE_NAME).write_text("x", encoding="utf-8")
+
+    run_at_startup.disable()
+    assert calls == []
+
+
+def test_a_failing_launchctl_does_not_break_disable(monkeypatch, tmp_path):
+    """An unloaded job makes bootout exit non-zero; that is the wanted state."""
+    _force_macos_sm(monkeypatch, tmp_path)
+    monkeypatch.setattr(run_at_startup.sys, "platform", "darwin")
+    monkeypatch.setattr(run_at_startup.os, "getuid", lambda: 501, raising=False)
+
+    def _boom(cmd, **kw):
+        raise OSError("launchctl not found")
+    monkeypatch.setattr(run_at_startup.subprocess, "run", _boom)
+    plist = tmp_path / run_at_startup.PLIST_FILE_NAME
+    plist.write_text("x", encoding="utf-8")
+
+    ok, _ = run_at_startup.disable()
+    assert ok and not plist.exists()

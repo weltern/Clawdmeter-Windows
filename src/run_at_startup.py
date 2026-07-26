@@ -35,6 +35,7 @@ login launch goes straight to the tray instead of popping the window open.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -273,8 +274,47 @@ def _macos_write_plist() -> tuple[bool, str]:
     return True, " ".join(_macos_program_arguments())
 
 
+def _launchctl_bootout() -> None:
+    """Tell launchd to forget the LaunchAgent, not just delete its plist.
+
+    Deleting the file is not enough. launchd keeps the job loaded for the rest
+    of the session, and macOS 13+ additionally tracks it as a legacy login item,
+    so it can go on launching the old binary at every sign-in. Observed on a
+    test Mac right after a migration:
+
+        path       = ~/Library/LaunchAgents/com.clawdmeter.startup.plist  (gone)
+        program    = ~/clawd-mac/dist/Clawdmeter.app/.../Clawdmeter
+        properties = runatload
+        state      = running
+
+    — a stale build still starting at login next to the new registration, i.e.
+    two Clawdmeters for anyone upgrading with run-at-login already on.
+
+    Best effort throughout: a job that isn't loaded makes ``bootout`` exit
+    non-zero, which is the state we wanted anyway.
+    """
+    if sys.platform != "darwin":
+        return
+    uid = getattr(os, "getuid", None)
+    if uid is None:                      # pragma: no cover - non-POSIX safety net
+        return
+    try:
+        subprocess.run(["launchctl", "bootout",
+                        f"gui/{uid()}/{LAUNCH_AGENT_LABEL}"],
+                       capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _macos_remove_plist() -> tuple[bool, str]:
-    """Remove the LaunchAgent plist. Treats an already-absent file as success."""
+    """Unload the LaunchAgent and remove its plist.
+
+    Unload first: with the job gone, a plist that then fails to delete cannot
+    start anything, whereas the reverse order leaves launchd holding a job whose
+    file has vanished — which is the exact state that produced two running
+    copies.
+    """
+    _launchctl_bootout()
     try:
         _plist_path().unlink()
     except FileNotFoundError:
