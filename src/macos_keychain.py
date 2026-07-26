@@ -32,14 +32,47 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 
 # The generic-password service name Claude Code registers its credentials under.
 # Overridable via env for verification against a real install without a rebuild.
 DEFAULT_SERVICE_NAME = "Claude Code-credentials"
 
-# Guard rail: the Keychain blob can be large-ish JSON, but a runaway read should
-# never hang the poll thread. `security` returns promptly for a present item.
-_SECURITY_TIMEOUT_SECONDS = 10
+# NO timeout by default, and that is deliberate.
+#
+# The first read on a machine pops a Keychain authorization dialog, and
+# `security` blocks until it is answered. If we kill it first, SecurityAgent has
+# no live client to hand the approval to: it discards the grant and re-presents
+# the prompt, so the user can NEVER authorise the app and the dashboard stays
+# empty forever. Measured on real hardware 2026-07-26 — with a 10s limit, four
+# "Allow" clicks and two "Always Allow" clicks produced zero ACL grants; raising
+# it to 120s and answering at 177s failed identically.
+#
+# Any fixed number here is a guess about how fast a human reads a security
+# dialog they have never seen before, so there is no right value — the timeout
+# itself was the bug. Real apps do not hit this because the framework API blocks
+# for as long as the prompt is up; the fuse was an artifact of shelling out to a
+# subprocess. Waiting is safe: this runs on a QThread worker (never the UI
+# thread), only one read is ever in flight (see the lock below), `security`
+# exits as soon as the dialog is answered OR cancelled, and once the grant is
+# stored the call returns in milliseconds forever after.
+#
+# CLAWD_KEYCHAIN_TIMEOUT sets a limit in seconds for tests and for anyone who
+# wants a hard bound. Unset = wait.
+_SECURITY_TIMEOUT_SECONDS = (
+    int(os.environ["CLAWD_KEYCHAIN_TIMEOUT"])
+    if os.environ.get("CLAWD_KEYCHAIN_TIMEOUT") else None
+)
+
+# `security`'s exit code for errSecInteractionNotAllowed (-25308 & 0xFF): the OS
+# needed to prompt but could not — no GUI session (SSH, or a LaunchAgent running
+# before login). Distinct from 44 (item not found), though both mean "no token
+# this cycle" to callers.
+RC_INTERACTION_NOT_ALLOWED = 36
+
+# Only ever one `security` in flight. Without this, a poll every 60s stacks a new
+# authorization request behind the dialog the user is still reading.
+_read_lock = threading.Lock()
 
 
 def is_macos() -> bool:
@@ -61,6 +94,11 @@ def read_credentials() -> str | None:
     """
     if not is_macos():
         return None
+    # Single-flight. The first read on a machine blocks on a Keychain dialog for
+    # as long as the user takes; without this the 60s poll would queue another
+    # request behind the one they are still reading.
+    if not _read_lock.acquire(blocking=False):
+        return None
     try:
         proc = subprocess.run(
             ["security", "find-generic-password", "-s", service_name(), "-w"],
@@ -72,8 +110,11 @@ def read_credentials() -> str | None:
         # `security` not found, killed, or timed out — indistinguishable from
         # "no credentials" for our purposes.
         return None
+    finally:
+        _read_lock.release()
     if proc.returncode != 0:
-        # Non-zero => item not found (44) or access denied (45), etc.
+        # Non-zero => item not found (44), access denied (45), or the OS needing
+        # to prompt with no GUI session to prompt in (36 — see the constant).
         return None
     blob = (proc.stdout or "").strip()
     return blob or None
