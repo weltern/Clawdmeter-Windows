@@ -249,6 +249,39 @@ def apply_theme(selected: str) -> None:
         _applying_theme = False
 
 
+def tray_icon(source) -> QIcon:
+    """Build the menu-bar / system-tray icon from a QPixmap or a file path.
+
+    On macOS, status-bar icons are expected to be TEMPLATE images: a black
+    silhouette plus alpha, which the OS recolours itself — dark on a light menu
+    bar, light on a dark one, and inverted while the menu is open. A full-colour
+    icon sitting among monochrome system items is the most immediately visible
+    "ported from Windows" tell there is, and it does not invert on click.
+
+    Nothing is lost by going monochrome here: the tray shows the Clawd mascot,
+    which never encoded the usage percentage (that lives in the tooltip and the
+    windows). The colour was decoration, not information.
+
+    Off macOS the icon is returned unchanged — Windows and Linux trays are
+    routinely full-colour and a black silhouette would look broken there.
+    """
+    pm = source if isinstance(source, QPixmap) else QPixmap(str(source))
+    if sys.platform != "darwin" or pm.isNull():
+        return QIcon(pm)
+    # Keep the alpha, replace every colour with black: that IS a template image.
+    mask = QPixmap(pm.size())
+    mask.setDevicePixelRatio(pm.devicePixelRatio())
+    mask.fill(Qt.transparent)
+    p = QPainter(mask)
+    p.drawPixmap(0, 0, pm)
+    p.setCompositionMode(QPainter.CompositionMode_SourceIn)
+    p.fillRect(mask.rect(), QColor("#000000"))
+    p.end()
+    icon = QIcon(mask)
+    icon.setIsMask(True)   # tells Qt/AppKit to treat it as a template
+    return icon
+
+
 def _tray_pixmap(pct: int) -> QPixmap:
     pm = QPixmap(32, 32)
     pm.fill(Qt.transparent)
@@ -2945,7 +2978,8 @@ class Dashboard(QMainWindow):
         # real-mode launch.
 
         self._tray = QSystemTrayIcon(self)
-        self._tray.setIcon(QIcon(str(icon_path)) if icon_path.exists() else QIcon(_tray_pixmap(0)))
+        self._tray.setIcon(tray_icon(icon_path) if icon_path.exists()
+                           else tray_icon(_tray_pixmap(0)))
         tray_menu = QMenu(self)
         self._tray_menu = tray_menu   # keep a reference so it isn't GC'd
         show_action = QAction("Show", self)
@@ -2996,7 +3030,7 @@ class Dashboard(QMainWindow):
         self._flash_timer = QTimer(self)
         self._flash_timer.setInterval(400)
         self._flash_timer.timeout.connect(self._flash_tick)
-        self._flash_alert_icon = QIcon(_tray_alert_pixmap())
+        self._flash_alert_icon = tray_icon(_tray_alert_pixmap())
         self._flash_saved_icon: QIcon | None = None
         self._flash_remaining = 0
         self._flash_on = False
