@@ -15,7 +15,7 @@ import sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from PySide6.QtCore import Qt  # noqa: E402
+from PySide6.QtCore import QEvent, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import app_settings  # noqa: E402
@@ -90,6 +90,161 @@ def test_make_overlay_noops_off_darwin(monkeypatch):
     import macos_window
     monkeypatch.setattr(macos_window.sys, "platform", "win32")
     assert macos_window.make_overlay(object()) is False
+
+
+def test_clicking_the_body_activates_the_app():
+    # The convention on both platforms: clicking a notification is the user
+    # asking to see it, so it opens the app rather than just dismissing.
+    t = dashboard.ResetToast()
+    opened = []
+    t.clicked.connect(lambda: opened.append(True))
+    try:
+        t.show_message("Session (5h)", "at 90% of your limit")
+        _click(t)
+        assert opened == [True]
+    finally:
+        t.deleteLater()
+
+
+def test_the_dismiss_button_does_not_open_the_app():
+    # ...and there must be a way to say "not now" that does NOT hand you a
+    # window. Without it the whole toast is one "open the app" target.
+    t = dashboard.ResetToast()
+    opened = []
+    t.clicked.connect(lambda: opened.append(True))
+    try:
+        t.show_message("Session (5h)", "at 90% of your limit")
+        t._close_btn.click()
+        assert opened == [], "dismissing must not activate the app"
+    finally:
+        t.deleteLater()
+
+
+def test_dismiss_button_is_hover_revealed_and_never_reflows_the_text():
+    t = dashboard.ResetToast()
+    try:
+        t.show_message("Session (5h)", "at 90% of your limit")
+        assert not t._close_btn.isVisible(), "hidden until hovered"
+        before = t.body.geometry()
+        t.enterEvent(_enter_event())
+        assert t._close_btn.isVisible()
+        # It is positioned by hand, not in the layout, so revealing it must not
+        # move the text it sits beside.
+        assert t.body.geometry() == before
+        t.leaveEvent(QEvent(QEvent.Type.Leave))
+        assert not t._close_btn.isVisible()
+    finally:
+        t.deleteLater()
+
+
+def test_dismiss_button_follows_a_theme_switch():
+    # Styled via the app stylesheet (inherited from the toast card), not inline,
+    # so a live theme change restyles it like everything else.
+    import theme
+    t = dashboard.ResetToast()
+    try:
+        assert "QToolButton#toastClose" in theme.build_qss(theme.get("Nord"))
+        assert "QToolButton#toastClose" in theme.build_qss(theme.get("Daybreak"))
+        assert not t._close_btn.styleSheet(), "must not carry an inline sheet"
+    finally:
+        t.deleteLater()
+
+
+def test_alert_click_goes_to_the_dashboard_not_the_last_page():
+    # Platform guidance: clicking a notification opens a view RELATED TO ITS
+    # CONTENT. Landing on the Settings page someone happened to leave open is
+    # the opposite. The view MODE stays their choice; only the page is forced.
+    d = dashboard.Dashboard.__new__(dashboard.Dashboard)
+    seen = {}
+
+    class _Rail:
+        def select(self, page):
+            seen["rail"] = page
+
+    d.nav_rail = _Rail()
+    d._show_page = lambda idx: seen.__setitem__("page", idx)
+    d._restore_view = lambda: seen.__setitem__("restored", True)
+
+    dashboard.Dashboard._show_window_from_alert(d)
+    assert seen["page"] == 0, "must land on the Dashboard page"
+    assert seen["rail"] == 0, "nav rail highlight must follow the page"
+    assert seen["restored"] is True, "view mode is still the user's choice"
+
+
+def test_tray_click_still_leaves_you_where_you_were():
+    # The distinction that makes the above correct: a tray click is "show me the
+    # app", not "show me this alert", so it must NOT hijack the page.
+    d = dashboard.Dashboard.__new__(dashboard.Dashboard)
+    seen = {}
+    d._show_page = lambda idx: seen.__setitem__("page", idx)
+    d._restore_view = lambda: seen.__setitem__("restored", True)
+
+    dashboard.Dashboard._show_window(d)
+    assert "page" not in seen, "tray click must not change the page"
+    assert seen["restored"] is True
+
+
+def test_toast_rounds_its_corners_on_macos(monkeypatch):
+    # The toast was the last square window once main/mini/compact/dialog were
+    # all rounded. The QSS radius must match the native mask or the card's 1px
+    # border is drawn square and clipped at the corners.
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    t = dashboard.ResetToast()
+    try:
+        radius = f"border-radius:{dashboard.ResetToast.MACOS_RADIUS}px"
+        assert radius in t._card.styleSheet()
+    finally:
+        t.deleteLater()
+
+
+def test_toast_card_stays_square_off_macos(monkeypatch):
+    # Off macOS the window is opaque and square, so a rounded card would just
+    # expose dark square corners behind it.
+    monkeypatch.setattr(dashboard.sys, "platform", "win32")
+    t = dashboard.ResetToast()
+    try:
+        # NB: the base QSS legitimately contains border-radius for buttons etc.,
+        # so check for the toastRoot append specifically, not the substring.
+        assert "QWidget#toastRoot{border-radius" not in t._card.styleSheet()
+        assert t._card.styleSheet() == dashboard.STYLESHEET
+    finally:
+        t.deleteLater()
+
+
+def test_toast_card_still_follows_a_theme_switch(monkeypatch):
+    # The macOS radius append breaks apply_theme's exact-match swap — the same
+    # trap that silently stopped the mini/compact views re-theming. The toast
+    # gets the apply_theme_style() hook so the broadcast reaches it.
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    import theme
+    t = dashboard.ResetToast()
+    try:
+        dashboard.apply_theme("Nord")
+        t.apply_theme_style()
+        assert theme.get("Nord").bg.lower() in t._card.styleSheet().lower()
+        dashboard.apply_theme("Daybreak")
+        t.apply_theme_style()
+        assert theme.get("Daybreak").bg.lower() in t._card.styleSheet().lower()
+        assert hasattr(t, "apply_theme_style")
+    finally:
+        dashboard.apply_theme(theme.DEFAULT_NAME)
+        t.deleteLater()
+
+
+def _enter_event():
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QEnterEvent
+    p = QPointF(5, 5)
+    return QEnterEvent(p, p, p)
+
+
+def _click(widget):
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QMouseEvent
+    widget.mousePressEvent(QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress, QPointF(5, 5),
+        widget.mapToGlobal(QPoint(5, 5)),
+        Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
 
 
 def test_raising_the_main_window_is_opt_in(monkeypatch):

@@ -556,6 +556,12 @@ class ResetToast(QWidget):
     # A reset is good news, so the mascot does its DJ bounce rather than idling.
     ANIMS = ["dance bounce dj"]
 
+    # Single source of truth: the native content-layer mask (round_window) and
+    # the QSS border-radius must agree or the card's border is clipped at the
+    # corners. macOS only — off macOS the window stays opaque and square, so a
+    # rounded card would just expose dark square corners behind it.
+    MACOS_RADIUS = 12
+
     def __init__(self) -> None:
         super().__init__(None)
         self.setObjectName("toastShell")
@@ -589,8 +595,9 @@ class ResetToast(QWidget):
 
         card = QWidget(objectName="toastRoot")
         card.setAttribute(Qt.WA_StyledBackground, True)
-        card.setStyleSheet(STYLESHEET)
         outer.addWidget(card)
+        self._card = card
+        self.apply_theme_style()
 
         row = QHBoxLayout(card)
         row.setContentsMargins(14, 12, 16, 12)
@@ -608,6 +615,21 @@ class ResetToast(QWidget):
         text.addWidget(self.body)
         row.addLayout(text, 1)
 
+        # Dismiss ✕. Clicking the toast body activates the app (the convention on
+        # both platforms: a click is the user asking to see it), so there has to
+        # be a separate way to say "not now" — otherwise the only options are
+        # waiting out the timer or getting a window you didn't want. Parented to
+        # the card and positioned by hand rather than added to `row`, so showing
+        # and hiding it never reflows the toast's text. Revealed on hover, like
+        # the macOS and Windows notification centres.
+        self._close_btn = QToolButton(card, objectName="toastClose")
+        self._close_btn.setText("✕")
+        self._close_btn.setCursor(Qt.PointingHandCursor)
+        self._close_btn.setFixedSize(18, 18)
+        self._close_btn.setToolTip("Dismiss")
+        self._close_btn.clicked.connect(self.dismiss)
+        self._close_btn.hide()
+
         self.setFixedWidth(330)
 
         self._fade = QPropertyAnimation(self, b"windowOpacity", self)
@@ -619,14 +641,50 @@ class ResetToast(QWidget):
         self._dismiss_timer.setSingleShot(True)
         self._dismiss_timer.timeout.connect(self.dismiss)
 
+    def apply_theme_style(self) -> None:
+        """Re-apply the (theme-updated) stylesheet to the toast card.
+
+        On macOS round_window() masks the window to MACOS_RADIUS, so the QSS has
+        to round the card's 1px border to the same value or it is drawn square
+        and clipped at each corner. That append also means apply_theme's
+        exact-match swap can't see us — hence this method: apply_theme
+        broadcasts it during its widget walk."""
+        qss = STYLESHEET
+        if sys.platform == "darwin":
+            qss += f"\nQWidget#toastRoot{{border-radius:{self.MACOS_RADIUS}px}}"
+        self._card.setStyleSheet(qss)
+
     def showEvent(self, e) -> None:
         super().showEvent(e)
         # Re-applied on every show, not latched: anything that makes Qt rebuild
-        # the native window would otherwise silently lose this, and the call is
-        # idempotent. Without it the toast cannot be drawn on another app's
-        # fullscreen Space, so macOS switches Spaces to show it — which looks
-        # like the fullscreen app being yanked away.
+        # the native window would otherwise silently lose these, and both calls
+        # are idempotent. make_overlay: without it the toast cannot be drawn on
+        # another app's fullscreen Space, so macOS switches Spaces to show it —
+        # which looks like the fullscreen app being yanked away. round_window:
+        # native rounded corners + shadow, so the toast isn't the one square
+        # window left once the main/mini/compact/dialog are all rounded.
         macos_window.make_overlay(self)
+        macos_window.round_window(self, self.MACOS_RADIUS)
+        self._place_close_btn()
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._place_close_btn()
+
+    def _place_close_btn(self) -> None:
+        """Pin the ✕ to the card's top-right corner."""
+        m = 5
+        self._close_btn.move(
+            max(0, self._card.width() - self._close_btn.width() - m), m)
+        self._close_btn.raise_()
+
+    def enterEvent(self, e) -> None:
+        super().enterEvent(e)
+        self._close_btn.show()
+
+    def leaveEvent(self, e) -> None:
+        super().leaveEvent(e)
+        self._close_btn.hide()
 
     def show_message(self, title: str, body: str, on_click=None) -> None:
         """Show (or re-show) the toast with new text and restart the timer.
@@ -2539,6 +2597,17 @@ class NavRail(QWidget):
         self.dash_btn.setChecked(True)
         self._group.idClicked.connect(self._on_select)
 
+    def select(self, page: int) -> None:
+        """Move the rail's highlight to ``page`` without emitting a click.
+
+        For when something OTHER than the user picks a destination — e.g. a
+        notification click, which has to land on the Dashboard whatever page was
+        left open. setChecked doesn't fire idClicked, so the caller drives the
+        stack itself and the two can't fight."""
+        b = self._group.button(page)
+        if b is not None:
+            b.setChecked(True)
+
     def _item(self, glyph: str, label: str, page) -> QPushButton:
         # Icon only; the destination name lives on the tooltip.
         b = QPushButton(glyph, objectName="railBtn")
@@ -2942,7 +3011,7 @@ class Dashboard(QMainWindow):
         # Custom limit-reset toast (replaces the native OS notification);
         # clicking it brings the dashboard forward.
         self._toast = ResetToast()
-        self._toast.clicked.connect(self._show_window)
+        self._toast.clicked.connect(self._show_window_from_alert)
 
         self._countdown = QTimer(self)
         self._countdown.setInterval(1000)
@@ -4436,10 +4505,25 @@ class Dashboard(QMainWindow):
             cv.update_usage(s, sr, wr, app_settings.get_show_token_usage())
 
     def _show_window(self) -> None:
-        """Bring the app to the front for a notification / toast click / second
-        launch. Restores whatever mode the user last chose (NOT forced to full)
-        so 'pop to front' never silently overwrites their compact/mini choice."""
+        """Bring the app to the front for a tray click / second launch. Restores
+        whatever mode the user last chose (NOT forced to full) so this never
+        silently overwrites their compact/mini choice, and leaves them on the
+        page they were last on — they asked for 'the app', not for anything
+        specific."""
         self._restore_view()
+
+    def _show_window_from_alert(self) -> None:
+        """Toast click. Same as _show_window, but lands on the DASHBOARD
+        whatever page was last open.
+
+        Both platforms' guidance is that clicking a notification should open a
+        view related to its content — an "at 90% of your limit" alert dropping
+        you on the Settings page you happened to leave open is the opposite of
+        that. The view MODE (full/compact/mini) is still the user's choice; only
+        the page is overridden, and only for an alert."""
+        self.nav_rail.select(0)
+        self._show_page(0)     # set the page BEFORE showing, so there's no
+        self._restore_view()   # flash of whatever page was open
 
     def closeEvent(self, event) -> None:
         # Minimize to tray unless the user opted into quit-on-close (or there is

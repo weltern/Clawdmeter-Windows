@@ -836,6 +836,15 @@ QLabel#toastTitle {
     font-size: 14px; font-weight: 700; color: #e6edf3; letter-spacing: 0.5px;
 }
 QLabel#toastBody { font-size: 12px; color: #9ca3af; }
+/* Dismiss affordance. Revealed on hover, like the system notification centres:
+   without it the whole toast is one "open the app" target, so anyone who just
+   wants it gone has to either wait out the timer or get a window they didn't
+   ask for. Styled here rather than inline so it follows a live theme switch. */
+QToolButton#toastClose {
+    background: transparent; border: none; color: #9ca3af;
+    font-size: 13px; font-weight: 700; padding: 0px;
+}
+QToolButton#toastClose:hover { color: #e6edf3; }
 
 /* Appearance settings page — theme picker. Rows use palette hexes so the
    picker itself re-themes with the active theme; the per-row swatch chips are
