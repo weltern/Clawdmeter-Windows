@@ -2557,8 +2557,14 @@ class SettingsPanel(QWidget):
 class NavRail(QWidget):
     """Slim vertical icon rail down the content area's left edge — icon-only, with
     names shown via tooltips. The mascot sits at the top; the active page is
-    accent-highlighted. Full-height (parented to root) so it survives the
-    auto-hide title bar. Lives only on the full window."""
+    accent-highlighted. Lives only on the full window.
+
+    Parented to root rather than to the content column so it owns the whole left
+    edge independently of the title bar — which is why the mascot pinned at its
+    top stays put while the title bar auto-hides (Windows/Linux; auto-hide is
+    unavailable on macOS, see AUTO_HIDE_SUPPORTED). It spans root's full height
+    off macOS; on macOS it starts TOP_INSET px down so its right-edge divider
+    runs between the mascot and the native traffic lights."""
 
     COLLAPSED = 46   # the rail's fixed width
 
@@ -2573,7 +2579,8 @@ class NavRail(QWidget):
         col.setSpacing(4)
 
         # Mascot at the rail's top-left — where the title-bar icon used to sit,
-        # but on the rail so it survives the auto-hide title bar.
+        # but on the rail so it survives the auto-hide title bar where that
+        # exists (Windows/Linux; see AUTO_HIDE_SUPPORTED).
         icon_lbl = QLabel()
         ip = assets_root() / "icon.png"
         if ip.exists():
@@ -2750,10 +2757,12 @@ class Dashboard(QMainWindow):
             # than being auto-inset by the ~28px title-bar safe area. We clear the
             # traffic lights ourselves via the nav-rail top pad + title-bar left pad.
             root.setAttribute(Qt.WA_ContentsMarginsRespectsSafeArea, False)
-        # Full-height nav rail down the left (overlay, created after content); the
-        # rest of the UI sits in a right column whose left edge is reserved for the
-        # collapsed rail. Keeping the rail outside the title bar means it — and the
-        # mascot pinned at its top — survive the auto-hide title bar.
+        # Nav rail down the left (overlay, created after content); the rest of the
+        # UI sits in a right column whose left edge is reserved for the collapsed
+        # rail. Keeping the rail outside the title bar means it — and the mascot
+        # pinned at its top — survive the auto-hide title bar on the platforms
+        # that have it. Full height off macOS; inset from the top on macOS so the
+        # traffic lights get the corner (see NavRail.TOP_INSET).
         self._outer = QHBoxLayout(root)
         self._outer.setContentsMargins(NavRail.COLLAPSED, 0, 0, 0)
         self._outer.setSpacing(0)
@@ -2857,9 +2866,10 @@ class Dashboard(QMainWindow):
         )
         self._pages.addWidget(self.settings_panel)   # index 2 (Settings)
 
-        # Full-height slim icon nav rail down root's left edge. Parented to root
-        # (not content) so it spans the whole left side and the mascot at its top
-        # stays put when the title bar auto-hides.
+        # Slim icon nav rail down root's left edge. Parented to root (not content)
+        # so it owns the left side independently of the title bar and the mascot
+        # at its top stays put when the title bar auto-hides. Full height off
+        # macOS; NavRail.TOP_INSET drops it below the traffic-light row on macOS.
         self.nav_rail = NavRail(root, on_select=self._show_page)
         self.nav_rail.reposition()
         self.nav_rail.raise_()
@@ -4086,8 +4096,14 @@ class Dashboard(QMainWindow):
 
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
-        # A macOS fullscreen/zoom transition wipes our transparent-titlebar
+        # A macOS zoom/minimise transition wipes our transparent-titlebar
         # styling; re-apply it once the window is back to a normal state.
+        #
+        # The isFullScreen() guard looks dead — style() sets FullScreenNone, so
+        # the green button zooms and native fullscreen is unreachable. It is not:
+        # style() no-ops without pyobjc and returns False, in which case
+        # FullScreenNone was never applied and fullscreen IS reachable. Keep the
+        # guard so that build doesn't re-style mid-transition.
         if sys.platform == "darwin":
             from PySide6.QtCore import QEvent
             if event.type() == QEvent.Type.WindowStateChange and not self.isFullScreen():
