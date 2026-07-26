@@ -67,7 +67,10 @@ def test_apply_refreshes_custom_paint_caches():
         assert gruv.bg.lower() in session_shelf.SHELF_STYLESHEET.lower()
         # The usage-bar fill tracks the accent off the default theme.
         assert session_shelf._BAR_HEAT["cool"] == gruv.accent
-        assert session_shelf._BAR_OVERAGE == gruv.danger
+        # Overage is danger_strong, not danger: the sub-100% "hot" band is
+        # already danger, so sharing it made 95% and 105% paint identically.
+        assert session_shelf._BAR_OVERAGE == gruv.danger_strong
+        assert session_shelf._BAR_OVERAGE != session_shelf._BAR_HEAT["hot"]
     finally:
         _reset()
 

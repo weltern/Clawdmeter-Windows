@@ -47,7 +47,8 @@ import theme
 import winutil
 from mood import GROUP_ANIMS
 from sprite_player import SpritePlayer, assets_root
-from uiutil import format_minutes, heat
+from uiutil import (WARN_PCT_DEFAULT, bar_warn_thresholds,
+                    format_minutes, heat)
 from transcript import (
     ACTIVITY_ANIMS,
     ACTIVITY_COLORS,
@@ -343,7 +344,15 @@ def _heat_ramp(p) -> dict:
 
 
 def _overage_color(p) -> str:
-    return _DEFAULT_OVERAGE if p is theme.MIDNIGHT_SALMON else p.danger
+    """The fill once a window is past 100%.
+
+    danger_strong, not danger: the "hot" band below 100% is already p.danger, so
+    reusing it left the red band and the overage bar the exact same colour on
+    every theme but the shipped default. danger_strong is the darker shade each
+    preset already curates (and which custom themes derive as danger blended 20%
+    toward black), so overage reads as "past danger" without inventing a colour.
+    Midnight Salmon keeps its hand-tuned deep red."""
+    return _DEFAULT_OVERAGE if p is theme.MIDNIGHT_SALMON else p.danger_strong
 
 
 _BAR_HEAT = _heat_ramp(_P)
@@ -399,14 +408,18 @@ class UsageBar(QWidget):
         p.end()
 
 
-def apply_overage_bar(title_label, pct_label, bar, title: str, pct: int) -> None:
+def apply_overage_bar(title_label, pct_label, bar, title: str, pct: int,
+                      warn_at: int = WARN_PCT_DEFAULT) -> None:
     """Render one usage bar's title, percentage and fill with per-window overage.
 
     Under 100% the bar fills in its heat colour and the title is plain. At/over
     100% the window is in overage: the bar restarts red (the amount past 100),
     the title gains a red OVERAGE tag, and the percent shows the full figure
     (e.g. 120%). Shared by the full window's SESSION/WEEKLY bars and the compact
-    view's rows so both behave identically."""
+    view's rows so both behave identically.
+
+    ``warn_at`` is this window's yellow point — see uiutil.bar_warn_thresholds;
+    it differs between the 5h and 7d bars, so callers must pass the right one."""
     pct = max(0, int(pct))
     over = max(0, pct - 100)
     if over > 0:
@@ -416,7 +429,7 @@ def apply_overage_bar(title_label, pct_label, bar, title: str, pct: int) -> None
         bar.set_values(0, over, "cool")
     else:
         title_label.setText(title)
-        bar.set_values(pct, 0, heat(pct))
+        bar.set_values(pct, 0, heat(pct, warn_at))
     pct_label.setText(f"{pct}%")
 
 
@@ -1277,19 +1290,24 @@ class CompactView(QWidget):
 
     @staticmethod
     def _apply_bar(label, pct, bar, reset, title, value,
-                   reset_min, tokens, show_tokens) -> None:
+                   reset_min, tokens, show_tokens, warn_at) -> None:
         # Title + % + fill (overage handled per-window when value > 100).
-        apply_overage_bar(label, pct, bar, title, value)
+        apply_overage_bar(label, pct, bar, title, value, warn_at)
         line = f"resets in {format_minutes(reset_min)}"
         if show_tokens:
             line += f" · {fmt_tokens(tokens)}"
         reset.setText(line)
 
     def update_usage(self, s, sr: int, wr: int, show_tokens: bool) -> None:
+        # The 5h and 7d bars turn yellow at different points — each follows its
+        # own approaching-limit notification threshold.
+        s_warn, w_warn = bar_warn_thresholds()
         self._apply_bar(self.s_label, self.s_pct, self.s_bar, self.s_reset,
-                        "SESSION 5h", s.session_pct, sr, s.tokens_5h, show_tokens)
+                        "SESSION 5h", s.session_pct, sr, s.tokens_5h, show_tokens,
+                        s_warn)
         self._apply_bar(self.w_label, self.w_pct, self.w_bar, self.w_reset,
-                        "WEEKLY 7d", s.weekly_pct, wr, s.tokens_7d, show_tokens)
+                        "WEEKLY 7d", s.weekly_pct, wr, s.tokens_7d, show_tokens,
+                        w_warn)
 
     def set_show_tokens(self, on: bool) -> None:
         self._show_tokens = bool(on)

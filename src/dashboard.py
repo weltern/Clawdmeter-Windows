@@ -109,7 +109,8 @@ from transcript import (
     account_window_tokens,
     fmt_tokens,
 )
-from uiutil import format_minutes as _format_minutes, heat as _heat
+from uiutil import (bar_warn_thresholds,
+                    format_minutes as _format_minutes, heat as _heat)
 
 
 # Stable tile id used in single-mascot mode (Settings: show multiple sessions
@@ -443,12 +444,13 @@ class MiniWidget(QWidget):
 
     def update_usage(self, session_pct: int, weekly_pct: int,
                      session_reset_minutes: int, weekly_reset_minutes: int) -> None:
-        self._set_bar(self.session_pct, self.session_bar, session_pct)
-        self._set_bar(self.weekly_pct, self.weekly_bar, weekly_pct)
+        s_warn, w_warn = bar_warn_thresholds()
+        self._set_bar(self.session_pct, self.session_bar, session_pct, s_warn)
+        self._set_bar(self.weekly_pct, self.weekly_bar, weekly_pct, w_warn)
         self.set_resets(session_reset_minutes, weekly_reset_minutes)
 
     @staticmethod
-    def _set_bar(pct_label, bar, pct: int) -> None:
+    def _set_bar(pct_label, bar, pct: int, warn_at: int) -> None:
         """Mirror the full-view bar: heat fill under 100%, red restart past it
         (the bar empties and fills red by the amount over 100)."""
         pct = max(0, int(pct))
@@ -456,7 +458,7 @@ class MiniWidget(QWidget):
         if over > 0:
             bar.set_values(0, over, "cool")
         else:
-            bar.set_values(pct, 0, _heat(pct))
+            bar.set_values(pct, 0, _heat(pct, warn_at))
         pct_label.setText(f"{pct}%")
 
     def set_resets(self, session_reset_minutes: int, weekly_reset_minutes: int) -> None:
@@ -2277,15 +2279,27 @@ class SettingsPanel(QWidget):
         row.addStretch(1)
         return row
 
+    # These thresholds now also drive where the usage bars turn yellow
+    # (uiutil.bar_warn_thresholds), so re-render from the last sample instead of
+    # leaving the bars on the old colour until the next poll — up to a minute of
+    # the settings screen disagreeing with the bar right behind it.
+    def _refresh_usage_bar_colors(self) -> None:
+        win = self.window()
+        if hasattr(win, "refresh_usage_bar_colors"):
+            win.refresh_usage_bar_colors()
+
     def _on_approaching_toggled(self, checked: bool) -> None:
         app_settings.set_approaching_enabled(checked)
         self._sync_notify_subtoggles()
+        self._refresh_usage_bar_colors()
 
     def _on_session_pct_changed(self, value: int) -> None:
         app_settings.set_approaching_session_pct(value)
+        self._refresh_usage_bar_colors()
 
     def _on_weekly_pct_changed(self, value: int) -> None:
         app_settings.set_approaching_weekly_pct(value)
+        self._refresh_usage_bar_colors()
 
     def _on_overage_alert_toggled(self, checked: bool) -> None:
         app_settings.set_overage_alert_enabled(checked)
@@ -3779,10 +3793,7 @@ class Dashboard(QMainWindow):
 
         # Each window handles its own overage: once 5h / 7d crosses 100% the bar
         # restarts red and a red OVERAGE tag joins its title.
-        apply_overage_bar(self.session_title, self.session_pct, self.session_bar,
-                          "SESSION (5h)", s.session_pct)
-        apply_overage_bar(self.weekly_title, self.weekly_pct, self.weekly_bar,
-                          "WEEKLY (7d)", s.weekly_pct)
+        self._render_usage_bars(s)
 
         self._refresh_reset_lines(
             s, s.session_reset_minutes, s.weekly_reset_minutes)
@@ -4250,6 +4261,28 @@ class Dashboard(QMainWindow):
         """Tray click / 'Show' / pop-to-front: re-show the last-used mode without
         re-persisting it (it's already the saved value)."""
         self._set_view_mode(getattr(self, "_view_mode", "full"), persist=False)
+
+    def _render_usage_bars(self, s) -> None:
+        """The SESSION/WEEKLY bars for one sample. Each window turns yellow at
+        its own approaching-limit threshold (uiutil.bar_warn_thresholds), so the
+        two bars deliberately warm up at different points."""
+        s_warn, w_warn = bar_warn_thresholds()
+        apply_overage_bar(self.session_title, self.session_pct, self.session_bar,
+                          "SESSION (5h)", s.session_pct, s_warn)
+        apply_overage_bar(self.weekly_title, self.weekly_pct, self.weekly_bar,
+                          "WEEKLY (7d)", s.weekly_pct, w_warn)
+
+    def refresh_usage_bar_colors(self) -> None:
+        """Re-render every usage bar from the last sample. Called when the
+        approaching-limit thresholds change, so the bars recolour as the user
+        moves the slider instead of staying wrong until the next poll."""
+        s = getattr(self, "_last_sample", None)
+        if s is None or not getattr(s, "ok", False):
+            return
+        self._render_usage_bars(s)
+        self._sync_mini(s)
+        self._update_compact_usage(
+            s, s.session_reset_minutes, s.weekly_reset_minutes)
 
     def refresh_dynamic_theme_colors(self) -> None:
         """Re-render the shelf/compact from the last-seen states so the inline
