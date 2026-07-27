@@ -42,7 +42,17 @@ a = Analysis(
     # hook pulls in Foundation + pyobjc-core). No-op on Windows/Linux.
     # ServiceManagement is likewise reached lazily (SMAppService, for the
     # login item), so name it explicitly too.
-    hiddenimports=(['AppKit', 'ServiceManagement'] if _IS_MAC else []),
+    # Security belongs here for the same reason: macos_keychain does
+    # `from Security import SecItemCopyMatching` inside a try/except, which
+    # PyInstaller classes as "delayed, optional" exactly like the other two.
+    # It is currently collected anyway by pyobjc's hooks, but nothing pins
+    # that — and losing it fails invisibly: the import raises, the Keychain
+    # read falls back to the `security` CLI, a token still comes back, and
+    # the only symptom is the authorisation dialog naming *security* again
+    # and an "Always Allow" grant attaching to that shared binary instead
+    # of to us — the two things this was changed to fix.
+    hiddenimports=(['AppKit', 'Security', 'ServiceManagement']
+                   if _IS_MAC else []),
     hookspath=[],
     runtime_hooks=[],
     excludes=[

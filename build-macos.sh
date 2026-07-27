@@ -48,7 +48,16 @@ fi
 # --- venv + deps ------------------------------------------------------------
 if command -v uv >/dev/null 2>&1; then
     echo "==> Using uv"
-    uv venv --python "${PYTHON:-3.12}" .venv 2>/dev/null || uv venv .venv
+    # Say so when the requested interpreter is unusable. This fallback builds on
+    # uv's own managed CPython, which is single-arch (see header) — the most
+    # likely way to end up with a non-universal .app, and `2>/dev/null` used to
+    # discard the only clue.
+    if ! uv venv --python "${PYTHON:-3.12}" .venv; then
+        echo "==> WARNING: python ${PYTHON:-3.12} unusable; falling back to uv's" >&2
+        echo "    managed CPython, which is single-arch — expect a non-universal" >&2
+        echo "    build unless you install the python.org universal2 build." >&2
+        uv venv .venv
+    fi
     # shellcheck disable=SC1091
     source .venv/bin/activate
     uv pip install --upgrade pip
@@ -124,6 +133,25 @@ if [ ! -d "$APP" ]; then
     exit 1
 fi
 
+# Verify the arch we claimed, rather than printing it in the summary and hoping
+# someone reads it. Every silent-downgrade path above (a uv venv falling back to
+# a single-arch interpreter, a stale .venv, one single-arch dependency) ends
+# here, and the result is a release that looks green: an x86_64-only .app runs
+# on Apple Silicon under Rosetta, and an arm64-only one will not launch on Intel
+# at all.
+if [ "${CLAWD_TARGET_ARCH:-}" = "universal2" ]; then
+    _got="$(lipo -archs "$APP/Contents/MacOS/Clawdmeter" 2>/dev/null || echo '')"
+    case "$_got" in
+        *arm64*) case "$_got" in *x86_64*) : ;; *) _short=1 ;; esac ;;
+        *) _short=1 ;;
+    esac
+    if [ "${_short:-0}" = "1" ]; then
+        echo "ERROR: asked for universal2 but built '$_got'." >&2
+        echo "       Refusing to ship a single-arch .app as universal." >&2
+        exit 1
+    fi
+fi
+
 # --- ad-hoc sign ------------------------------------------------------------
 # Unsigned apps get "damaged/can't be opened" on some macOS versions even when
 # built locally. An ad-hoc signature (identity "-") fixes local launch. It does
@@ -183,7 +211,10 @@ else
         fi
     else
         echo "ERROR: dmgbuild failed — the .app and .zip above are still good." >&2
-        DMG=""
+        echo "       Exiting non-zero so a release script cannot record this as" >&2
+        echo "       a complete build with no disk image." >&2
+        rm -f packaging/dmg-background.tiff
+        exit 1
     fi
     # Regenerable artifact; keep the tree clean for the next build.
     rm -f packaging/dmg-background.tiff

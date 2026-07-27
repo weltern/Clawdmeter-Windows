@@ -46,7 +46,21 @@ def test_service_name_env_override(monkeypatch):
     assert macos_keychain.service_name() == macos_keychain.DEFAULT_SERVICE_NAME
 
 
+def _cli_path(monkeypatch):
+    """Force the CLI branch regardless of what this machine has installed.
+
+    read_credentials tries SecItemCopyMatching first and only falls back to the
+    CLI on the `False` sentinel. Off macOS the Security import raises, so these
+    tests reached the CLI by accident. On a Mac with pyobjc-framework-Security
+    they would not — and an unmocked SecItemCopyMatching for the real
+    "Claude Code-credentials" item reads the developer's live token, or raises a
+    Keychain dialog that by design has no timeout, hanging the test run.
+    """
+    monkeypatch.setattr(macos_keychain, "_read_via_framework", lambda: False)
+
+
 def test_read_credentials_returns_blob(monkeypatch):
+    _cli_path(monkeypatch)
     blob = json.dumps({"claudeAiOauth": {"accessToken": "sk-mac"}})
     monkeypatch.setattr(macos_keychain, "is_macos", lambda: True)
     monkeypatch.setattr(macos_keychain.subprocess, "run",
@@ -55,6 +69,7 @@ def test_read_credentials_returns_blob(monkeypatch):
 
 
 def test_read_credentials_none_on_nonzero(monkeypatch):
+    _cli_path(monkeypatch)
     # returncode 44 == item not found.
     monkeypatch.setattr(macos_keychain, "is_macos", lambda: True)
     monkeypatch.setattr(macos_keychain.subprocess, "run", _fake_run(44, stdout=""))
@@ -62,6 +77,7 @@ def test_read_credentials_none_on_nonzero(monkeypatch):
 
 
 def test_read_credentials_none_when_security_missing(monkeypatch):
+    _cli_path(monkeypatch)
     def boom(*a, **k):
         raise FileNotFoundError("security not found")
     monkeypatch.setattr(macos_keychain, "is_macos", lambda: True)
@@ -70,6 +86,7 @@ def test_read_credentials_none_when_security_missing(monkeypatch):
 
 
 def test_read_credentials_none_on_timeout(monkeypatch):
+    _cli_path(monkeypatch)
     def timeout(*a, **k):
         raise subprocess.TimeoutExpired(cmd="security", timeout=10)
     monkeypatch.setattr(macos_keychain, "is_macos", lambda: True)

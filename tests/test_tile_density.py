@@ -316,3 +316,48 @@ def test_the_reserved_floor_does_not_track_the_mascot_size():
             f"{shelf.reserved_target()}")
     finally:
         host.deleteLater()
+
+
+def _agents_line_clip(shelf):
+    """How far the "N subagents" line falls below the scroll viewport."""
+    vp = shelf._scroll.viewport()
+    worst = 0
+    for t in shelf._tiles.values():
+        lbl = t.agents_label
+        if not lbl.isVisible():
+            continue
+        bottom = lbl.mapTo(vp, lbl.rect().bottomLeft()).y()
+        worst = max(worst, bottom - vp.height())
+    return worst
+
+
+def test_the_subagents_line_is_actually_inside_the_viewport():
+    """`isVisibleTo` is true for a widget that is laid out but scrolled out of
+    sight, so the existing assertion passed while the line was invisible.
+
+    The shelf budgeted nothing for this row and handed the leftover to the
+    sprite, so the tile came out ~14px taller than the viewport — and because
+    the shelf's vertical scrollbar is always off, the row was silently cut. The
+    mascots had already been dropped, so a session with subagents showed no
+    sign of them at all, at every height in the fallback band.
+    """
+    host, shelf = _shelf(n=2)
+    try:
+        for tile in shelf._tiles.values():
+            tile.update_agents([
+                AgentState(agent_id=f"a{i}", activity=Activity.THINKING,
+                           tool_name=None) for i in range(3)
+            ])
+        QTest.qWait(300)
+        seen_fallback = False
+        for h in range(180, 300, 10):
+            _settle(host, h)
+            if any(t.agents_label.isVisible() for t in shelf._tiles.values()):
+                seen_fallback = True
+                assert _agents_line_clip(shelf) <= 0, (
+                    f"host {h}: the subagents line hangs "
+                    f"{_agents_line_clip(shelf)}px below the viewport and is "
+                    f"clipped away")
+        assert seen_fallback, "never reached the text-fallback band"
+    finally:
+        host.deleteLater()

@@ -58,7 +58,24 @@ def test_timeout_is_overridable_for_testing(monkeypatch):
         importlib.reload(mk)
 
 
+def _cli_path(monkeypatch):
+    """Force the CLI branch, whatever this machine has installed.
+
+    read_credentials tries the framework first and only reaches the CLI on the
+    `False` sentinel. Off macOS `from Security import ...` raises, so these
+    tests happened to exercise the CLI. On a Mac with pyobjc-framework-Security
+    — which this branch adds to requirements — the import succeeds, so they
+    would either assert against a code path that never ran or, worse, issue a
+    real unmocked SecItemCopyMatching for "Claude Code-credentials": that reads
+    the developer's live OAuth token into the test process, and on an
+    unauthorised first run raises a Keychain dialog which by deliberate design
+    has no timeout. `pytest tests/` would sit there waiting on a GUI prompt.
+    """
+    monkeypatch.setattr(mk, "_read_via_framework", lambda: False)
+
+
 def test_the_timeout_is_actually_passed_to_subprocess(monkeypatch):
+    _cli_path(monkeypatch)
     seen = {}
 
     def run(*args, **kwargs):
@@ -72,6 +89,7 @@ def test_the_timeout_is_actually_passed_to_subprocess(monkeypatch):
 
 
 def test_only_one_security_process_in_flight(monkeypatch):
+    _cli_path(monkeypatch)
     # A poll every 60s must not stack a second authorization request behind the
     # dialog the user is still reading.
     monkeypatch.setattr(mk, "is_macos", lambda: True)
@@ -104,6 +122,7 @@ def test_only_one_security_process_in_flight(monkeypatch):
 
 
 def test_lock_is_released_when_security_raises(monkeypatch):
+    _cli_path(monkeypatch)
     monkeypatch.setattr(mk, "is_macos", lambda: True)
     monkeypatch.setattr(mk.subprocess, "run",
                         lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
@@ -121,6 +140,7 @@ def test_interaction_not_allowed_code_is_documented():
 
 
 def test_nonzero_returncode_still_reads_as_no_credentials(monkeypatch):
+    _cli_path(monkeypatch)
     monkeypatch.setattr(mk, "is_macos", lambda: True)
     for rc in (36, 44, 45):
         monkeypatch.setattr(mk.subprocess, "run", _fake_run(returncode=rc, stdout=""))

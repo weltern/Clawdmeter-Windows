@@ -110,6 +110,11 @@ _GLOW_PAD = 14
 # The tile column's vertical padding: _GLOW_PAD above, 4 below.
 _TILE_V_MARGINS = _GLOW_PAD + 4
 
+# The shelf row's own padding (4 top + 4 bottom, see _row's margins). The
+# tile is given the viewport MINUS this, so sizing against the raw viewport
+# height over-commits every tile by exactly this much.
+_ROW_V_MARGINS = 8
+
 
 def _ago_text(last_event_ts: float | None) -> str:
     """Human 'last active Nm ago' from an event timestamp, for idle tiles."""
@@ -643,6 +648,16 @@ class SessionTile(QWidget):
                 + self.sub_label.sizeHint().height()
                 + 16)   # the column's spacing/margins around them
 
+    def _agents_line_height(self) -> int:
+        """What the "N subagents" fallback row costs, including its spacing.
+
+        Measured from the real label rather than assumed: it is only shown when
+        the subagent mascots don't fit, and the shelf has to reserve it or the
+        line lands below the viewport and is clipped away.
+        """
+        h = self.agents_label.sizeHint().height()
+        return h + AGENTS_ROW_SPACING if h > 0 else 0
+
     def set_presentation(self, show_sprite: bool, agents_as_mascots: bool) -> None:
         """Apply the shelf's shelf-wide decision. The tile no longer decides for
         itself — each tile has a different amount of text and a different agent
@@ -1103,7 +1118,10 @@ class SessionShelf(QWidget):
         # line, so one session sprouting agents cannot shrink its own mascot
         # below its neighbours'.
         agents_h = self._agent_extra() if self._any_agents() else 0
-        room = h - text_h - _TILE_V_MARGINS
+        # _ROW_V_MARGINS is the row layout's own 4px top + 4px bottom: the tile
+        # never gets the whole viewport, and handing the sprite that difference
+        # is what pushed the last row out of view.
+        room = h - text_h - _TILE_V_MARGINS - _ROW_V_MARGINS
         # Subagent mascots have to EARN their space: they are only drawn if the
         # parent mascot is still comfortably sized afterwards, not merely above
         # the bare legibility floor. Otherwise a tile with agents spent its
@@ -1112,6 +1130,14 @@ class SessionShelf(QWidget):
                              and (room - agents_h) >= self.AGENTS_NEED_MASCOT)
         if agents_as_mascots:
             room -= agents_h
+        elif agents_h:
+            # Falling back to the "N subagents" line — budget for it. Without
+            # this the sprite took the space the line needed, the tile ended up
+            # ~14px taller than the viewport, and since the shelf's vertical
+            # scrollbar is always off the line was silently cut. The mascots
+            # were dropped and their replacement never appeared, so a session
+            # with subagents showed no sign of them at all.
+            room -= max(t._agents_line_height() for t in tiles)
         edge = min(w - 8, room)
         edge = max(0, edge - (edge % 4))     # quantised: exactly equal, crisper
         if edge < self.MIN_MASCOT:
