@@ -275,3 +275,44 @@ def test_the_agents_text_is_themed_not_inline():
         assert not tile.agents_label.styleSheet()
     finally:
         host.deleteLater()
+
+
+# --- the reserve must agree with itself -------------------------------------
+
+def test_the_reserved_target_settles_to_what_is_actually_reserved():
+    """`Dashboard._target_window_height` adds `reserved_target() -
+    reserved_current()` so it can aim past a running height animation. That
+    delta has to reach zero once things settle, or the window grows by it on
+    every fit.
+
+    It did not. `_sync_height` was changed to reserve the text-only floor when
+    sprites became scale-to-fit, but `reserved_target` still returned the old
+    mascot-derived figure. Measured on Windows: a 799px window against
+    develop's 430, with reserved_target=497 versus reserved_current=127 — not a
+    transient, a permanent inflation on the platform with real users.
+    """
+    host, shelf = _shelf(n=2)
+    try:
+        _settle(host, 700)
+        assert shelf.reserved_target() == shelf.reserved_current(), (
+            f"target {shelf.reserved_target()} != current "
+            f"{shelf.reserved_current()}; the host window inflates by the "
+            f"difference on every fit")
+    finally:
+        host.deleteLater()
+
+
+def test_the_reserved_floor_does_not_track_the_mascot_size():
+    """The floor is the text rows only. If it followed the sprite box the window
+    would grow and shrink as sessions come and go — the behaviour the shelf
+    rework existed to remove."""
+    host, shelf = _shelf(n=2)
+    try:
+        _settle(host, 520)
+        small = shelf.reserved_target()
+        _settle(host, 900)          # far bigger mascots
+        assert shelf.reserved_target() == small, (
+            f"the reserved floor followed the mascot size: {small} -> "
+            f"{shelf.reserved_target()}")
+    finally:
+        host.deleteLater()

@@ -487,8 +487,6 @@ class SessionTile(QWidget):
 
     # Height the mascot needs before it is worth drawing at all, and the (higher)
     # height at which it comes back. The gap is the hysteresis band.
-    SPRITE_HIDE_BELOW = 72
-    SPRITE_SHOW_ABOVE = 96
 
     # A single status dot reused for both states — the glyph stays, only its
     # color changes (warm/active accent when live, dim grey when idle).
@@ -819,10 +817,9 @@ class SessionShelf(QWidget):
         # quota bars below glide to their new position instead of jumping.
         self._height_anim: QPropertyAnimation | None = None
         # Per-tile height beyond the mascot (labels + margins), measured once.
-        self._tile_oh: int | None = None
         # Measured height an agents row adds to a tile (sprite + padding + the
         # column spacing). Cached the first time a tile actually has agents so
-        # the reserve's add-back and _tile_overhead's subtraction always agree.
+        # every tile is measured the same way, so rows line up across the shelf.
         self._agent_oh: int | None = None
 
         outer = QVBoxLayout(self)
@@ -1039,8 +1036,8 @@ class SessionShelf(QWidget):
 
     def _agent_extra(self) -> int:
         """Measured height an agents row adds to a tile. Taken from a real tile
-        that has agents (so the reserve's add-back and the _tile_overhead
-        subtraction use the SAME number and can't drift), cached once."""
+        that has agents, so every tile budgets the same row and they cannot
+        drift apart. Cached once."""
         if self._agent_oh is None:
             tile = next((t for t in self._tiles.values() if t.has_agents()), None)
             if tile is None:
@@ -1048,45 +1045,27 @@ class SessionShelf(QWidget):
             self._agent_oh = tile.agents_box_height() + AGENTS_ROW_SPACING
         return self._agent_oh
 
-    def _tile_overhead(self) -> int:
-        """Tile height beyond the mascot AND the (optional) agents row — i.e. the
-        labels + spacing + margins. Measured once from a real, already-styled
-        tile (sizeHint minus the sprite size, minus the agents row if that tile
-        has one). Width animations don't affect height, so a tile mid-enter
-        measures fine."""
-        if self._tile_oh is None:
-            tile = next(iter(self._tiles.values()), None)
-            if tile is None or self._sprite_size is None:
-                return 64  # not cached — recompute once a real tile exists
-            h = tile.sizeHint().height() - self._sprite_size
-            if tile.has_agents():
-                h -= self._agent_extra()
-            self._tile_oh = max(0, h)
-        return self._tile_oh
 
-    def _reserved_height_for(self, sprite_size: int) -> int:
-        if not sprite_size:
-            # Text-only floor: the name / activity / status rows. The mascot is
-            # elastic above this; these rows are not.
-            #
-            # Measured from a real tile's text rows, NOT from
-            # _tile_overhead() — that derives the labels' height by subtracting
-            # the sprite size from the tile's sizeHint, which stopped holding
-            # once the sprite became scale-to-fit: it returned 0, so this floor
-            # silently evaluated to 33px instead of the intended ~130 and the
-            # last line clipped. Instrumentation caught it; arithmetic had not.
-            #
-            # TILE_V_MARGINS is the column's own padding (_GLOW_PAD top + 4
-            # bottom); 14 is horizontal-scrollbar allowance. The 1.5x is
-            # deliberate headroom (Nick's call 2026-07-26).
-            tile = next(iter(self._tiles.values()), None)
-            rows = tile._text_rows_height() if tile is not None else 60
-            return int((rows + _TILE_V_MARGINS + 14) * 1.5)
-        # mascot + label overhead + an agents row (when any tile has subagents)
-        # + row margins (8) + horizontal-scrollbar room (14). Kept uniform across
-        # tiles so rows line up and labels are never clipped.
-        agents_extra = self._agent_extra() if self._any_agents() else 0
-        return sprite_size + self._tile_overhead() + agents_extra + 8 + 14
+    def _reserved_height_for(self, sprite_size: int = 0) -> int:
+        # Text-only floor: the name / activity / status rows. The mascot is
+        # elastic above this; these rows are not.
+        #
+        # Measured from a real tile's text rows. Deriving it instead from the
+        # tile's sizeHint minus the sprite size stopped holding once the sprite
+        # became scale-to-fit — that subtraction returned 0, so this floor
+        # silently evaluated to 33px instead of the intended ~130 and the last
+        # line clipped. Instrumentation caught it; arithmetic had not.
+        #
+        # `sprite_size` is vestigial: the shelf no longer reserves any
+        # mascot-derived height, so every caller passes 0. It is kept only so
+        # the one existing test that names it still reads naturally.
+        #
+        # TILE_V_MARGINS is the column's own padding (_GLOW_PAD top + 4
+        # bottom); 14 is horizontal-scrollbar allowance. The 1.5x is
+        # deliberate headroom (Nick's call 2026-07-26).
+        tile = next(iter(self._tiles.values()), None)
+        rows = tile._text_rows_height() if tile is not None else 60
+        return int((rows + _TILE_V_MARGINS + 14) * 1.5)
 
     def resizeEvent(self, e) -> None:
         super().resizeEvent(e)
@@ -1146,11 +1125,20 @@ class SessionShelf(QWidget):
         return self._scroll.minimumHeight()
 
     def reserved_target(self) -> int:
-        """Settled reserved scroll height for the current tile size — lets the
-        host window aim at the final size while this is still animating."""
+        """Settled reserved scroll height — lets the host window aim at the
+        final size while this is still animating.
+
+        Must agree with what ``_sync_height`` actually sets, which is the
+        text-only floor: the shelf stopped reserving mascot-derived height when
+        sprites became scale-to-fit. While this still returned the old
+        mascot-derived figure, ``Dashboard._target_window_height`` added a
+        difference that could never settle to zero, so the window grew by it on
+        every fit. Measured on Windows: 799px tall against develop's 430, with
+        reserved_target=497 versus reserved_current=127, permanently.
+        """
         if self._sprite_size is None:
             return self._scroll.minimumHeight()
-        return self._reserved_height_for(self._sprite_size)
+        return self._reserved_height_for(0)
 
     def stop_all(self) -> None:
         if self._height_anim is not None:
