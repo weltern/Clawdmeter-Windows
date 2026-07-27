@@ -67,7 +67,10 @@ def test_apply_refreshes_custom_paint_caches():
         assert gruv.bg.lower() in session_shelf.SHELF_STYLESHEET.lower()
         # The usage-bar fill tracks the accent off the default theme.
         assert session_shelf._BAR_HEAT["cool"] == gruv.accent
-        assert session_shelf._BAR_OVERAGE == gruv.danger
+        # Overage is danger_strong, not danger: the sub-100% "hot" band is
+        # already danger, so sharing it made 95% and 105% paint identically.
+        assert session_shelf._BAR_OVERAGE == gruv.danger_strong
+        assert session_shelf._BAR_OVERAGE != session_shelf._BAR_HEAT["hot"]
     finally:
         _reset()
 
@@ -144,6 +147,174 @@ def test_custom_editor_previews_then_applies():
         ed.deleteLater()
 
 
+def test_macos_radius_windows_still_follow_theme_switch(monkeypatch):
+    # Regression (macOS-only, found on the M2): the mini/compact windows append a
+    # `border-radius` rule to their stylesheet for the native rounded HUD look, so
+    # apply_theme's exact-match swap (`sheet == old`) never matches them. The
+    # explicit re-theme hook that was meant to cover that lived on SettingsPanel
+    # but read `self.mini`/`self.compact_view` — Dashboard attributes — behind
+    # hasattr guards, so it was a silent no-op and the two views kept the old
+    # palette's colours on every live switch. apply_theme now broadcasts
+    # apply_theme_style() during its widget walk, so no entry point can miss it.
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    monkeypatch.setattr(session_shelf.sys, "platform", "darwin")
+    dashboard.apply_theme("Nord")
+    mini = dashboard.MiniWidget()
+    compact = session_shelf.CompactView()
+    try:
+        assert "border-radius:13px" in mini.styleSheet()      # the append is on
+        assert "border-radius:13px" in compact.styleSheet()
+
+        dashboard.apply_theme("Daybreak")
+        day = theme.get("Daybreak")
+        # Rebuilt from the NEW palette, and still rounded.
+        assert mini.styleSheet() == (
+            dashboard.STYLESHEET + "\nQWidget#miniRoot{border-radius:13px}")
+        assert compact.styleSheet() == (
+            session_shelf.COMPACT_STYLESHEET
+            + "\nQWidget#compactRoot{border-radius:13px}")
+        assert day.bg.lower() in mini.styleSheet().lower()
+        assert day.bg.lower() in compact.styleSheet().lower()
+    finally:
+        _reset()
+        mini.deleteLater()
+        compact.deleteLater()
+
+
+def test_custom_editor_rounds_and_follows_theme_on_macos(monkeypatch):
+    # Regression: round_window() masks the dialog's content layer to
+    # MACOS_RADIUS, so the QSS must round #root's 1px border to the same value
+    # or it is drawn square and clipped at each corner. And because that append
+    # breaks apply_theme's exact-match swap, the dialog needs the same
+    # apply_theme_style() broadcast hook the mini/compact windows got.
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    dashboard.apply_theme("Nord")
+    ed = dashboard.CustomThemeEditor(theme.custom_base_from(theme.MIDNIGHT_SALMON))
+    try:
+        radius = f"border-radius:{dashboard.CustomThemeEditor.MACOS_RADIUS}px"
+        assert radius in ed.styleSheet()
+        dashboard.apply_theme("Daybreak")
+        assert ed.styleSheet() == (
+            dashboard.STYLESHEET + f"\nQWidget#root{{{radius}}}")
+        assert theme.get("Daybreak").bg.lower() in ed.styleSheet().lower()
+    finally:
+        theme.set_custom_base(theme.custom_base_from(theme.MIDNIGHT_SALMON))
+        _reset()
+        ed.deleteLater()
+
+
+def test_set_topmost_on_macos_never_touches_qt_window_flags(monkeypatch):
+    # Regression: Always-on-top used to flip Qt.WindowStaysOnTopHint, which makes
+    # Qt tear down and rebuild the NSWindow — silently discarding the transparent
+    # titlebar / full-size content view from macos_window.style(). The window came
+    # back as stock chrome for the rest of the session. On macOS we now set the
+    # NSWindow level in place instead, so the native window is never rebuilt.
+    import winutil
+
+    touched, levels = [], []
+    monkeypatch.setattr(winutil, "is_windows", lambda: False)
+    monkeypatch.setattr(winutil.macos_window, "set_level",
+                        lambda w, on: levels.append(on) or True)
+
+    class _W:
+        def setWindowFlag(self, *a):
+            touched.append(a)          # must never happen on macOS
+
+        def isVisible(self):
+            return True
+
+    winutil.set_topmost(_W(), True)
+    assert levels == [True]
+    assert touched == [], "Qt window flag toggled — this rebuilds the NSWindow"
+
+
+def test_set_topmost_falls_back_to_qt_flag_without_pyobjc(monkeypatch):
+    # Linux, or macOS without pyobjc: set_level returns False and we must still
+    # fall back to the portable flag-toggle path.
+    import winutil
+
+    touched = []
+    monkeypatch.setattr(winutil, "is_windows", lambda: False)
+    monkeypatch.setattr(winutil.macos_window, "set_level", lambda w, on: False)
+
+    class _W:
+        def setWindowFlag(self, *a):
+            touched.append(a)
+
+        def isVisible(self):
+            return False           # short-circuits before the re-show
+
+        def geometry(self):
+            return None            # captured before the early return
+
+    winutil.set_topmost(_W(), True)
+    assert len(touched) == 1
+
+
+def test_auto_hide_titlebar_is_forced_off_on_macos(monkeypatch):
+    # macOS draws the traffic lights in the NSWindow titlebar region, not in our
+    # TitleBar widget — collapsing the widget to 0 strands them over the content.
+    # _apply_auto_hide is the single gate, so a value persisted on Windows and
+    # synced to a Mac must still come up disabled.
+    monkeypatch.setattr(dashboard, "AUTO_HIDE_SUPPORTED", False)
+    applied = []
+
+    class _D:
+        _auto_hide_enabled = False
+
+        def __getattr__(self, name):        # any collaborator it would touch
+            applied.append(name)
+            raise AssertionError(f"auto-hide ran on macOS (touched {name!r})")
+
+    # on=True must be squashed to the current value and return before doing work.
+    dashboard.Dashboard._apply_auto_hide(_D(), True)
+    assert applied == []
+
+
+def test_macos_set_level_noops_off_darwin(monkeypatch):
+    import macos_window
+    monkeypatch.setattr(macos_window.sys, "platform", "win32")
+    assert macos_window.set_level(object(), True) is False
+
+
+def test_dashboard_repaints_native_window_bg_on_theme_switch():
+    # The NSWindow background is painted from theme.active().bg_deep at show
+    # time; without this hook a live theme switch left the old colour behind
+    # until the next minimize/zoom.
+    assert hasattr(dashboard.Dashboard, "apply_theme_style")
+    calls = []
+    monkey = type("W", (), {"apply_theme_style": dashboard.Dashboard.apply_theme_style})()
+    monkey_style = dashboard.macos_window.style
+    dashboard.macos_window.style = lambda w, bg=None: calls.append(bg) or True
+    old_platform = dashboard.sys.platform
+    try:
+        dashboard.sys.platform = "darwin"
+        dashboard.apply_theme("Nord")
+        monkey.apply_theme_style()
+        assert calls == [theme.get("Nord").bg_deep]
+    finally:
+        dashboard.sys.platform = old_platform
+        dashboard.macos_window.style = monkey_style
+        _reset()
+
+
+def test_settings_panel_theme_hook_reaches_the_dashboard():
+    # The panel's hook must delegate to the window that actually owns the shelf
+    # state; the old version silently did nothing when those attributes were
+    # missing from `self`.
+    assert hasattr(dashboard.Dashboard, "refresh_dynamic_theme_colors")
+    panel = dashboard.SettingsPanel.__new__(dashboard.SettingsPanel)
+    calls = []
+
+    class _Win:
+        def refresh_dynamic_theme_colors(self):
+            calls.append(True)
+
+    panel.window = lambda: _Win()
+    dashboard.SettingsPanel._refresh_dynamic_theme_colors(panel)
+    assert calls == [True]
+
+
 def test_apply_follow_system_resolves_and_remembers_selection():
     try:
         dashboard.apply_theme(theme.SYSTEM)
@@ -160,3 +331,97 @@ if __name__ == "__main__":
         fn()
         print(f"ok  {fn.__name__}")
     print(f"\n{len(fns)} passed")
+
+
+def test_popup_menus_are_styled_and_follow_the_theme():
+    # Regression (macOS): an unstyled QMenu has no background of its own and
+    # renders translucent — the "+ Add a channel" list was see-through over the
+    # button behind it. Every QMenu in the app relies on this one rule.
+    for name in ("Midnight Salmon", "Nord", "Daybreak"):
+        p = theme.get(name)
+        qss = theme.build_qss(p)
+        assert "QMenu {" in qss, f"{name}: QMenu unstyled — it will be transparent"
+        block = qss.split("QMenu {", 1)[1].split("}", 1)[0]
+        assert p.surface.lower() in block.lower(), (
+            f"{name}: QMenu background is not the palette's surface, so it "
+            "will not re-theme"
+        )
+        assert "QMenu::item:selected" in qss, f"{name}: no hover state"
+
+
+def test_the_popup_replacement_is_macos_only(monkeypatch):
+    # The custom popup exists solely because macOS paints a QMenu's panel with a
+    # vibrancy material that ignores the stylesheet. Windows and Linux render
+    # menus correctly, and swapping the native widget there would trade working
+    # arrow-key navigation and accessibility for nothing.
+    import uiutil
+    monkeypatch.setattr(uiutil.sys, "platform", "darwin")
+    assert type(uiutil.make_popup()).__name__ == "ThemedPopup"
+    for plat in ("win32", "linux"):
+        monkeypatch.setattr(uiutil.sys, "platform", plat)
+        assert type(uiutil.make_popup()).__name__ == "_MenuPopup", plat
+
+
+def test_both_popup_kinds_share_the_same_api(monkeypatch):
+    # The call sites must not care which they got.
+    import uiutil
+    picked = []
+    for plat in ("darwin", "win32"):
+        monkeypatch.setattr(uiutil.sys, "platform", plat)
+        popup = uiutil.make_popup()
+        for meth in ("set_items", "popup_at", "popup_under", "hide"):
+            assert hasattr(popup, meth), f"{plat}: missing {meth}"
+        popup.set_items([("Quit", lambda: picked.append(plat))])
+
+
+def test_macos_combo_popup_is_substituted_but_selection_still_works(monkeypatch):
+    # macOS draws a combo's popup container with the same vibrancy material as a
+    # menu panel, so it renders translucent. The combo itself is untouched — only
+    # the popup is swapped — so currentText/currentIndexChanged keep working.
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    c = dashboard._ThemedCombo()
+    try:
+        c.addItems(["Nord", "Dracula", "Gruvbox"])
+        changed = []
+        c.currentIndexChanged.connect(lambda i: changed.append(i))
+        c.showPopup()
+        assert type(c._mac_popup).__name__ == "ThemedPopup"
+        assert [b.text() for b in c._mac_popup._buttons] == [
+            "Nord", "Dracula", "Gruvbox"]
+        c._mac_popup._buttons[1].click()
+        assert c.currentText() == "Dracula"
+        assert changed == [1], "the combo must still emit its signal"
+    finally:
+        c.deleteLater()
+
+
+def test_off_macos_the_combo_keeps_its_native_popup(monkeypatch):
+    monkeypatch.setattr(dashboard.sys, "platform", "win32")
+    c = dashboard._ThemedCombo()
+    try:
+        c.addItems(["Nord"])
+        c.showPopup()
+        assert getattr(c, "_mac_popup", None) is None, (
+            "Windows/Linux combo popups render fine and must not be replaced"
+        )
+        c.hidePopup()
+    finally:
+        c.deleteLater()
+
+
+def test_the_macos_combo_popup_keeps_the_preset_swatches(monkeypatch):
+    # The swatches live as QIcons on the combo's items; the substituted popup
+    # must carry them through or the theme picker loses its previews.
+    from PySide6.QtCore import QSize
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    c = dashboard._ThemedCombo()
+    try:
+        c.setIconSize(QSize(38, 14))
+        for n in ("Nord", "Dracula"):
+            c.addItem(dashboard._PresetRow._swatch_icon(n), n)
+        c.showPopup()
+        for b in c._mac_popup._buttons:
+            assert not b.icon().isNull(), f"{b.text()} lost its swatch"
+            assert b.iconSize() == QSize(38, 14)
+    finally:
+        c.deleteLater()

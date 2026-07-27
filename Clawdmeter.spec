@@ -9,6 +9,13 @@ import sys
 
 block_cipher = None
 
+# macOS architecture slice. build-macos.sh sets CLAWD_TARGET_ARCH=universal2 when
+# the interpreter it is building with carries both slices, so one .app runs
+# natively on Apple Silicon AND Intel — Apple's recommended way to ship, and one
+# download means a user never has to know their own CPU. Unset (the default) =
+# build for whatever this machine is, which keeps Windows/Linux untouched.
+_TARGET_ARCH = os.environ.get("CLAWD_TARGET_ARCH") or None
+
 # Platform flags for the size-pruning and packaging logic below. Everything is
 # structured so a future macOS build is an additive branch, not a rewrite.
 _IS_WIN = sys.platform == 'win32'
@@ -33,7 +40,19 @@ a = Analysis(
     # macOS: NSColorSampler is reached via a lazy `from AppKit import ...`, so
     # PyInstaller's static analysis misses it -- force-collect AppKit (its pyobjc
     # hook pulls in Foundation + pyobjc-core). No-op on Windows/Linux.
-    hiddenimports=(['AppKit'] if _IS_MAC else []),
+    # ServiceManagement is likewise reached lazily (SMAppService, for the
+    # login item), so name it explicitly too.
+    # Security belongs here for the same reason: macos_keychain does
+    # `from Security import SecItemCopyMatching` inside a try/except, which
+    # PyInstaller classes as "delayed, optional" exactly like the other two.
+    # It is currently collected anyway by pyobjc's hooks, but nothing pins
+    # that — and losing it fails invisibly: the import raises, the Keychain
+    # read falls back to the `security` CLI, a token still comes back, and
+    # the only symptom is the authorisation dialog naming *security* again
+    # and an "Always Allow" grant attaching to that shared binary instead
+    # of to us — the two things this was changed to fix.
+    hiddenimports=(['AppKit', 'Security', 'ServiceManagement']
+                   if _IS_MAC else []),
     hookspath=[],
     runtime_hooks=[],
     excludes=[
@@ -227,7 +246,7 @@ if _IS_MAC:
         upx=False,
         console=False,
         disable_windowed_traceback=False,
-        target_arch=None,
+        target_arch=_TARGET_ARCH,
         codesign_identity=None,
         entitlements_file=None,
         icon=_ICON,
@@ -287,7 +306,7 @@ else:
         runtime_tmpdir=None,
         console=False,
         disable_windowed_traceback=False,
-        target_arch=None,
+        target_arch=_TARGET_ARCH,
         codesign_identity=None,
         entitlements_file=None,
         icon=_ICON,

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Property, QRect, Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QLabel
+from PySide6.QtWidgets import QLabel, QSizePolicy
 
 ROTATE_INTERVAL_MS = 20_000
 
@@ -87,9 +87,27 @@ def assets_root() -> Path:
 class SpritePlayer(QLabel):
     """Cycles through a caller-supplied list of animations at native timing."""
 
-    def __init__(self, size: int = 220, parent=None) -> None:
+    def __init__(self, size: int = 220, parent=None, *,
+                 scale_to_fit: bool = False, min_size: int = 0) -> None:
+        """``scale_to_fit`` makes the sprite render into whatever the LAYOUT
+        gives it instead of pinning its own size.
+
+        The fixed-size default is right for the toast, the compact view and the
+        subagent mascots — they sit at one deliberate size. The session shelf
+        wants the opposite: the mascots should grow and shrink with the window.
+        Doing that by measuring the container and calling setFixedSize from a
+        resize handler fights Qt's layout for ownership of the same number and
+        oscillates; declaring an Expanding policy and painting into rect() lets
+        the layout do the arithmetic, which is what it is for.
+        """
         super().__init__(parent)
-        self.setFixedSize(size, size)
+        self._scale_to_fit = scale_to_fit
+        self._min_size = min_size
+        if scale_to_fit:
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.setMinimumSize(min_size, min_size)
+        else:
+            self.setFixedSize(size, size)
         self.setAlignment(Qt.AlignCenter)
         self._size = size
 
@@ -154,7 +172,13 @@ class SpritePlayer(QLabel):
         if px == self._size:
             return
         self._size = px
-        self.setFixedSize(px, px)
+        if self._scale_to_fit:
+            # Only the PREFERRED size changes; the layout still decides the real
+            # one. Pinning it here would re-introduce exactly the fight this
+            # mode exists to avoid.
+            self.updateGeometry()
+        else:
+            self.setFixedSize(px, px)
         if self._cur_frames:
             self._show_frame()
 
@@ -237,18 +261,48 @@ class SpritePlayer(QLabel):
             _GLOBAL_CROP = _square_alpha_bbox(images) if images else QRect()
         return _GLOBAL_CROP if not _GLOBAL_CROP.isEmpty() else None
 
+    def _render_size(self) -> int:
+        """Edge length to draw at: the size we were GIVEN when scaling to fit,
+        the size we chose otherwise. Square, so the shorter side wins."""
+        if not self._scale_to_fit:
+            return self._size
+        edge = max(self._min_size, min(self.width(), self.height()))
+        # Quantise to 4px. Dividing a row of tiles by an odd width leaves them a
+        # pixel apart, which rendered one mascot 261px against its neighbours'
+        # 260 — invisible, but "all the same size" should be exactly true. Also
+        # keeps the nearest-neighbour scaling on tidier ratios.
+        return edge - (edge % 4)
+
     def _show_frame(self) -> None:
         if not self._cur_frames:
             return
         pm = self._cur_frames[self._cur_frame_idx]
+        edge = self._render_size()
         scaled = pm.scaled(
-            self._size, self._size,
+            edge, edge,
             Qt.KeepAspectRatio,
-            Qt.FastTransformation,
+            Qt.FastTransformation,   # nearest-neighbour keeps the pixel art crisp
         )
         self.setPixmap(scaled)
         hold = max(1, self._cur_holds[self._cur_frame_idx])
         self._frame_timer.start(hold)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        # Repaint at the new size. This sets a PIXMAP, never a size constraint —
+        # the layout still owns the geometry, so there is nothing to recurse on.
+        if self._scale_to_fit:
+            self._show_frame()
+
+    def sizeHint(self):
+        from PySide6.QtCore import QSize
+        return QSize(self._size, self._size)
+
+    def minimumSizeHint(self):
+        from PySide6.QtCore import QSize
+        if self._scale_to_fit:
+            return QSize(self._min_size, self._min_size)
+        return QSize(self._size, self._size)
 
     def _advance_frame(self) -> None:
         if not self._cur_frames:

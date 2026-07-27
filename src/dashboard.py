@@ -79,6 +79,7 @@ from poller import (
     UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH,
     token_source_description,
 )
+import macos_window
 import remote_notify
 import stats
 import statviz
@@ -108,7 +109,8 @@ from transcript import (
     account_window_tokens,
     fmt_tokens,
 )
-from uiutil import format_minutes as _format_minutes, heat as _heat
+from uiutil import (bar_warn_thresholds, make_popup,
+                    format_minutes as _format_minutes, heat as _heat)
 
 
 # Stable tile id used in single-mascot mode (Settings: show multiple sessions
@@ -231,6 +233,13 @@ def apply_theme(selected: str) -> None:
                     if sheet == old:
                         w.setStyleSheet(new)
                         break
+            # Windows whose stylesheet is the base sheet PLUS a platform append
+            # (the macOS rounded-corner rule on mini/compact) never equal `old`,
+            # so the exact-match swap above skips them — they rebuild themselves
+            # from the freshly-built globals here. Broadcasting it from the walk
+            # (rather than from a caller) means no theme entry point can miss it.
+            if hasattr(w, "apply_theme_style"):
+                w.apply_theme_style()
             # Custom-painted labels that cache a themed colour (session/compact
             # name + "working on" lines) re-read the palette here.
             if hasattr(w, "refresh_theme_color"):
@@ -238,6 +247,39 @@ def apply_theme(selected: str) -> None:
             w.update()  # repaint custom-painted widgets that read module QColors
     finally:
         _applying_theme = False
+
+
+def tray_icon(source) -> QIcon:
+    """Build the menu-bar / system-tray icon from a QPixmap or a file path.
+
+    On macOS, status-bar icons are expected to be TEMPLATE images: a black
+    silhouette plus alpha, which the OS recolours itself — dark on a light menu
+    bar, light on a dark one, and inverted while the menu is open. A full-colour
+    icon sitting among monochrome system items is the most immediately visible
+    "ported from Windows" tell there is, and it does not invert on click.
+
+    Nothing is lost by going monochrome here: the tray shows the Clawd mascot,
+    which never encoded the usage percentage (that lives in the tooltip and the
+    windows). The colour was decoration, not information.
+
+    Off macOS the icon is returned unchanged — Windows and Linux trays are
+    routinely full-colour and a black silhouette would look broken there.
+    """
+    pm = source if isinstance(source, QPixmap) else QPixmap(str(source))
+    if sys.platform != "darwin" or pm.isNull():
+        return QIcon(pm)
+    # Keep the alpha, replace every colour with black: that IS a template image.
+    mask = QPixmap(pm.size())
+    mask.setDevicePixelRatio(pm.devicePixelRatio())
+    mask.fill(Qt.transparent)
+    p = QPainter(mask)
+    p.drawPixmap(0, 0, pm)
+    p.setCompositionMode(QPainter.CompositionMode_SourceIn)
+    p.fillRect(mask.rect(), QColor("#000000"))
+    p.end()
+    icon = QIcon(mask)
+    icon.setIsMask(True)   # tells Qt/AppKit to treat it as a template
+    return icon
 
 
 def _tray_pixmap(pct: int) -> QPixmap:
@@ -358,12 +400,22 @@ class MiniWidget(QWidget):
         self.setWindowTitle("Clawdmeter")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(STYLESHEET)
-        # Opaque background matching the main window (#0e1116). Intentionally NOT a
-        # WA_TranslucentBackground window: translucent compositing needs Qt's bundled
-        # opengl32sw.dll fallback in the frozen build, which the spec prunes for size.
-        self.setWindowFlags(
-            Qt.Window | Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-        )
+        if sys.platform == "darwin":
+            # macOS: stay OPAQUE (WA_TranslucentBackground makes the panel render
+            # fully transparent on the frozen build). round_window() gives it native
+            # rounded corners (via the content layer) + shadow on show; the QSS
+            # radius rounds the salmon border to match. Drop Qt.Tool -- on macOS a
+            # Tool window auto-hides when the app loses focus, bad for an always-on
+            # mini.
+            self.setStyleSheet(STYLESHEET + "\nQWidget#miniRoot{border-radius:13px}")
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint
+                                | Qt.WindowStaysOnTopHint)
+        else:
+            # Opaque background (#0e1116). Intentionally NOT WA_TranslucentBackground
+            # off macOS: translucent compositing needs Qt's bundled opengl32sw.dll
+            # in the frozen build, which the spec prunes for size.
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.Tool
+                                | Qt.WindowStaysOnTopHint)
         icon_path = assets_root() / "icon.png"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
@@ -386,18 +438,15 @@ class MiniWidget(QWidget):
         self.weekly_pct, self.weekly_reset, self.weekly_bar = self._row(stack, "miniPctSub")
         row.addLayout(stack, 1)
 
-        menu = QMenu(self)
-        act_expand = QAction("Expand", self)
-        act_expand.triggered.connect(self.expand_requested.emit)
-        act_quit = QAction("Quit", self)
-        act_quit.triggered.connect(self.quit_requested.emit)
-        menu.addAction(act_expand)
-        menu.addSeparator()
-        menu.addAction(act_quit)
+        # ThemedPopup, not QMenu — a menu's panel cannot be painted opaque on
+        # macOS (see ThemedPopup for the attempts that failed on hardware).
+        menu = make_popup(self)
+        menu.set_items([("Expand", self.expand_requested.emit),
+                        ("Quit", self.quit_requested.emit)])
         self._menu = menu
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(
-            lambda pos: self._menu.exec(self.mapToGlobal(pos))
+            lambda pos: self._menu.popup_at(self.mapToGlobal(pos))
         )
         self.setToolTip("Session (top) · Weekly (bottom)\nDouble-click to expand · drag to move")
 
@@ -405,7 +454,10 @@ class MiniWidget(QWidget):
         line = QHBoxLayout()
         line.setSpacing(7)
         pct = QLabel("-", objectName=pct_object)
-        pct.setMinimumWidth(42)
+        # Reserve room for three digits ("100%") so the mini's width doesn't jump
+        # when the session meter crosses into triple digits; right-aligned so the
+        # number stays put against the reset text.
+        pct.setMinimumWidth(56)
         pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         reset = QLabel("", objectName="miniReset")
         reset.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -422,12 +474,13 @@ class MiniWidget(QWidget):
 
     def update_usage(self, session_pct: int, weekly_pct: int,
                      session_reset_minutes: int, weekly_reset_minutes: int) -> None:
-        self._set_bar(self.session_pct, self.session_bar, session_pct)
-        self._set_bar(self.weekly_pct, self.weekly_bar, weekly_pct)
+        s_warn, w_warn = bar_warn_thresholds()
+        self._set_bar(self.session_pct, self.session_bar, session_pct, s_warn)
+        self._set_bar(self.weekly_pct, self.weekly_bar, weekly_pct, w_warn)
         self.set_resets(session_reset_minutes, weekly_reset_minutes)
 
     @staticmethod
-    def _set_bar(pct_label, bar, pct: int) -> None:
+    def _set_bar(pct_label, bar, pct: int, warn_at: int) -> None:
         """Mirror the full-view bar: heat fill under 100%, red restart past it
         (the bar empties and fills red by the amount over 100)."""
         pct = max(0, int(pct))
@@ -435,7 +488,7 @@ class MiniWidget(QWidget):
         if over > 0:
             bar.set_values(0, over, "cool")
         else:
-            bar.set_values(pct, 0, _heat(pct))
+            bar.set_values(pct, 0, _heat(pct, warn_at))
         pct_label.setText(f"{pct}%")
 
     def set_resets(self, session_reset_minutes: int, weekly_reset_minutes: int) -> None:
@@ -469,6 +522,21 @@ class MiniWidget(QWidget):
         self.layout().activate()
         hint = self.sizeHint()
         self.setFixedSize(hint.width() + self._WIDTH_SLACK_PX, hint.height())
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        if sys.platform == "darwin" and not getattr(self, "_macos_rounded", False):
+            self._macos_rounded = True
+            QTimer.singleShot(0, lambda: macos_window.round_window(self, 13))
+
+    def apply_theme_style(self) -> None:
+        """Re-apply the (theme-updated) stylesheet + repaint. apply_theme's generic
+        swap misses us because the macOS radius append changes our stylesheet."""
+        qss = STYLESHEET
+        if sys.platform == "darwin":
+            qss += "\nQWidget#miniRoot{border-radius:13px}"
+        self.setStyleSheet(qss)
+        self.update()
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
@@ -518,6 +586,12 @@ class ResetToast(QWidget):
     # A reset is good news, so the mascot does its DJ bounce rather than idling.
     ANIMS = ["dance bounce dj"]
 
+    # Single source of truth: the native content-layer mask (round_window) and
+    # the QSS border-radius must agree or the card's border is clipped at the
+    # corners. macOS only — off macOS the window stays opaque and square, so a
+    # rounded card would just expose dark square corners behind it.
+    MACOS_RADIUS = 12
+
     def __init__(self) -> None:
         super().__init__(None)
         self.setObjectName("toastShell")
@@ -526,9 +600,20 @@ class ResetToast(QWidget):
         self._on_click = None  # optional per-message click action (else `clicked`)
         # Frameless, on-top, no taskbar entry, and — critically — never steal
         # focus/activation from whatever the user is doing when it pops.
-        self.setWindowFlags(
-            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-        )
+        if sys.platform == "darwin":
+            # Drop Qt.Tool on macOS: a Tool window auto-hides when the app loses
+            # focus, and the app is BY DEFINITION not frontmost when an alert
+            # matters — so the toast vanished exactly when it needed to be seen,
+            # leaving "pop the window to front" as the only thing that actually
+            # notified you. Same fix the mini and compact HUDs already carry.
+            # WA_ShowWithoutActivating below still keeps it from stealing focus.
+            self.setWindowFlags(
+                Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+            )
+        else:
+            self.setWindowFlags(
+                Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+            )
         # Opaque, like the main/mini windows. NOT WA_TranslucentBackground:
         # the slim frozen build prunes opengl32sw.dll, without which translucent
         # compositing renders wrong. windowOpacity (the fade) is a separate OS
@@ -540,8 +625,9 @@ class ResetToast(QWidget):
 
         card = QWidget(objectName="toastRoot")
         card.setAttribute(Qt.WA_StyledBackground, True)
-        card.setStyleSheet(STYLESHEET)
         outer.addWidget(card)
+        self._card = card
+        self.apply_theme_style()
 
         row = QHBoxLayout(card)
         row.setContentsMargins(14, 12, 16, 12)
@@ -559,6 +645,21 @@ class ResetToast(QWidget):
         text.addWidget(self.body)
         row.addLayout(text, 1)
 
+        # Dismiss ✕. Clicking the toast body activates the app (the convention on
+        # both platforms: a click is the user asking to see it), so there has to
+        # be a separate way to say "not now" — otherwise the only options are
+        # waiting out the timer or getting a window you didn't want. Parented to
+        # the card and positioned by hand rather than added to `row`, so showing
+        # and hiding it never reflows the toast's text. Revealed on hover, like
+        # the macOS and Windows notification centres.
+        self._close_btn = QToolButton(card, objectName="toastClose")
+        self._close_btn.setText("✕")
+        self._close_btn.setCursor(Qt.PointingHandCursor)
+        self._close_btn.setFixedSize(18, 18)
+        self._close_btn.setToolTip("Dismiss")
+        self._close_btn.clicked.connect(self.dismiss)
+        self._close_btn.hide()
+
         self.setFixedWidth(330)
 
         self._fade = QPropertyAnimation(self, b"windowOpacity", self)
@@ -569,6 +670,51 @@ class ResetToast(QWidget):
         self._dismiss_timer = QTimer(self)
         self._dismiss_timer.setSingleShot(True)
         self._dismiss_timer.timeout.connect(self.dismiss)
+
+    def apply_theme_style(self) -> None:
+        """Re-apply the (theme-updated) stylesheet to the toast card.
+
+        On macOS round_window() masks the window to MACOS_RADIUS, so the QSS has
+        to round the card's 1px border to the same value or it is drawn square
+        and clipped at each corner. That append also means apply_theme's
+        exact-match swap can't see us — hence this method: apply_theme
+        broadcasts it during its widget walk."""
+        qss = STYLESHEET
+        if sys.platform == "darwin":
+            qss += f"\nQWidget#toastRoot{{border-radius:{self.MACOS_RADIUS}px}}"
+        self._card.setStyleSheet(qss)
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        # Re-applied on every show, not latched: anything that makes Qt rebuild
+        # the native window would otherwise silently lose these, and both calls
+        # are idempotent. make_overlay: without it the toast cannot be drawn on
+        # another app's fullscreen Space, so macOS switches Spaces to show it —
+        # which looks like the fullscreen app being yanked away. round_window:
+        # native rounded corners + shadow, so the toast isn't the one square
+        # window left once the main/mini/compact/dialog are all rounded.
+        macos_window.make_overlay(self)
+        macos_window.round_window(self, self.MACOS_RADIUS)
+        self._place_close_btn()
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._place_close_btn()
+
+    def _place_close_btn(self) -> None:
+        """Pin the ✕ to the card's top-right corner."""
+        m = 5
+        self._close_btn.move(
+            max(0, self._card.width() - self._close_btn.width() - m), m)
+        self._close_btn.raise_()
+
+    def enterEvent(self, e) -> None:
+        super().enterEvent(e)
+        self._close_btn.show()
+
+    def leaveEvent(self, e) -> None:
+        super().leaveEvent(e)
+        self._close_btn.hide()
 
     def show_message(self, title: str, body: str, on_click=None) -> None:
         """Show (or re-show) the toast with new text and restart the timer.
@@ -642,6 +788,16 @@ class ResetToast(QWidget):
             super().mousePressEvent(e)
 
 
+# Auto-hide is unavailable on macOS. The traffic lights are drawn by AppKit in
+# the NSWindow's titlebar region, NOT by our TitleBar widget, so collapsing the
+# widget to height 0 doesn't remove them — it strands them over the content with
+# the wordmark and view buttons gone. Apple's HIG is also explicit that the
+# traffic lights must never be hidden or repositioned, and the small-footprint
+# need auto-hide serves is already covered on macOS by the compact and mini HUD
+# views. Gated in one place (_apply_auto_hide) so no caller can switch it on.
+AUTO_HIDE_SUPPORTED = sys.platform != "darwin"
+
+
 class TitleBar(QWidget):
     """Custom frameless title bar: icon, drag area, view + window buttons."""
 
@@ -660,7 +816,9 @@ class TitleBar(QWidget):
         self._press_pos: QPoint | None = None
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(8, 0, 0, 0)
+        # On macOS the traffic lights occupy the top-left, spilling ~24px past the
+        # nav rail into this bar, so pad the wordmark right to clear them.
+        row.setContentsMargins(30 if sys.platform == "darwin" else 8, 0, 0, 0)
         row.setSpacing(8)
 
         # The app icon now lives at the top of the nav rail (so it survives the
@@ -684,14 +842,18 @@ class TitleBar(QWidget):
 
         self.set_active_mode("full")
 
-        self.min_btn = self._tool_btn(chr(0xF2D1), "Minimize")        # ChromeMinimize
-        self.min_btn.clicked.connect(self._win.showMinimized)
-        row.addWidget(self.min_btn)
+        # On macOS the native traffic-light buttons own minimize/close, so we
+        # don't draw our own (they'd be redundant + non-native). Windows/Linux
+        # keep them since those platforms have no window controls when frameless.
+        if sys.platform != "darwin":
+            self.min_btn = self._tool_btn(chr(0xF2D1), "Minimize")    # ChromeMinimize
+            self.min_btn.clicked.connect(self._win.showMinimized)
+            row.addWidget(self.min_btn)
 
-        self.close_btn = self._tool_btn(chr(0xF00D), "Close")         # ChromeClose
-        self.close_btn.setObjectName("closeBtn")
-        self.close_btn.clicked.connect(self._win.close)
-        row.addWidget(self.close_btn)
+            self.close_btn = self._tool_btn(chr(0xF00D), "Close")     # ChromeClose
+            self.close_btn.setObjectName("closeBtn")
+            self.close_btn.clicked.connect(self._win.close)
+            row.addWidget(self.close_btn)
 
     def _tool_btn(self, glyph: str, tip: str) -> QToolButton:
         b = QToolButton()
@@ -1017,6 +1179,23 @@ class _ThemedCombo(QComboBox):
 
     def showPopup(self) -> None:
         p = theme.active()
+        if sys.platform == "darwin":
+            # macOS draws a combo's popup container with the same vibrancy
+            # material as a menu panel, so it renders translucent and neither a
+            # stylesheet nor painting its NSWindow fixes it (both confirmed on
+            # hardware). Substitute the popup that DOES render solid — the combo
+            # itself is untouched, so currentText / currentIndexChanged and every
+            # caller keep working exactly as before.
+            if getattr(self, "_mac_popup", None) is None:
+                self._mac_popup = make_popup(self)
+            # Carry the per-preset swatch icons through — they live on the
+            # combo's items and a text-only list would drop them.
+            self._mac_popup.set_items(
+                [(self.itemText(i), lambda idx=i: self.setCurrentIndex(idx),
+                  self.itemIcon(i)) for i in range(self.count())],
+                icon_size=self.iconSize())
+            self._mac_popup.popup_under(self)
+            return
         self.view().setStyleSheet(
             f"QAbstractItemView{{background:{p.surface_dim};color:{p.text};"
             f"border:1px solid {p.border};border-radius:8px;padding:5px;outline:none;}}"
@@ -1028,6 +1207,11 @@ class _ThemedCombo(QComboBox):
         win = self.view().window()
         if win is not None:   # the popup container — paint it the theme colour
             win.setStyleSheet(f"background:{p.surface_dim};")
+            # macOS: the container is its own NSWindow and the stylesheet alone
+            # leaves it translucent, exactly as it did for the menus. Paint the
+            # native window and round it to match the rest of the chrome.
+            macos_window.paint_window(win, p.surface_dim)
+            macos_window.round_window(win, 8)
 
 
 class _PresetRow(QFrame):
@@ -1269,6 +1453,10 @@ class CustomThemeEditor(QDialog):
     }
     _FG_ROLES = ("text", "accent", "warn", "danger", "positive")
 
+    # Single source of truth: the native content-layer mask (round_window) and
+    # the QSS border-radius must agree or the border gets clipped at the corners.
+    MACOS_RADIUS = 12
+
     def __init__(self, seed_base: dict, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Custom theme")
@@ -1278,7 +1466,8 @@ class CustomThemeEditor(QDialog):
         # lets its empty/header areas drag the window (child widgets keep theirs).
         self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
         self.setObjectName("root")
-        self.setStyleSheet(STYLESHEET)   # the current app theme; only the preview shows custom
+        # The current app theme; only the preview shows the custom colours.
+        self.apply_theme_style()
         self.setMinimumWidth(540)
         self._working = dict(seed_base)   # edited in place; committed on Apply
         self._active_role = "accent"
@@ -1342,6 +1531,29 @@ class CustomThemeEditor(QDialog):
 
         self._refresh_all()
         self._select_role(self._active_role)
+
+    def apply_theme_style(self) -> None:
+        """Re-apply the (theme-updated) stylesheet + repaint.
+
+        On macOS round_window() masks the dialog's content layer to MACOS_RADIUS,
+        so the QSS has to round #root's 1px border to the same radius or the
+        border is drawn square and chopped off at each corner. That append also
+        means apply_theme's exact-match swap can't see us — which is why this is
+        a method: apply_theme() broadcasts it during its widget walk."""
+        qss = STYLESHEET
+        if sys.platform == "darwin":
+            qss += f"\nQWidget#root{{border-radius:{self.MACOS_RADIUS}px}}"
+        self.setStyleSheet(qss)
+        self.update()
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        # macOS: round the frameless dialog + give it a native shadow so it's not
+        # a hard square (no traffic lights needed -- it has its own Close button).
+        if sys.platform == "darwin" and not getattr(self, "_macos_rounded", False):
+            self._macos_rounded = True
+            QTimer.singleShot(
+                0, lambda: macos_window.round_window(self, self.MACOS_RADIUS))
 
     def mousePressEvent(self, e) -> None:
         # Frameless-window drag: buttons, the picker and the role rows consume
@@ -1601,8 +1813,13 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.aot_check)
 
         self.auto_hide_check = QCheckBox("Auto-hide title bar")
-        self.auto_hide_check.setChecked(app_settings.get_auto_hide_titlebar())
+        self.auto_hide_check.setChecked(
+            app_settings.get_auto_hide_titlebar() and AUTO_HIDE_SUPPORTED)
         self.auto_hide_check.toggled.connect(self._on_auto_hide_toggled)
+        # Hidden rather than disabled on macOS: a permanently greyed-out control
+        # invites "why can't I turn this on?", and the answer is "this isn't a
+        # thing on your platform" (see AUTO_HIDE_SUPPORTED).
+        self.auto_hide_check.setVisible(AUTO_HIDE_SUPPORTED)
         layout.addWidget(self.auto_hide_check)
 
         self.quit_on_close_check = QCheckBox("Quit on close (don't minimize to tray)")
@@ -1816,7 +2033,18 @@ class SettingsPanel(QWidget):
         layout.addSpacing(10)
         self.notify_how_box = QWidget()
         how_layout = QVBoxLayout(self.notify_how_box)
-        how_layout.setContentsMargins(0, 0, 0, 0)
+        # The bottom margin is load-bearing, not cosmetic. This box is sized
+        # from its layout's minimum, and the word-wrapped hint below reports a
+        # single line there while rendering two — so the box comes out ~4px
+        # shorter than the content it holds, and its LAST child hangs over the
+        # bottom edge and is clipped.
+        #
+        # Measured on macOS: the trailing "Send a push notification" checkbox
+        # sat at y=109..132 inside a 129px box, so the one row that fell outside
+        # was its indicator's bottom border — 17 rendered rows instead of 18,
+        # reading as a square-cornered box, while the identical checkbox above
+        # it was fine. Giving the box room for its content puts the border back.
+        how_layout.setContentsMargins(0, 0, 0, 8)
         how_layout.setSpacing(6)
         how_layout.addWidget(QLabel("HOW YOU'RE NOTIFIED", objectName="sectionLabel"))
         how_hint = QLabel(
@@ -1844,7 +2072,12 @@ class SettingsPanel(QWidget):
         self.notify_sound_check.setChecked(app_settings.get_reset_notify_sound())
         self.notify_sound_check.toggled.connect(self._on_notify_sound_toggled)
         toast_box.addWidget(self.notify_sound_check)
-        self.notify_popup_check = QCheckBox("Pop the window to front")
+        self.notify_popup_check = QCheckBox(
+            "Bring the Clawdmeter dashboard to the front")
+        self.notify_popup_check.setToolTip(
+            "Raises the main Clawdmeter window on an alert. The toast already "
+            "appears on top of other apps, so turn this on only if you want "
+            "the full dashboard in front of you.")
         self.notify_popup_check.setChecked(app_settings.get_reset_notify_popup())
         self.notify_popup_check.toggled.connect(self._on_notify_popup_toggled)
         toast_box.addWidget(self.notify_popup_check)
@@ -1871,8 +2104,12 @@ class SettingsPanel(QWidget):
         self.notify_push_add_btn.setText("+ Add a channel  ▾")
         self.notify_push_add_btn.setCursor(Qt.PointingHandCursor)
         self.notify_push_add_btn.setPopupMode(QToolButton.InstantPopup)
-        self.notify_push_add_menu = QMenu(self.notify_push_add_btn)
-        self.notify_push_add_btn.setMenu(self.notify_push_add_menu)
+        # A ThemedPopup, not a QMenu: a menu's panel cannot be made opaque on
+        # macOS (see ThemedPopup for the four attempts that failed on hardware).
+        self.notify_push_add_menu = make_popup(self.notify_push_add_btn)
+        self.notify_push_add_btn.setPopupMode(QToolButton.DelayedPopup)
+        self.notify_push_add_btn.clicked.connect(
+            lambda: self.notify_push_add_menu.popup_under(self.notify_push_add_btn))
         push_box.addWidget(self.notify_push_add_btn, alignment=Qt.AlignLeft)
 
         self.notify_push_test_btn = QPushButton("Send test notification")
@@ -1931,13 +2168,15 @@ class SettingsPanel(QWidget):
             _page_layout.addStretch(1)
 
     def _refresh_dynamic_theme_colors(self) -> None:
-        """Re-render the shelf/compact from the last-seen states so the inline
-        (non-QSS) colours — session glows, activity dots — pick up the new
-        palette immediately instead of lagging until the next poll. Reuses the
-        normal per-poll render path, so no bespoke re-colour logic. Safe before
-        the first poll (nothing to render yet)."""
-        if hasattr(self, "_last_raw_states"):
-            self._apply_session_view()
+        """Ask the owning Dashboard to re-render its dynamic (non-QSS) colours.
+
+        The state this needs (`_last_raw_states`, the shelf render path) lives on
+        the Dashboard, not on this panel — an earlier version of this method read
+        those off ``self`` behind ``hasattr`` guards, which made it a silent
+        no-op. Stylesheet re-application is handled by ``apply_theme`` itself."""
+        win = self.window()
+        if hasattr(win, "refresh_dynamic_theme_colors"):
+            win.refresh_dynamic_theme_colors()
 
     def _on_theme_selected(self, name: str) -> None:
         if name == theme.CUSTOM:
@@ -2011,13 +2250,27 @@ class SettingsPanel(QWidget):
             # implemented, so a manual refresh could only ever return the "not
             # supported" message. Disable the button rather than enable a dead one.
             needs_refresh = False
-            self.refresh_token_btn.setEnabled(False)
-            self.refresh_token_btn.setText("Managed by the macOS Keychain")
-            self.refresh_token_btn.setToolTip(
+            keychain_note = (
                 "On macOS the token is stored in the login Keychain — run "
                 "`claude` to refresh it; Clawdmeter re-reads it automatically."
             )
+            self.refresh_token_btn.setEnabled(False)
+            self.refresh_token_btn.setText("Managed by the macOS Keychain")
+            self.refresh_token_btn.setToolTip(keychain_note)
+            # The checkbox has to be disabled for the same reason as the button:
+            # auto-refresh cannot run on macOS, so leaving it clickable — and
+            # ticked, since it defaults on — tells the user their token is being
+            # refreshed automatically when nothing of the sort is happening.
+            # Shown unchecked to match reality, WITHOUT writing the setting:
+            # blockSignals keeps the stored (Windows/Linux) preference intact.
+            self.auto_refresh_check.setEnabled(False)
+            self.auto_refresh_check.setToolTip(keychain_note)
+            self.auto_refresh_check.blockSignals(True)
+            self.auto_refresh_check.setChecked(False)
+            self.auto_refresh_check.blockSignals(False)
         else:
+            self.auto_refresh_check.setEnabled(True)
+            self.auto_refresh_check.setToolTip("")
             needs_refresh = token_refresh.is_expired(path)
             self.refresh_token_btn.setEnabled(needs_refresh)
             if needs_refresh:
@@ -2190,15 +2443,27 @@ class SettingsPanel(QWidget):
         row.addStretch(1)
         return row
 
+    # These thresholds now also drive where the usage bars turn yellow
+    # (uiutil.bar_warn_thresholds), so re-render from the last sample instead of
+    # leaving the bars on the old colour until the next poll — up to a minute of
+    # the settings screen disagreeing with the bar right behind it.
+    def _refresh_usage_bar_colors(self) -> None:
+        win = self.window()
+        if hasattr(win, "refresh_usage_bar_colors"):
+            win.refresh_usage_bar_colors()
+
     def _on_approaching_toggled(self, checked: bool) -> None:
         app_settings.set_approaching_enabled(checked)
         self._sync_notify_subtoggles()
+        self._refresh_usage_bar_colors()
 
     def _on_session_pct_changed(self, value: int) -> None:
         app_settings.set_approaching_session_pct(value)
+        self._refresh_usage_bar_colors()
 
     def _on_weekly_pct_changed(self, value: int) -> None:
         app_settings.set_approaching_weekly_pct(value)
+        self._refresh_usage_bar_colors()
 
     def _on_overage_alert_toggled(self, checked: bool) -> None:
         app_settings.set_overage_alert_enabled(checked)
@@ -2252,11 +2517,12 @@ class SettingsPanel(QWidget):
         self._refresh_push_add_menu()
 
     def _refresh_push_add_menu(self) -> None:
-        self.notify_push_add_menu.clear()
         remaining = [p for p in app_settings.PUSH_PROVIDERS if p not in self._push_rows]
-        for p in remaining:
-            act = self.notify_push_add_menu.addAction(PUSH_CHANNEL_NAMES.get(p, p))
-            act.triggered.connect(lambda _checked=False, prov=p: self._add_push_channel(prov))
+        self.notify_push_add_menu.set_items([
+            (PUSH_CHANNEL_NAMES.get(p, p),
+             lambda prov=p: self._add_push_channel(prov))
+            for p in remaining
+        ])
         self.notify_push_add_btn.setEnabled(bool(remaining))
 
     def _add_push_channel(self, provider: str) -> None:
@@ -2373,8 +2639,14 @@ class SettingsPanel(QWidget):
 class NavRail(QWidget):
     """Slim vertical icon rail down the content area's left edge — icon-only, with
     names shown via tooltips. The mascot sits at the top; the active page is
-    accent-highlighted. Full-height (parented to root) so it survives the
-    auto-hide title bar. Lives only on the full window."""
+    accent-highlighted. Lives only on the full window.
+
+    Parented to root rather than to the content column so it owns the whole left
+    edge independently of the title bar — which is why the mascot pinned at its
+    top stays put while the title bar auto-hides (Windows/Linux; auto-hide is
+    unavailable on macOS, see AUTO_HIDE_SUPPORTED). It spans root's full height
+    off macOS; on macOS it starts TOP_INSET px down so its right-edge divider
+    runs between the mascot and the native traffic lights."""
 
     COLLAPSED = 46   # the rail's fixed width
 
@@ -2389,7 +2661,8 @@ class NavRail(QWidget):
         col.setSpacing(4)
 
         # Mascot at the rail's top-left — where the title-bar icon used to sit,
-        # but on the rail so it survives the auto-hide title bar.
+        # but on the rail so it survives the auto-hide title bar where that
+        # exists (Windows/Linux; see AUTO_HIDE_SUPPORTED).
         icon_lbl = QLabel()
         ip = assets_root() / "icon.png"
         if ip.exists():
@@ -2413,6 +2686,17 @@ class NavRail(QWidget):
         self.dash_btn.setChecked(True)
         self._group.idClicked.connect(self._on_select)
 
+    def select(self, page: int) -> None:
+        """Move the rail's highlight to ``page`` without emitting a click.
+
+        For when something OTHER than the user picks a destination — e.g. a
+        notification click, which has to land on the Dashboard whatever page was
+        left open. setChecked doesn't fire idClicked, so the caller drives the
+        stack itself and the two can't fight."""
+        b = self._group.button(page)
+        if b is not None:
+            b.setChecked(True)
+
     def _item(self, glyph: str, label: str, page) -> QPushButton:
         # Icon only; the destination name lives on the tooltip.
         b = QPushButton(glyph, objectName="railBtn")
@@ -2425,12 +2709,19 @@ class NavRail(QWidget):
             self._group.addButton(b, page)
         return b
 
+    # macOS: start the rail below the native title-bar row so its right-edge
+    # divider runs BETWEEN the mascot and the traffic lights instead of cutting
+    # through them; the lights sit in the freed top-left corner.
+    TOP_INSET = 28 if sys.platform == "darwin" else 0
+
     def reposition(self) -> None:
-        """Anchor to the parent's left edge, full height."""
+        """Anchor to the parent's left edge, full height (below the macOS
+        title-bar row on Mac)."""
         p = self.parentWidget()
         if not p:
             return
-        self.setGeometry(0, 0, self.COLLAPSED, p.height())
+        self.setGeometry(0, self.TOP_INSET, self.COLLAPSED,
+                         p.height() - self.TOP_INSET)
 
 
 _PLAN_LABELS = {
@@ -2512,12 +2803,27 @@ class Dashboard(QMainWindow):
     def __init__(self, mock: bool = False) -> None:
         super().__init__()
         self.setWindowTitle("Clawdmeter")
-        self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+        if sys.platform == "darwin":
+            # macOS: a native window (rounded corners + shadow + real traffic
+            # lights); macos_window.style() makes the titlebar transparent + full-
+            # size content on show, and WA_ContentsMarginsRespectsSafeArea (below)
+            # drops Qt's 28px safe-area inset so our chrome fills to the top edge,
+            # onto the traffic-lights row. Frameless is Windows/Linux only.
+            self.setWindowFlags(Qt.Window)
+            self.setAttribute(Qt.WA_ContentsMarginsRespectsSafeArea, False)
+        else:
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
         # The window height tracks its content (see _fit_window_height): it grows
         # and shrinks with the mascot shelf so there's no dead space below the
         # bars. This low floor only stops a manual drag from clipping badly; the
         # actual height is driven by the fit.
-        self._min_window_h = 430
+        # Width floor only. The HEIGHT floor is left to Qt: every child now
+        # declares an honest minimum (the mascots are elastic, the bars and the
+        # tile's name/activity/status rows are not), so the layout's own
+        # minimumSizeHint is the true floor. The old hard-coded 430 was BELOW
+        # what the children needed, which is why Qt clipped them instead of
+        # refusing the drag — the mascots were sawn in half by the window edge.
+        self._min_window_h = 0
         # Width: ~3 shelf tiles (130px sprites + margins/spacing) fit without
         # scrolling; overflow scrolls horizontally inside the shelf's QScrollArea,
         # so the window never balloons sideways.
@@ -2534,10 +2840,17 @@ class Dashboard(QMainWindow):
         root = QWidget(objectName="root")
         self.setCentralWidget(root)
         self._root = root
-        # Full-height nav rail down the left (overlay, created after content); the
-        # rest of the UI sits in a right column whose left edge is reserved for the
-        # collapsed rail. Keeping the rail outside the title bar means it — and the
-        # mascot pinned at its top — survive the auto-hide title bar.
+        if sys.platform == "darwin":
+            # Let our content fill to the very top edge (under the titlebar) rather
+            # than being auto-inset by the ~28px title-bar safe area. We clear the
+            # traffic lights ourselves via the nav-rail top pad + title-bar left pad.
+            root.setAttribute(Qt.WA_ContentsMarginsRespectsSafeArea, False)
+        # Nav rail down the left (overlay, created after content); the rest of the
+        # UI sits in a right column whose left edge is reserved for the collapsed
+        # rail. Keeping the rail outside the title bar means it — and the mascot
+        # pinned at its top — survive the auto-hide title bar on the platforms
+        # that have it. Full height off macOS; inset from the top on macOS so the
+        # traffic lights get the corner (see NavRail.TOP_INSET).
         self._outer = QHBoxLayout(root)
         self._outer.setContentsMargins(NavRail.COLLAPSED, 0, 0, 0)
         self._outer.setSpacing(0)
@@ -2573,7 +2886,9 @@ class Dashboard(QMainWindow):
         sprite_row.addStretch(1)
         sprite_row.addWidget(self.sprite)
         sprite_row.addStretch(1)
-        layout.addWidget(self.hero)
+        # stretch 1 to match the shelf it shares this slot with, so spare
+        # height collects around the mascot rather than under the bars.
+        layout.addWidget(self.hero, 1)
 
         # Shelf of per-session mascots, shown whenever >=1 session is live. It
         # lives in the same slot as the hero and the two toggle visibility so
@@ -2610,7 +2925,10 @@ class Dashboard(QMainWindow):
         status_row.addStretch(1)
         self.status_container.setVisible(False)
         layout.addWidget(self.status_container)
-        layout.addStretch(1)
+        # Deliberately NO trailing stretch. Spare vertical space belongs to the
+        # mascot area above (hero/shelf, both stretch 1), not below the last bar
+        # — with a stretch here the slack was split 50/50 and every pixel of
+        # extra height opened a void under WEEKLY.
 
         # Page stack (Dashboard + Stats) inside the content area. content_box
         # reserves the collapsed rail's width on the left so content never sits
@@ -2641,9 +2959,10 @@ class Dashboard(QMainWindow):
         )
         self._pages.addWidget(self.settings_panel)   # index 2 (Settings)
 
-        # Full-height slim icon nav rail down root's left edge. Parented to root
-        # (not content) so it spans the whole left side and the mascot at its top
-        # stays put when the title bar auto-hides.
+        # Slim icon nav rail down root's left edge. Parented to root (not content)
+        # so it owns the left side independently of the title bar and the mascot
+        # at its top stays put when the title bar auto-hides. Full height off
+        # macOS; NavRail.TOP_INSET drops it below the traffic-light row on macOS.
         self.nav_rail = NavRail(root, on_select=self._show_page)
         self.nav_rail.reposition()
         self.nav_rail.raise_()
@@ -2719,8 +3038,9 @@ class Dashboard(QMainWindow):
         # real-mode launch.
 
         self._tray = QSystemTrayIcon(self)
-        self._tray.setIcon(QIcon(str(icon_path)) if icon_path.exists() else QIcon(_tray_pixmap(0)))
-        tray_menu = QMenu(self)
+        self._tray.setIcon(tray_icon(icon_path) if icon_path.exists()
+                           else tray_icon(_tray_pixmap(0)))
+        tray_menu = QMenu(self)   # native NSMenu on macOS; unaffected
         self._tray_menu = tray_menu   # keep a reference so it isn't GC'd
         show_action = QAction("Show", self)
         show_action.triggered.connect(self._restore_view)
@@ -2770,7 +3090,7 @@ class Dashboard(QMainWindow):
         self._flash_timer = QTimer(self)
         self._flash_timer.setInterval(400)
         self._flash_timer.timeout.connect(self._flash_tick)
-        self._flash_alert_icon = QIcon(_tray_alert_pixmap())
+        self._flash_alert_icon = tray_icon(_tray_alert_pixmap())
         self._flash_saved_icon: QIcon | None = None
         self._flash_remaining = 0
         self._flash_on = False
@@ -2795,7 +3115,7 @@ class Dashboard(QMainWindow):
         # Custom limit-reset toast (replaces the native OS notification);
         # clicking it brings the dashboard forward.
         self._toast = ResetToast()
-        self._toast.clicked.connect(self._show_window)
+        self._toast.clicked.connect(self._show_window_from_alert)
 
         self._countdown = QTimer(self)
         self._countdown.setInterval(1000)
@@ -3224,7 +3544,12 @@ class Dashboard(QMainWindow):
         height is animated in lockstep so the content area never changes
         size — title bar growth pushes the bottom edge down, not into
         content.
+
+        The single gate for AUTO_HIDE_SUPPORTED: forced off on macOS however it
+        is reached (settings toggle, or a value persisted on another platform
+        and synced over).
         """
+        on = on and AUTO_HIDE_SUPPORTED
         if self._auto_hide_enabled == on:
             return
         self._auto_hide_enabled = on
@@ -3666,10 +3991,7 @@ class Dashboard(QMainWindow):
 
         # Each window handles its own overage: once 5h / 7d crosses 100% the bar
         # restarts red and a red OVERAGE tag joins its title.
-        apply_overage_bar(self.session_title, self.session_pct, self.session_bar,
-                          "SESSION (5h)", s.session_pct)
-        apply_overage_bar(self.weekly_title, self.weekly_pct, self.weekly_bar,
-                          "WEEKLY (7d)", s.weekly_pct)
+        self._render_usage_bars(s)
 
         self._refresh_reset_lines(
             s, s.session_reset_minutes, s.weekly_reset_minutes)
@@ -3838,11 +4160,49 @@ class Dashboard(QMainWindow):
         self._auto_fit_height = True
         self._fit_window_height()
 
+    def _macos_apply_native_chrome(self) -> None:
+        """Put the NSWindow back the way we want it: transparent titlebar, and
+        the persisted always-on-top level. Safe to call repeatedly."""
+        macos_window.style(self, theme.active().bg_deep)
+        macos_window.set_level(self, app_settings.get_always_on_top())
+
+    def apply_theme_style(self) -> None:
+        """Repaint the native NSWindow background in the new palette on a live
+        theme switch. Picked up by apply_theme()'s widget-walk broadcast; the
+        window's QSS is handled by the normal swap. No-op off macOS."""
+        if sys.platform == "darwin":
+            macos_window.style(self, theme.active().bg_deep)
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        if sys.platform == "darwin":
+            # Transparent titlebar + full-size content view (native traffic lights
+            # kept), deferred past Qt's own setup so the style-mask change sticks.
+            # Re-applied on EVERY show rather than latched once: anything that
+            # makes Qt rebuild the NSWindow hands us a stock window, and a latch
+            # keyed on the Python object (or on winId(), which is the NSView and
+            # survives the rebuild) would skip the repair. style() is idempotent,
+            # so paying it per show is cheaper than another stale-latch bug.
+            QTimer.singleShot(0, self._macos_apply_native_chrome)
         # Arm user-resize detection only after the show settles, so the initial
         # show geometry isn't mistaken for a manual height drag.
         QTimer.singleShot(0, lambda: setattr(self, "_fit_armed", True))
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        # A macOS zoom/minimise transition wipes our transparent-titlebar
+        # styling; re-apply it once the window is back to a normal state.
+        #
+        # The isFullScreen() guard looks dead — style() sets FullScreenNone, so
+        # the green button zooms and native fullscreen is unreachable. It is not:
+        # style() no-ops without pyobjc and returns False, in which case
+        # FullScreenNone was never applied and fullscreen IS reachable. Keep the
+        # guard so that build doesn't re-style mid-transition.
+        if sys.platform == "darwin":
+            from PySide6.QtCore import QEvent
+            if event.type() == QEvent.Type.WindowStateChange and not self.isFullScreen():
+                QTimer.singleShot(
+                    0, lambda: macos_window.style(self, theme.active().bg_deep))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -4106,12 +4466,44 @@ class Dashboard(QMainWindow):
         re-persisting it (it's already the saved value)."""
         self._set_view_mode(getattr(self, "_view_mode", "full"), persist=False)
 
+    def _render_usage_bars(self, s) -> None:
+        """The SESSION/WEEKLY bars for one sample. Each window turns yellow at
+        its own approaching-limit threshold (uiutil.bar_warn_thresholds), so the
+        two bars deliberately warm up at different points."""
+        s_warn, w_warn = bar_warn_thresholds()
+        apply_overage_bar(self.session_title, self.session_pct, self.session_bar,
+                          "SESSION (5h)", s.session_pct, s_warn)
+        apply_overage_bar(self.weekly_title, self.weekly_pct, self.weekly_bar,
+                          "WEEKLY (7d)", s.weekly_pct, w_warn)
+
+    def refresh_usage_bar_colors(self) -> None:
+        """Re-render every usage bar from the last sample. Called when the
+        approaching-limit thresholds change, so the bars recolour as the user
+        moves the slider instead of staying wrong until the next poll."""
+        s = getattr(self, "_last_sample", None)
+        if s is None or not getattr(s, "ok", False):
+            return
+        self._render_usage_bars(s)
+        self._sync_mini(s)
+        self._update_compact_usage(
+            s, s.session_reset_minutes, s.weekly_reset_minutes)
+
+    def refresh_dynamic_theme_colors(self) -> None:
+        """Re-render the shelf/compact from the last-seen states so the inline
+        (non-QSS) colours — session glows, activity dots — pick up the new
+        palette immediately instead of lagging until the next poll. Reuses the
+        normal per-poll render path, so no bespoke re-colour logic. Safe before
+        the first poll (nothing to render yet). Stylesheets are handled by
+        apply_theme's widget walk."""
+        if hasattr(self, "_last_raw_states"):
+            self._apply_session_view()
+
     def _on_os_scheme_changed(self, _scheme=None) -> None:
         """OS light/dark flipped. Only matters on Follow System — re-resolve to
         the matching preset (apply_theme no-ops for fixed presets)."""
         if theme.selected() == theme.SYSTEM:
             apply_theme(theme.SYSTEM)
-            self._refresh_dynamic_theme_colors()
+            self.refresh_dynamic_theme_colors()
 
     def show_initial(self) -> None:
         """Launch into the last-used view mode directly (no full-window flash)."""
@@ -4223,10 +4615,25 @@ class Dashboard(QMainWindow):
             cv.update_usage(s, sr, wr, app_settings.get_show_token_usage())
 
     def _show_window(self) -> None:
-        """Bring the app to the front for a notification / toast click / second
-        launch. Restores whatever mode the user last chose (NOT forced to full)
-        so 'pop to front' never silently overwrites their compact/mini choice."""
+        """Bring the app to the front for a tray click / second launch. Restores
+        whatever mode the user last chose (NOT forced to full) so this never
+        silently overwrites their compact/mini choice, and leaves them on the
+        page they were last on — they asked for 'the app', not for anything
+        specific."""
         self._restore_view()
+
+    def _show_window_from_alert(self) -> None:
+        """Toast click. Same as _show_window, but lands on the DASHBOARD
+        whatever page was last open.
+
+        Both platforms' guidance is that clicking a notification should open a
+        view related to its content — an "at 90% of your limit" alert dropping
+        you on the Settings page you happened to leave open is the opposite of
+        that. The view MODE (full/compact/mini) is still the user's choice; only
+        the page is overridden, and only for an alert."""
+        self.nav_rail.select(0)
+        self._show_page(0)     # set the page BEFORE showing, so there's no
+        self._restore_view()   # flash of whatever page was open
 
     def closeEvent(self, event) -> None:
         # Minimize to tray unless the user opted into quit-on-close (or there is

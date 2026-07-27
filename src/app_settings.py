@@ -361,7 +361,11 @@ def set_reset_notify_sound(on: bool) -> None:
 
 
 def get_reset_notify_popup() -> bool:
-    v = _settings().value(KEY_RESET_NOTIFY_POPUP, True)  # on by default
+    # Off by default. This raises the MAIN window, which steals focus from
+    # whatever the user is doing — and it fires on approaching-limit alerts too,
+    # not just the rare reset it was written for. The toast (always on top) and
+    # the tray flash are the notification; this is opt-in on top of them.
+    v = _settings().value(KEY_RESET_NOTIFY_POPUP, False)
     if isinstance(v, str):
         return v.lower() in ("true", "1", "yes")
     return bool(v)
