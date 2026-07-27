@@ -59,10 +59,24 @@ DEFAULT_SERVICE_NAME = "Claude Code-credentials"
 #
 # CLAWD_KEYCHAIN_TIMEOUT sets a limit in seconds for tests and for anyone who
 # wants a hard bound. Unset = wait.
-_SECURITY_TIMEOUT_SECONDS = (
-    int(os.environ["CLAWD_KEYCHAIN_TIMEOUT"])
-    if os.environ.get("CLAWD_KEYCHAIN_TIMEOUT") else None
-)
+def _timeout_from_env() -> int | None:
+    """Read CLAWD_KEYCHAIN_TIMEOUT, ignoring anything that isn't a number.
+
+    This runs at import, and `poller` imports this module on every platform, so
+    a typo like CLAWD_KEYCHAIN_TIMEOUT=off used to stop the app launching on
+    Windows and Linux too — with a bare traceback and nothing to explain it.
+    """
+    raw = os.environ.get("CLAWD_KEYCHAIN_TIMEOUT")
+    if not raw:
+        return None
+    try:
+        secs = int(raw)
+    except ValueError:
+        return None                      # unparseable -> behave as if unset
+    return secs if secs > 0 else None
+
+
+_SECURITY_TIMEOUT_SECONDS = _timeout_from_env()
 
 # `security`'s exit code for errSecInteractionNotAllowed (-25308 & 0xFF): the OS
 # needed to prompt but could not — no GUI session (SSH, or a LaunchAgent running

@@ -86,8 +86,15 @@ def is_enabled() -> bool:
     return status() == STATUS_ENABLED
 
 
-def register() -> tuple[bool, str]:
-    """Register the app as a login item. Returns (success, message)."""
+def register(*, interactive: bool = True) -> tuple[bool, str]:
+    """Register the app as a login item. Returns (success, message).
+
+    ``interactive`` says whether a person is watching. The approval hint below
+    opens System Settings, which is right when they just ticked the checkbox and
+    wrong when this is the silent upgrade migration — that runs before the app
+    has a window, so the user would get System Settings in their face at every
+    single launch, with nothing on screen to explain why.
+    """
     svc = _service()
     if svc is None:
         return False, "SMAppService is unavailable"
@@ -105,7 +112,8 @@ def register() -> tuple[bool, str]:
     # will not silently re-enable. Send them to the exact pane rather than
     # leaving a checkbox that ticks but does nothing.
     if int(svc.status()) == STATUS_REQUIRES_APPROVAL:
-        _open_login_items_settings()
+        if interactive:
+            _open_login_items_settings()
         return False, _APPROVAL_HINT
     return True, "registered as a login item"
 

@@ -292,9 +292,23 @@ def _launchctl_bootout() -> None:
 
     Best effort throughout: a job that isn't loaded makes ``bootout`` exit
     non-zero, which is the state we wanted anyway.
+
+    Skipped when *we* are the job. ``bootout`` does not merely unload a job, it
+    terminates the process running it — measured on macOS 15.6.1 with a test
+    agent, which `bootout` killed outright. So an app that launchd started at
+    login would SIGTERM itself here, mid-``subprocess.run``, and the caller's
+    ``unlink`` on the next line would never run: the app vanishes AND the
+    setting the user just switched off is still on at the next login. launchd
+    sets ``XPC_SERVICE_NAME`` to the job label for a LaunchAgent-spawned
+    process (verified: ``XPC_SERVICE_NAME=com.clawdtest.job``), which is how we
+    recognise ourselves. Leaving our own job loaded for the rest of the session
+    costs nothing — it is this process, and deleting the plist is what stops it
+    coming back.
     """
     if sys.platform != "darwin":
         return
+    if os.environ.get("XPC_SERVICE_NAME") == LAUNCH_AGENT_LABEL:
+        return                           # we ARE the job; booting out kills us
     uid = getattr(os, "getuid", None)
     if uid is None:                      # pragma: no cover - non-POSIX safety net
         return
@@ -307,21 +321,23 @@ def _launchctl_bootout() -> None:
 
 
 def _macos_remove_plist() -> tuple[bool, str]:
-    """Unload the LaunchAgent and remove its plist.
+    """Remove the LaunchAgent plist, then unload the job.
 
-    Unload first: with the job gone, a plist that then fails to delete cannot
-    start anything, whereas the reverse order leaves launchd holding a job whose
-    file has vanished — which is the exact state that produced two running
-    copies.
+    Delete first. The plist is what survives a logout, so removing it is the
+    part that actually turns the feature off; unloading only tidies up the
+    current session. Doing it the other way round meant a ``bootout`` that
+    terminated this process took the unlink down with it.
     """
-    _launchctl_bootout()
+    removed = True
+    err = ""
     try:
         _plist_path().unlink()
     except FileNotFoundError:
-        return True, ""  # file doesn't exist -> nothing to remove
+        pass                              # already gone -> nothing to remove
     except OSError as exc:
-        return False, f"Could not remove the startup entry: {exc}"
-    return True, ""
+        removed, err = False, f"Could not remove the startup entry: {exc}"
+    _launchctl_bootout()
+    return removed, err
 
 
 def _macos_enable() -> tuple[bool, str]:
@@ -378,7 +394,7 @@ def migrate_macos_login_item() -> None:
         return
     if not macos_login_item.available() or not _plist_path().exists():
         return
-    ok, _ = macos_login_item.register()
+    ok, _ = macos_login_item.register(interactive=False)
     if ok:
         _macos_remove_plist()
 
