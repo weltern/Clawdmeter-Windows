@@ -170,20 +170,49 @@ class _MenuPopup:
         self._menu = QMenu(parent)
         self._actions = []
 
-    def set_items(self, items) -> None:
+    def set_items(self, items, icon_size=None) -> None:
+        """items: ``(label, callback)`` or ``(label, callback, icon)``.
+
+        Accepts the icon form even though no current caller uses it here, so
+        the two popup kinds are actually interchangeable. They were not: this
+        took two-tuples only and no icon_size, so the combo's three-tuple call
+        would have raised the moment that substitution reached a platform using
+        a QMenu.
+        """
         from PySide6.QtGui import QAction
         self._menu.clear()
         self._actions = []          # keep the QActions alive
-        for label, cb in items:
+        for item in items:
+            label, cb = item[0], item[1]
+            icon = item[2] if len(item) > 2 else None
             act = QAction(label, self._menu)
+            if icon is not None and not icon.isNull():
+                act.setIcon(icon)
             act.triggered.connect(lambda _c=False, fn=cb: fn())
             self._menu.addAction(act)
             self._actions.append(act)
+        # QMenu has no setIconSize; it sizes icons from the style. Accepting
+        # and ignoring the argument is what makes the two kinds interchangeable.
+
+    def _restyle(self) -> None:
+        """Re-apply the current theme just before showing.
+
+        A QMenu inherits its look from an ancestor's stylesheet, and Qt does not
+        repolish a popup when that ancestor's sheet is swapped — so a menu built
+        under a dark theme kept a dark panel after switching to a light one,
+        with only the text (redrawn from the palette) following. The combo
+        drop-down never had this because it restyles its view on every
+        showPopup; this does the same.
+        """
+        import theme
+        self._menu.setStyleSheet(theme.build_qss(theme.active()))
 
     def popup_at(self, global_pos) -> None:
+        self._restyle()
         self._menu.exec(global_pos)
 
     def popup_under(self, widget) -> None:
+        self._restyle()
         self._menu.exec(widget.mapToGlobal(widget.rect().bottomLeft()))
 
     def hide(self) -> None:
@@ -199,9 +228,10 @@ def make_popup(parent=None):
     pyobjc, and a QProxyStyle on PE_PanelMenu were each confirmed useless on
     real hardware. ThemedPopup sidesteps it by not being a menu at all.
 
-    Windows and Linux have no such problem, so they keep the native widget —
-    swapping it there would trade working arrow-key navigation and
-    accessibility for nothing.
+    Windows has no such problem, so it keeps the native widget — swapping it
+    there would trade working arrow-key navigation and accessibility for
+    nothing. Linux keeps it too for context menus, where it renders fine; only
+    the combo drop-down needs replacing there (see _ThemedCombo.showPopup).
     """
     return ThemedPopup(parent) if sys.platform == "darwin" else _MenuPopup(parent)
 

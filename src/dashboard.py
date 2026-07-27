@@ -109,7 +109,7 @@ from transcript import (
     account_window_tokens,
     fmt_tokens,
 )
-from uiutil import (bar_warn_thresholds, make_popup,
+from uiutil import (ThemedPopup, bar_warn_thresholds, make_popup,
                     format_minutes as _format_minutes, heat as _heat)
 
 
@@ -1079,6 +1079,17 @@ class _PushChannelRow(QWidget):
         if on and self._first_field is not None:
             self._first_field.setFocus()
 
+    def apply_theme_style(self) -> None:
+        """Rebuild the summary against the current palette.
+
+        Its colours are inline in rich text, so they are frozen at the palette
+        in force when the row was last refreshed — nothing repaints them on a
+        theme switch. Switching from a dark theme to a light one therefore left
+        dark-theme greys on a light background, and the channel name came out
+        nearly unreadable. `apply_theme`'s widget walk calls this.
+        """
+        self._refresh()
+
     def _refresh(self) -> None:
         configured = app_settings.push_channel_configured(self._provider)
         p = theme.active()
@@ -1179,15 +1190,26 @@ class _ThemedCombo(QComboBox):
 
     def showPopup(self) -> None:
         p = theme.active()
-        if sys.platform == "darwin":
+        if sys.platform != "win32":
             # macOS draws a combo's popup container with the same vibrancy
             # material as a menu panel, so it renders translucent and neither a
             # stylesheet nor painting its NSWindow fixes it (both confirmed on
-            # hardware). Substitute the popup that DOES render solid — the combo
-            # itself is untouched, so currentText / currentIndexChanged and every
-            # caller keep working exactly as before.
+            # hardware).
+            #
+            # Linux has a different but equally unfixable-by-stylesheet problem:
+            # the platform style draws its own item highlight, so the QSS hover
+            # rule below never shows, and the popup's container frame keeps
+            # square corners behind the rounded view — the same mismatched
+            # corners macOS had. Windows renders both correctly and keeps the
+            # native widget, along with its arrow-key navigation and
+            # accessibility.
+            #
+            # The combo itself is untouched either way, so currentText /
+            # currentIndexChanged and every caller keep working as before.
+            # ThemedPopup explicitly, not make_popup: on Linux that returns the
+            # QMenu wrapper, which is the thing being replaced here.
             if getattr(self, "_mac_popup", None) is None:
-                self._mac_popup = make_popup(self)
+                self._mac_popup = ThemedPopup(self)
             # Carry the per-preset swatch icons through — they live on the
             # combo's items and a text-only list would drop them.
             self._mac_popup.set_items(

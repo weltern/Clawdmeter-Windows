@@ -425,3 +425,74 @@ def test_the_macos_combo_popup_keeps_the_preset_swatches(monkeypatch):
             assert b.iconSize() == QSize(38, 14)
     finally:
         c.deleteLater()
+
+
+# --- the three theming gaps found on Linux/Windows ---------------------------
+
+def test_a_menu_popup_restyles_itself_before_showing():
+    """A QMenu inherits its look from an ancestor's stylesheet, and Qt does not
+    repolish a popup when that sheet is swapped. Built under a dark theme, the
+    "+ Add a channel" list kept a dark panel after switching to a light one —
+    only the text followed, because that is redrawn from the palette."""
+    import uiutil
+    m = uiutil._MenuPopup()
+    try:
+        dashboard.apply_theme("Midnight Salmon")
+        m._restyle()
+        dark = m._menu.styleSheet()
+        dashboard.apply_theme("Riptide Light")
+        m._restyle()
+        light = m._menu.styleSheet()
+        assert dark and light and dark != light, "the menu kept its old sheet"
+        assert theme.get("Riptide Light").surface in light
+    finally:
+        m._menu.deleteLater()
+
+
+def test_both_popup_kinds_take_icons_and_an_icon_size():
+    """They have to be interchangeable: the combo passes three-tuples plus an
+    icon_size, and the QMenu wrapper used to accept neither — so substituting
+    it on any platform would have raised on the first call."""
+    from PySide6.QtCore import QSize
+    from PySide6.QtGui import QIcon
+    import uiutil
+    for kind in (uiutil._MenuPopup, uiutil.ThemedPopup):
+        obj = kind()
+        obj.set_items([("plain", lambda: None),
+                       ("with icon", lambda: None, QIcon())],
+                      icon_size=QSize(38, 14))
+        for method in ("set_items", "popup_at", "popup_under", "hide"):
+            assert hasattr(obj, method), f"{kind.__name__} lacks {method}"
+
+
+def test_the_push_channel_row_follows_a_theme_switch():
+    """Its colours are inline in rich text, so they freeze at whatever palette
+    was current when the row was last refreshed. On a light theme that left
+    dark-theme greys on a light background and the channel name unreadable."""
+    import re
+    dashboard.apply_theme("Midnight Salmon")
+    row = dashboard._PushChannelRow("discord", "Discord")
+    try:
+        before = re.findall(r"color:(#[0-9a-fA-F]{6})", row._summary.text())
+        dashboard.apply_theme("Riptide Light")
+        after = re.findall(r"color:(#[0-9a-fA-F]{6})", row._summary.text())
+        assert before and after and before != after, (
+            f"summary colours did not change with the theme: {before}")
+        assert theme.get("Riptide Light").text in after, (
+            "the channel name is not using the light theme's text colour")
+    finally:
+        row.deleteLater()
+
+
+def test_the_combo_substitution_is_off_on_windows_only(monkeypatch):
+    """macOS and Linux both need the replacement — macOS for the vibrancy
+    panel, Linux because the platform style eats the hover highlight and leaves
+    square corners behind a rounded view. Windows renders both correctly and
+    keeps the native widget with its keyboard navigation."""
+    import inspect
+    src = inspect.getsource(dashboard._ThemedCombo.showPopup)
+    assert 'sys.platform != "win32"' in src, (
+        "the combo substitution should be gated off Windows, not onto darwin")
+    assert "ThemedPopup(self)" in src, (
+        "must construct ThemedPopup directly — make_popup returns the QMenu "
+        "wrapper on Linux, which is the thing being replaced")
