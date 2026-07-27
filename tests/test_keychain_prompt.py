@@ -210,3 +210,27 @@ def test_lock_is_released_if_the_framework_path_raises(monkeypatch):
         pass
     monkeypatch.setattr(mk, "_read_via_framework", lambda: "ok")
     assert mk.read_credentials() == "ok", "lock left held after an exception"
+
+
+# --- the timeout env var must never break startup ---------------------------
+
+def test_a_malformed_timeout_is_ignored_rather_than_fatal(monkeypatch):
+    """This is read at import, and `poller` imports macos_keychain on every
+    platform — so a typo used to stop the app launching on Windows and Linux
+    too, with a bare traceback and nothing to explain it."""
+    for junk in ("off", "", "  ", "10s", "-", "3.5", "none"):
+        monkeypatch.setenv("CLAWD_KEYCHAIN_TIMEOUT", junk)
+        assert mk._timeout_from_env() is None, f"{junk!r} should read as unset"
+
+
+def test_a_nonpositive_timeout_reads_as_unset(monkeypatch):
+    """0 or a negative would otherwise be handed to subprocess as a real
+    timeout and abort the read instantly."""
+    for junk in ("0", "-1", "-30"):
+        monkeypatch.setenv("CLAWD_KEYCHAIN_TIMEOUT", junk)
+        assert mk._timeout_from_env() is None
+
+
+def test_a_sane_timeout_is_still_honoured(monkeypatch):
+    monkeypatch.setenv("CLAWD_KEYCHAIN_TIMEOUT", "12")
+    assert mk._timeout_from_env() == 12
