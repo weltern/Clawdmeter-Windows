@@ -496,3 +496,35 @@ def test_the_combo_substitution_is_off_on_windows_only(monkeypatch):
     assert "ThemedPopup(self)" in src, (
         "must construct ThemedPopup directly — make_popup returns the QMenu "
         "wrapper on Linux, which is the thing being replaced")
+
+
+def test_the_channel_card_stays_visible_against_the_panel():
+    """It used to be `bg` on a `bg_deep` panel — a 1.03-1.08 contrast ratio in
+    every theme, so a configured channel had nothing separating it from the
+    background. No fill fixes that: in the light presets bg_deep/bg/surface all
+    sit within 1.07 of each other, so the border has to carry it."""
+    def lum(h):
+        h = h.lstrip("#")
+        r, g, b = (int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        f = lambda c: c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+        return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+    def ratio(a, b):
+        la, lb = sorted((lum(a), lum(b)))
+        return (lb + 0.05) / (la + 0.05)
+
+    import re
+    for name in ("Midnight Salmon", "Daybreak", "Riptide Light", "Nord Light"):
+        p = theme.get(name)
+        qss = theme.build_qss(p)
+        m = re.search(r"QWidget#pushCard \{([^}]*)\}", qss)
+        assert m, "the pushCard rule moved"
+        block = m.group(1)
+        border = re.search(r"border:\s*1px solid (#[0-9a-fA-F]{6})", block).group(1)
+        fill = re.search(r"background-color:\s*(#[0-9a-fA-F]{6})", block).group(1)
+        assert ratio(border, fill) >= 1.5, (
+            f"{name}: the card's border is {ratio(border, fill):.2f} against its "
+            f"own fill — it will not read as a card")
+        assert ratio(border, p.bg_deep) >= 1.4, (
+            f"{name}: the card's border is {ratio(border, p.bg_deep):.2f} "
+            f"against the panel behind it")

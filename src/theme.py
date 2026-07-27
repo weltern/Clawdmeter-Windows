@@ -797,9 +797,15 @@ QPushButton#railBtn {
 QPushButton#railBtn:hover { background-color: #1f2937; color: #e6edf3; }
 QPushButton#railBtn:checked { background-color: #1f2937; color: #CE7D6B; }
 
-/* Push-notification channel cards (Settings -> Notifications). */
+/* Push-notification channel cards (Settings -> Notifications).
+   Defined by the BORDER, not the fill. The card used to be `bg` on a `bg_deep`
+   panel, which is a 1.03-1.08 contrast ratio in every theme — invisible. And no
+   fill fixes it: in the light presets bg_deep/bg/surface all sit within 1.07 of
+   each other, so a configured channel looked washed out with nothing to
+   separate it from the panel. border_dim is the one slot that stays visible
+   either way (1.94 dark, 1.77 light). */
 QWidget#pushCard {
-    background-color: #0e1116; border: 1px solid #1f2937; border-radius: 6px;
+    background-color: #1f2937; border: 1px solid #4b5563; border-radius: 6px;
 }
 QLabel#pushSummary { font-size: 12px; }
 QToolButton#pushEditBtn {

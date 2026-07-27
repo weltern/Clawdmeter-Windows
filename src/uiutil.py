@@ -96,6 +96,10 @@ class ThemedPopup(QWidget):
         if sys.platform == "darwin":
             qss += "\nQWidget#popupRoot{border-radius:8px}"
         self._card.setStyleSheet(qss)
+        if sys.platform.startswith("linux"):
+            # With a translucent window the card has to paint its own opaque
+            # rounded background, or the whole popup goes see-through.
+            self._card.setAttribute(Qt.WA_StyledBackground, True)
 
     def set_items(self, items, icon_size=None) -> None:
         """items: list of ``(label, callback)`` or ``(label, callback, icon)``.
