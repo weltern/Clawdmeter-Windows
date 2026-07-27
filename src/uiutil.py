@@ -7,6 +7,8 @@ import back from dashboard).
 
 from __future__ import annotations
 
+import functools
+import os
 import sys
 
 import app_settings
@@ -51,6 +53,56 @@ from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 import macos_window
 
 
+@functools.lru_cache(maxsize=1)
+def linux_compositing() -> bool:
+    """Can this desktop composite a translucent top-level window?
+
+    It matters because ThemedPopup rounds its card's corners, and the pixels
+    outside that radius show whatever the popup's own window holds. With a
+    compositor those pixels are transparent and you see the desktop; without
+    one they come out solid black, so the corners read as black notches
+    instead of rounded -- glaring over a light panel, invisible over a dark
+    one, which is exactly how the bug presented (native X capture on Mint:
+    (0,0,0) outside the arc against a (238,241,245) backdrop).
+
+    Wayland always composites. On X11 it depends on a compositing manager
+    owning the _NET_WM_CM_Sn selection, which is what this asks. Anything
+    unexpected answers True, because every mainstream desktop composites and
+    that is the better-looking branch.
+    """
+    if not sys.platform.startswith("linux"):
+        return True
+    if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
+        return True
+    try:
+        import ctypes
+        import ctypes.util
+        libname = ctypes.util.find_library("X11")
+        if not libname:
+            return True
+        x11 = ctypes.CDLL(libname)
+        x11.XOpenDisplay.restype = ctypes.c_void_p
+        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        dpy = x11.XOpenDisplay(None)
+        if not dpy:
+            return True
+        try:
+            x11.XDefaultScreen.restype = ctypes.c_int
+            x11.XDefaultScreen.argtypes = [ctypes.c_void_p]
+            x11.XInternAtom.restype = ctypes.c_ulong
+            x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+            x11.XGetSelectionOwner.restype = ctypes.c_ulong
+            x11.XGetSelectionOwner.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            atom = x11.XInternAtom(
+                dpy, f"_NET_WM_CM_S{x11.XDefaultScreen(dpy)}".encode(), 0)
+            return bool(x11.XGetSelectionOwner(dpy, atom))
+        finally:
+            x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+            x11.XCloseDisplay(dpy)
+    except Exception:
+        return True
+
+
 class ThemedPopup(QWidget):
     """A small drop-down list that renders SOLID on macOS.
 
@@ -76,6 +128,13 @@ class ThemedPopup(QWidget):
         # exists to avoid came from QMenu's style painting its panel, not from
         # the window type, so a popup is safe here.
         self.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        # On macOS round_window() makes the native window non-opaque, so the
+        # pixels outside the card's radius are transparent there. That call is
+        # a no-op off macOS and nothing else cleared this window, so on Linux
+        # it stayed opaque black and the radius framed the corners in black.
+        # Qt only honours this if it is set before the window is first shown.
+        if sys.platform.startswith("linux") and linux_compositing():
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self._card = QWidget(objectName="popupRoot")
@@ -95,6 +154,11 @@ class ThemedPopup(QWidget):
         qss = theme.build_qss(theme.active())
         if sys.platform == "darwin":
             qss += "\nQWidget#popupRoot{border-radius:8px}"
+        elif sys.platform.startswith("linux") and not linux_compositing():
+            # Nothing can make the corners transparent here, so square them off
+            # rather than leave black notches: a square drop-down reads as
+            # deliberate, a rounded one framed in black reads as broken.
+            qss += "\nQWidget#popupRoot{border-radius:0}"
         self._card.setStyleSheet(qss)
         if sys.platform.startswith("linux"):
             # With a translucent window the card has to paint its own opaque

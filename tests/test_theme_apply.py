@@ -528,3 +528,79 @@ def test_the_channel_card_stays_visible_against_the_panel():
         assert ratio(border, p.bg_deep) >= 1.4, (
             f"{name}: the card's border is {ratio(border, p.bg_deep):.2f} "
             f"against the panel behind it")
+
+
+# --- ThemedPopup corner rendering on Linux -----------------------------------
+# Regression guard for a real, user-reported Linux bug, confirmed from a native
+# X framebuffer capture (scrot on Mint 22, so no remote-display encoding in the
+# path): the drop-down's rounded corners were filled with pure (0,0,0) against a
+# (238,241,245) settings panel. round_window() -- which is what makes the window
+# non-opaque on macOS -- is a no-op off macOS, and nothing else cleared the
+# popup's own window, so the card's border-radius simply revealed opaque black.
+# It looked correct wherever the backdrop happened to be dark, which is why it
+# read as "some corners square, some rounded".
+
+def _fresh_popup(monkeypatch, *, platform, compositing):
+    import uiutil
+    monkeypatch.setattr(uiutil.sys, "platform", platform)
+    monkeypatch.setattr(uiutil, "linux_compositing", lambda: compositing)
+    return uiutil, uiutil.ThemedPopup()
+
+
+def test_linux_popup_is_translucent_so_its_corners_are_not_black(monkeypatch):
+    from PySide6.QtCore import Qt
+    uiutil, popup = _fresh_popup(monkeypatch, platform="linux", compositing=True)
+    try:
+        assert popup.testAttribute(Qt.WA_TranslucentBackground), (
+            "the popup rounds its card, so the window behind that radius must be "
+            "transparent — opaque leaves black notches at the corners")
+    finally:
+        popup.deleteLater()
+
+
+def test_without_a_compositor_the_popup_squares_its_corners(monkeypatch):
+    from PySide6.QtCore import Qt
+    uiutil, popup = _fresh_popup(monkeypatch, platform="linux", compositing=False)
+    try:
+        # Translucency needs a compositing manager; asking for it without one
+        # brings the black corners straight back.
+        assert not popup.testAttribute(Qt.WA_TranslucentBackground)
+        assert "QWidget#popupRoot{border-radius:0}" in popup._card.styleSheet(), (
+            "with no way to make the corners transparent they must be squared "
+            "off, not left rounded over an opaque fill")
+    finally:
+        popup.deleteLater()
+
+
+def test_the_other_platforms_are_untouched(monkeypatch):
+    from PySide6.QtCore import Qt
+    for platform in ("darwin", "win32"):
+        uiutil, popup = _fresh_popup(
+            monkeypatch, platform=platform, compositing=False)
+        try:
+            # macOS gets its transparency from round_window() on the native
+            # window instead, and Windows never uses ThemedPopup for the combo.
+            assert not popup.testAttribute(Qt.WA_TranslucentBackground), platform
+            assert "border-radius:0}" not in popup._card.styleSheet(), platform
+        finally:
+            popup.deleteLater()
+
+
+def test_compositing_probe_defaults_to_the_prettier_branch(monkeypatch):
+    import uiutil
+    uiutil.linux_compositing.cache_clear()
+    try:
+        # Wayland always composites, so it must not be probed via X11 at all.
+        monkeypatch.setattr(uiutil.sys, "platform", "linux")
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        assert uiutil.linux_compositing() is True
+        uiutil.linux_compositing.cache_clear()
+        # And a probe that cannot run answers True rather than squaring corners
+        # on every desktop that mainstream users actually have.
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
+        monkeypatch.setattr(
+            "ctypes.util.find_library", lambda _n: (_ for _ in ()).throw(OSError()))
+        assert uiutil.linux_compositing() is True
+    finally:
+        uiutil.linux_compositing.cache_clear()
