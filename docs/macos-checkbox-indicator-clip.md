@@ -57,7 +57,35 @@ hardening against that separate squeeze (see
   or vanishes depending on where it lands in the resample grid, and two
   identical checkboxes in one image measured 21 and 20 rows.
 
+## Reproduction attempts that all came back clean
+
+Five rounds of native captures on macOS 15.6.1, each isolating one difference
+between the real settings panel and a harness. Every one rendered the full 18
+rows with both caps:
+
+| round | varied | result |
+|---|---|---|
+| 1 | 10 indicator stylings: border-radius 0/2/4, padding 0/3/4, indicator 15/16/18px, min/max-height pinned, unstyled | all 18 rows |
+| 2 | height context: exactly sizeHint, sizeHint-1, sizeHint+1, unconstrained, inside a QScrollArea | all 18 rows |
+| 3 | the full 14,131-char theme stylesheet installed on the QApplication | all 18 rows |
+| 4 | `macos_window.style()` transparent-titlebar / full-size-content-view chrome | all 18 rows |
+| 5 | QScrollArea with transparent viewport + WA_StyledBackground body + the app's exact margins | all 18 rows |
+
+So the stylesheet, the height it is given, the app-wide QSS, our native window
+code and the panel's scroll-area structure are all cleared. A checkbox squeezed
+to sizeHint-1 still paints all 18 rows on macOS, which independently confirms
+the squeeze theory was wrong.
+
 ## Next lead
+
+**It may not be every checkbox.** In the Intel VM capture, "Bring the Clawdmeter
+dashboard to the front" showed a complete bottom border in the same image where
+"Send a push notification" did not. The difference between them: the push
+checkbox is immediately followed by `notify_push_box`, which is hidden when the
+toggle is off. Worth testing first — toggle neighbouring rows in the real panel
+and see which boxes clip. That is far narrower than "macOS paints wrong".
+
+Failing that:
 
 Geometry is correct, so suspect `QStyleSheetStyle`'s rounded-rect painting of
 `QCheckBox::indicator` on macOS — likely a box-model rounding difference with
