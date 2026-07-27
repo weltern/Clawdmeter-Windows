@@ -2033,7 +2033,18 @@ class SettingsPanel(QWidget):
         layout.addSpacing(10)
         self.notify_how_box = QWidget()
         how_layout = QVBoxLayout(self.notify_how_box)
-        how_layout.setContentsMargins(0, 0, 0, 0)
+        # The bottom margin is load-bearing, not cosmetic. This box is sized
+        # from its layout's minimum, and the word-wrapped hint below reports a
+        # single line there while rendering two — so the box comes out ~4px
+        # shorter than the content it holds, and its LAST child hangs over the
+        # bottom edge and is clipped.
+        #
+        # Measured on macOS: the trailing "Send a push notification" checkbox
+        # sat at y=109..132 inside a 129px box, so the one row that fell outside
+        # was its indicator's bottom border — 17 rendered rows instead of 18,
+        # reading as a square-cornered box, while the identical checkbox above
+        # it was fine. Giving the box room for its content puts the border back.
+        how_layout.setContentsMargins(0, 0, 0, 8)
         how_layout.setSpacing(6)
         how_layout.addWidget(QLabel("HOW YOU'RE NOTIFIED", objectName="sectionLabel"))
         how_hint = QLabel(

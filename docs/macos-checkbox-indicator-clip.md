@@ -1,103 +1,78 @@
-# macOS: checkbox indicator loses its bottom border row
+# The settings checkbox with the missing bottom border — solved
 
-**Status:** open, unfixed. Cosmetic, macOS only.
+**Status:** fixed. It was never a macOS painting bug.
 
-The `QCheckBox` indicator renders 17 pixel rows instead of 18 — the bottom
-border row is absent, so an unchecked box reads as square-bottomed. A checked
-box hides it (a solid fill loses a row invisibly), which is why toggling the
-control appears to "fix" it.
+## What it looked like
 
-## Confirmed
+On macOS, the "Send a push notification" checkbox rendered its indicator 17
+pixel rows tall instead of 18 — the bottom border row absent, so an unchecked
+box read as square-cornered. Ticking it appeared to fix it (a solid fill hides a
+missing row). The identical checkbox four pixels above it was always fine.
 
-Native 1x screen captures (no remote-desktop scaling in the path), on both
-Macs, on a **fresh default config** with prefs wiped:
+## What it actually was
 
-```
-y=14 ################      <- top cap row
-y=15 ##++++++++++++++##
-y=16..29  #++++++++++++#   <- 14 side rows
-y=30 ##++++++++++++++##
-y=31 ................      <- bottom cap row MISSING
-```
-
-- Reproduces on macOS 15.6.1 (M2, arm64) and 15.7.7 (Intel VM), same build.
-- Windows renders it correctly.
-- Not the theme: all four themes produce identical checkbox QSS geometry
-  (`sizeHint=24`, indicator `h=18 y=3 bot=20`); only colours differ.
-- Not the config: reproduces with preferences deleted.
-- Not remote-display scaling: reproduces in native `screencapture` output and
-  over plain VNC without stretching.
-
-## Ruled out: layout squeeze
-
-The first hypothesis was that a page sitting a pixel or two under its sizeHint
-makes `QVBoxLayout` shave a checkbox to 23px, leaving a 17px content box (QSS
-`padding: 3px 0`) for an 18px indicator. That mechanism is **real** — a
-container short by 1px does shrink checkboxes — but it is **not** what happens
-here. Measured in the app on macOS at the exact window size that shows the bug:
+`notify_how_box` is sized from its layout's **minimum**, and the word-wrapped
+hint inside it reports a single line there while rendering two. The box came out
+~4px shorter than the content it holds, so its last child hung over the bottom
+edge and was clipped:
 
 ```
-window=566x511 viewport=480 body=480 hint=283 vbar_max=0
-  Send a push notification   h=24 hint=24 min=24 ind(y=3 h=18 bot=20)
+push checkbox geometry  = QRect(0, 109, 342, 24)   -> occupies rows 109..132
+notify_how_box height   = 129                       -> valid rows 0..128
+how_layout bottom margin = 0
 ```
 
-Correct height, correct indicator rect, no deficit, no scrollbar needed. The
-geometry is right and the painting is short.
+The indicator's last row lands at 109+20 = 129 — the first row outside the box.
+Exactly one row, exactly the one that disappeared.
 
-`Dashboard.__init__` still pins every settings checkbox to its `sizeHint` as
-hardening against that separate squeeze (see
-`tests/test_settings_checkbox_clipping.py`), but it does not address this bug.
+A child overflowing its parent is clipped on every platform. macOS only made it
+visible because that one row happened to be a border.
 
-## Also ruled out as evidence
+**Fix:** give `how_layout` a bottom margin so the box has room for its content.
+Verified on macOS 15.6.1 against the running app: all six checkboxes render 18
+rows with a full 16px bottom cap, the push one included.
 
-- `widget.grab()` renders the widget standalone at its sizeHint and shows all 18
-  rows. It cannot see what the layout or the compositor did, so it is useless
-  for this class of bug. Two wrong conclusions were drawn from it.
-- Screenshots that pass through RDM or any resizing step. A 1px border survives
-  or vanishes depending on where it lands in the resample grid, and two
-  identical checkboxes in one image measured 21 and 20 rows.
+## Everything that was tested and cleared first
 
-## Reproduction attempts that all came back clean
+Each of these was a real hypothesis, checked with native 1x screen captures on
+hardware, and each was wrong:
 
-Five rounds of native captures on macOS 15.6.1, each isolating one difference
-between the real settings panel and a harness. Every one rendered the full 18
-rows with both caps:
-
-| round | varied | result |
+| # | hypothesis | result |
 |---|---|---|
-| 1 | 10 indicator stylings: border-radius 0/2/4, padding 0/3/4, indicator 15/16/18px, min/max-height pinned, unstyled | all 18 rows |
-| 2 | height context: exactly sizeHint, sizeHint-1, sizeHint+1, unconstrained, inside a QScrollArea | all 18 rows |
-| 3 | the full 14,131-char theme stylesheet installed on the QApplication | all 18 rows |
-| 4 | `macos_window.style()` transparent-titlebar / full-size-content-view chrome | all 18 rows |
-| 5 | QScrollArea with transparent viewport + WA_StyledBackground body + the app's exact margins | all 18 rows |
+| 1 | the indicator stylesheet — border-radius 0/2/4, padding 0/3/4, size 15/16/18px, min/max-height pinned, unstyled | all 18 rows |
+| 2 | the height the checkbox is given — sizeHint, sizeHint±1, unconstrained, inside a scroll area | all 18 rows, including 23px |
+| 3 | the full 14k theme stylesheet installed on the QApplication | all 18 rows |
+| 4 | `macos_window.style()` transparent-titlebar chrome | all 18 rows |
+| 5 | the scroll area's structure — transparent viewport, WA_StyledBackground body, the app's margins | all 18 rows |
+| 6 | last-visible-widget position, incl. a hidden sibling after it | all 18 rows |
+| 7 | stale paint — forced repaint, resize, hide/show | unchanged |
+| 8 | theme, saved preferences, remote-display scaling | reproduces without all three |
 
-So the stylesheet, the height it is given, the app-wide QSS, our native window
-code and the panel's scroll-area structure are all cleared. A checkbox squeezed
-to sizeHint-1 still paints all 18 rows on macOS, which independently confirms
-the squeeze theory was wrong.
+A checkbox squeezed to `sizeHint-1` still paints all 18 rows, which is what
+finally disproved the layout-squeeze theory an earlier "fix" had been built on.
+That change was reverted.
 
-## Next lead
+## Two methodology notes worth keeping
 
-**It may not be every checkbox.** In the Intel VM capture, "Bring the Clawdmeter
-dashboard to the front" showed a complete bottom border in the same image where
-"Send a push notification" did not. The difference between them: the push
-checkbox is immediately followed by `notify_push_box`, which is hidden when the
-toggle is off. Worth testing first — toggle neighbouring rows in the real panel
-and see which boxes clip. That is far narrower than "macOS paints wrong".
+**`widget.grab()` is not evidence.** It renders a widget standalone at its
+sizeHint and cannot see what the layout or the compositor did to it. It reported
+a perfect 18-row indicator throughout and produced two wrong conclusions.
 
-Failing that:
-
-Geometry is correct, so suspect `QStyleSheetStyle`'s rounded-rect painting of
-`QCheckBox::indicator` on macOS — likely a box-model rounding difference with
-`width/height: 16px` + `border: 1px` + `border-radius: 2px`. Worth trying, each
-verified with a native capture: drop `border-radius`, set explicit
-`min-height`/`max-height`, or bump the indicator to an even size.
+**Screenshots that pass through any scaling are not evidence either.** A 1px
+border survives or vanishes depending on where it lands in the resample grid;
+two identical checkboxes in one RDM screenshot measured 21 and 20 rows. Only
+native captures at 1x settled anything.
 
 ## Capturing evidence on a headless Mac
 
 `screencapture` returns the desktop with all app windows omitted unless the
-calling process holds Screen Recording. Granting it to Terminal does **not**
-cover SSH — the responsible process there is `sshd`, and `CGWindowListCreateImage`
-returns a 0x0 image. Either add `/usr/libexec/sshd-keygen-wrapper` to Screen
-Recording, or run `screencapture -i ~/Desktop/x.png` in Terminal on the Mac
-itself and pull the file.
+calling process holds Screen Recording, and granting it to Terminal does not
+cover SSH — the responsible process there is `sshd`, so `CGWindowListCreateImage`
+returns a 0x0 image. Route the capture through the approved app instead:
+
+```
+osascript -e 'tell application "Terminal" to do script "screencapture -x /tmp/x.png; exit"'
+```
+
+Pair it with the app printing each widget's `mapToGlobal` position, and the
+measurement becomes exact instead of a crop guessed by eye.
