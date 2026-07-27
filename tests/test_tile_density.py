@@ -135,15 +135,28 @@ def test_mascots_scale_up_and_down_with_the_window():
         host.deleteLater()
 
 
-def test_the_mascot_recovers_after_collapsing_to_text_only():
+def test_the_mascot_recovers_after_being_squeezed():
+    """Guards the self-lock: shrinking the shelf once used to leave the mascot
+    hidden for good, because hiding it shrank the tile's sizeHint, which shrank
+    the room, which kept it hidden.
+
+    This asserted a collapse to text-only at 150px. With MIN_MASCOT at 48 the
+    reserved floor always leaves room for a small mascot, so text-only is no
+    longer reachable by height alone — that is the point of the change, since
+    the room the old threshold refused to draw into was showing as dead space.
+    The property worth protecting is unchanged: squeeze it, and it must come
+    back at full size.
+    """
     host, shelf = _shelf(n=2)
     try:
         _settle(host, 800)
-        assert _edges(shelf)[0] > 0
+        big = _edges(shelf)[0]
+        assert big > 0
         _settle(host, 150)
-        assert _edges(shelf)[0] == 0, "should collapse to text-only"
+        small = _edges(shelf)[0]
+        assert small < big, "the mascot should shrink when the shelf does"
         _settle(host, 800)
-        assert _edges(shelf)[0] > 0, "must come back — this used to self-lock"
+        assert _edges(shelf)[0] == big, "must come back — this used to self-lock"
     finally:
         host.deleteLater()
 
@@ -359,5 +372,47 @@ def test_the_subagents_line_is_actually_inside_the_viewport():
                     f"{_agents_line_clip(shelf)}px below the viewport and is "
                     f"clipped away")
         assert seen_fallback, "never reached the text-fallback band"
+    finally:
+        host.deleteLater()
+
+
+def test_no_dead_band_under_the_session_text():
+    """Room the shelf holds but cannot use shows as an empty band under the
+    text, which is what MIN_MASCOT governs: anything between 0 and that
+    threshold is reserved and then wasted.
+
+    Measured on macOS at 72 it was up to 81px of blank with no small mascot
+    ever drawn; at 48 it is zero, and the smallest mascot that actually renders
+    is 52px — clear of the unreadable ones the threshold exists to prevent.
+    """
+    host, shelf = _shelf(n=2)
+    try:
+        worst = 0
+        for h in range(360, 720, 10):
+            _settle(host, h)
+            for t in shelf._tiles.values():
+                if not t.sprite.isVisible():
+                    worst = max(worst, t.height() - t._text_rows_height())
+        assert worst <= 24, (
+            f"{worst}px of dead space under the session text; the shelf is "
+            f"reserving room it will not draw a mascot into")
+    finally:
+        host.deleteLater()
+
+
+def test_a_drawn_mascot_is_never_unreadably_small():
+    """The other half of the trade — removing the dead band must not bring back
+    the tiny mascots MIN_MASCOT was introduced to stop."""
+    host, shelf = _shelf(n=2)
+    try:
+        smallest = None
+        for h in range(360, 720, 10):
+            _settle(host, h)
+            for t in shelf._tiles.values():
+                if t.sprite.isVisible():
+                    e = t.sprite._render_size()
+                    smallest = e if smallest is None else min(smallest, e)
+        assert smallest is not None, "no mascot was ever drawn in the sweep"
+        assert smallest >= 40, f"drew a {smallest}px mascot"
     finally:
         host.deleteLater()

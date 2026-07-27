@@ -791,7 +791,23 @@ class SessionShelf(QWidget):
 
     # Smallest mascot worth drawing. Below this the whole shelf goes text-only
     # rather than rendering something unreadable.
-    MIN_MASCOT = 72
+    #
+    # This threshold is also what governs dead space: any room between 0 and
+    # MIN_MASCOT is room the shelf holds and then cannot use, so it shows as an
+    # empty band under the session text. Measured on macOS across a 360-720px
+    # sweep, worst-case blank against the smallest mascot ever rendered:
+    #
+    #     72 -> 81px blank, no small mascot ever drawn
+    #     64 -> 81px blank, smallest 72px
+    #     56 -> 71px blank, smallest 60px
+    #     48 ->   0px blank, smallest 52px      <- here
+    #     40 ->   0px blank, smallest 52px      (no further gain)
+    #
+    # 48 removes the blank entirely while never actually drawing a mascot below
+    # 52px, which is well clear of the unreadably-small ones this guard exists
+    # to prevent. Note the reserved floor's 1.5x headroom is NOT the cause and
+    # is deliberately left alone — dropping it moved the worst case 81px -> 81px.
+    MIN_MASCOT = 48
 
     # Mascot size the parent must still reach for subagent mascots to be worth
     # drawing alongside it. Below this the tile shows "N subagents" instead.
