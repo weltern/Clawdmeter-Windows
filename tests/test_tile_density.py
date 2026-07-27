@@ -416,3 +416,45 @@ def test_a_drawn_mascot_is_never_unreadably_small():
         assert smallest >= 40, f"drew a {smallest}px mascot"
     finally:
         host.deleteLater()
+
+
+def _spans(shelf):
+    return [t._row_span() for t in shelf._tiles.values()
+            if t._row_span() is not None]
+
+
+def test_text_only_rows_are_centred_not_left_hanging():
+    """With no mascot the rows sit in the middle of the space it vacated,
+    rather than at the top with all the slack below — which read as a dead band
+    between the session text and the usage bars."""
+    host, shelf = _shelf(n=3)
+    try:
+        checked = 0
+        for h in range(120, 180, 10):
+            _settle(host, h)
+            t = next(iter(shelf._tiles.values()))
+            if t.sprite.isVisible():
+                continue
+            checked += 1
+            sp = _spans(shelf)
+            above = min(s[0] for s in sp)
+            below = t.height() - max(s[1] for s in sp)
+            assert abs(above - below) <= 6, (
+                f"host {h}: {above}px above the text, {below}px below")
+        assert checked, "never reached text-only mode"
+    finally:
+        host.deleteLater()
+
+
+def test_rows_stay_on_one_line_across_tiles_when_centred():
+    """Tiles carry different numbers of rows — an idle session has a status
+    line, a live one may not. Centring each on its own content staggered the
+    names by up to 7px; they must share a baseline."""
+    host, shelf = _shelf(n=4, mixed=True)
+    try:
+        for h in range(120, 200, 10):
+            _settle(host, h)
+            tops = {s[0] for s in _spans(shelf)}
+            assert len(tops) == 1, f"host {h}: name tops disagree {sorted(tops)}"
+    finally:
+        host.deleteLater()

@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QScrollArea,
     QSizePolicy,
+    QSpacerItem,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -164,6 +165,10 @@ _LABEL_MIN_W = 150
 AGENT_SPRITE = 38
 # Column spacing above the agents row (matches the tile's QVBoxLayout spacing).
 AGENTS_ROW_SPACING = 4
+
+# Gap between a tile's stacked rows. Named so _content_h and the column that
+# lays those rows out cannot drift apart.
+TILE_ROW_SPACING = 4
 # Height reserved for the agents row before a real one can be measured; once a
 # tile has agents the true measured height is used instead (see _agent_extra).
 AGENT_ROW_FALLBACK = 46
@@ -511,7 +516,7 @@ class SessionTile(QWidget):
         # child widgets are clipped to the tile, so without it the glow's upper
         # halo is sliced off at the tile's top edge.
         col.setContentsMargins(12, _GLOW_PAD, 12, 4)
-        col.setSpacing(4)
+        col.setSpacing(TILE_ROW_SPACING)
         col.setAlignment(Qt.AlignHCenter)
         # SetNoConstraint + a zero minimum let the enter/leave width animation
         # shrink the tile below the mascot's fixed size (the content is clipped),
@@ -546,6 +551,19 @@ class SessionTile(QWidget):
         # render wider than 110px however wide the tile got. The QLabel already
         # centres its own pixmap (setAlignment in SpritePlayer), so the flag
         # bought nothing and cost the whole horizontal axis.
+        # Leading spacer, inert while a mascot is drawn so the rows stay
+        # top-aligned under it. In text-only mode it is made expanding, which
+        # pairs it with the trailing stretch below and centres the rows in the
+        # space the mascot vacated — rather than leaving all of it underneath,
+        # which read as a dead band between the session text and the usage bars.
+        #
+        # Two matched stretches rather than a computed half-leftover: the
+        # trailing stretch also absorbs the column's own margins, so arithmetic
+        # here came out 41px above against 55px below. Letting the layout
+        # divide it is exact, and it stays exact if the margins ever change.
+        self._top_pad = QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        col.insertItem(0, self._top_pad)
+
         col.addWidget(self.sprite, 0)   # FIXED box; the shelf sizes it
 
         # Title label: elides at rest, scrolls on hover, full text in a tooltip.
@@ -641,12 +659,61 @@ class SessionTile(QWidget):
         # agrees; the tile only applies what it is told.
         pass
 
+    def _content_h(self) -> int:
+        """Exact height of this tile's visible text rows, spacing included.
+
+        Computed the way the column actually lays them out — the sum of the
+        shown rows plus one spacing between each — rather than an approximation.
+        Approximating it left the centred names up to 7px apart, and the status
+        line is hidden when a session has nothing to put there, so tiles
+        genuinely differ.
+        """
+        rows = [l for l in (self.project_label, self.activity_label,
+                            self.sub_label) if not l.isHidden()]
+        if not rows:
+            return 0
+        return (sum(l.sizeHint().height() for l in rows)
+                + TILE_ROW_SPACING * (len(rows) - 1))
+
+    def _row_span(self):
+        """(top, bottom) of this tile's visible text rows, in tile coords.
+
+        Real geometry rather than sizeHints — the rows render about 15px
+        shorter than they advertise, which is enough to leave "centred" text
+        visibly low.
+        """
+        rows = [l for l in (self.project_label, self.activity_label,
+                            self.sub_label, self.agents_label)
+                if not l.isHidden()]
+        if not rows:
+            return None
+        top = min(l.mapTo(self, l.rect().topLeft()).y() for l in rows)
+        bottom = max(l.mapTo(self, l.rect().bottomLeft()).y() for l in rows)
+        return top, bottom
+
     def _text_rows_height(self) -> int:
-        """Height of the rows that never drop out: name, activity, status."""
-        return (self.project_label.sizeHint().height()
-                + self.activity_label.sizeHint().height()
-                + self.sub_label.sizeHint().height()
-                + 16)   # the column's spacing/margins around them
+        """Content height plus the column's own vertical padding — what the
+        shelf must reserve for a tile that shows text only."""
+        return self._content_h() + 16
+
+    def set_text_centered(self, on: bool, top_pad: int = 0) -> None:
+        """Centre the rows (text-only) or top-align them under the mascot.
+
+        ``top_pad`` comes from the shelf and is the SAME for every tile, so all
+        the first rows land on one line. Letting each tile centre its own
+        content with a stretch staggered them, because tiles carry different
+        numbers of rows.
+
+        The generous top margin exists to give the mascot's drop-shadow glow
+        room; with no mascot it only pushes the text low, so it drops to match
+        the bottom margin.
+        """
+        lay = self.layout()
+        lay.setContentsMargins(12, 4 if on else _GLOW_PAD, 12, 4)
+        self._top_pad.changeSize(0, top_pad if on else 0,
+                                 QSizePolicy.Minimum, QSizePolicy.Fixed)
+        lay.invalidate()
+        lay.activate()
 
     def _agents_line_height(self) -> int:
         """What the "N subagents" fallback row costs, including its spacing.
@@ -807,7 +874,7 @@ class SessionShelf(QWidget):
     # 52px, which is well clear of the unreadably-small ones this guard exists
     # to prevent. Note the reserved floor's 1.5x headroom is NOT the cause and
     # is deliberately left alone — dropping it moved the worst case 81px -> 81px.
-    MIN_MASCOT = 48
+    MIN_MASCOT = 64
 
     # Mascot size the parent must still reach for subagent mascots to be worth
     # drawing alongside it. Below this the tile shows "N subagents" instead.
@@ -1158,9 +1225,43 @@ class SessionShelf(QWidget):
         edge = max(0, edge - (edge % 4))     # quantised: exactly equal, crisper
         if edge < self.MIN_MASCOT:
             edge = 0                          # text-only
+        # Text-only: centre the rows in the space the mascot vacated rather than
+        # leaving all of it underneath, which read as a dead band between the
+        # session text and the usage bars. Every tile is told the same thing and
+        # every tile has the same height, so the rows still line up across the
+        # row — the property that made the shelf worth reworking in the first
+        # place.
         for t in tiles:
             t.set_sprite_box(edge)
             t.set_presentation(bool(edge), agents_as_mascots)
+            t.set_text_centered(edge == 0, 0)
+        if edge:
+            return
+        # Text-only: centre the rows in the space the mascot vacated, rather
+        # than leaving all of it underneath as a dead band above the usage bars.
+        #
+        # Measured, not modelled. Deriving the block from the labels' sizeHints
+        # was wrong by a constant 15px — they render shorter than they advertise
+        # — which left the text visibly low. So lay out once with no pad, read
+        # where the rows actually are, and pad from that. The pad is fixed and
+        # does not affect content height, so this settles in one extra pass.
+        self._row_widget.layout().activate()
+        spans = [s for s in (t._row_span() for t in tiles) if s is not None]
+        if not spans:
+            return
+        first_top = min(s[0] for s in spans)
+        block = max(s[1] for s in spans) - first_top
+        # Available height comes from the viewport, not from tile.height():
+        # mid-relayout a tile can still report a stale height, and using it
+        # produced a 145px pad that shoved the subagents line clean out of view.
+        avail = h - _ROW_V_MARGINS
+        # ONE pad for every tile, so the first rows stay on a single line no
+        # matter how many rows each carries. Capped at the slack that actually
+        # exists, so a bad measurement can never push content out of the tile.
+        pad = max(0, min((avail - block) // 2 - first_top, avail - block))
+        if pad:
+            for t in tiles:
+                t.set_text_centered(True, pad)
 
     def reserved_current(self) -> int:
         """Currently reserved scroll height (may be mid height-animation)."""
