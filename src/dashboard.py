@@ -1863,25 +1863,23 @@ class SettingsPanel(QWidget):
 
         layout.addSpacing(10)
         layout.addWidget(QLabel("STARTUP", objectName="sectionLabel"))
-        # "system tray" vs "menu bar" is the one bit that genuinely differs --
-        # it's what the user has to look at to find the app -- so it branches.
-        # The rest is written to be true everywhere rather than per-platform.
-        if sys.platform == "darwin":
-            _startup_text = (
-                "Launch Clawdmeter automatically when you log in. It starts "
-                "quietly in the menu bar — click the menu bar icon to open it.")
-        else:
-            _verb = "sign in" if winutil.is_windows() else "log in"
-            _startup_text = (
-                f"Launch Clawdmeter automatically when you {_verb}. It starts "
-                "quietly in the system tray — click the tray icon to open it.")
-        startup_hint = QLabel(_startup_text, objectName="sectionHint")
+        # Two things differ by platform, and the hint and the checkbox must
+        # agree on both: the verb ("sign in" is Microsoft's word, "log in" is
+        # Apple's and the usual Linux one) and where the app sits while it has
+        # no window. Derived once and shared, because the first attempt at this
+        # branched the hint and not the checkbox, so Linux read "when you log
+        # in" immediately above "Start when I sign in".
+        _verb = "sign in" if winutil.is_windows() else "log in"
+        _where = ("menu bar — click the menu bar icon"
+                  if sys.platform == "darwin"
+                  else "system tray — click the tray icon")
+        startup_hint = QLabel(
+            f"Launch Clawdmeter automatically when you {_verb}. It starts "
+            f"quietly in the {_where} to open it.",
+            objectName="sectionHint")
         startup_hint.setWordWrap(True)
         layout.addWidget(startup_hint)
-        # No platform branch: this wording is correct on all three, and the
-        # conditional that used to be here is exactly how the paragraph above
-        # drifted out of sync and kept saying "Windows" on Linux.
-        self.startup_check = QCheckBox("Start when I sign in")
+        self.startup_check = QCheckBox(f"Start when I {_verb}")
         self.startup_check.setChecked(run_at_startup.is_enabled())
         self.startup_check.setEnabled(run_at_startup.is_supported())
         self.startup_check.toggled.connect(self._on_run_at_startup_toggled)
@@ -2198,9 +2196,14 @@ class SettingsPanel(QWidget):
         layout = about_layout
         layout.addWidget(QLabel("ABOUT", objectName="sectionLabel"))
         about = QLabel(
-            # The product is "Clawdmeter" on every platform. The repo is a
-            # separate thing, and its URL below must keep matching the real
-            # repository -- update_check rejects release URLs that don't.
+            # The product is "Clawdmeter" on every platform; the repository is
+            # a separate thing, so the link below keeps the real repo name and
+            # changes only when the repo is actually renamed.
+            #
+            # It is only a link -- nothing reads this string. The constant that
+            # DOES matter is update_check.REPO, which builds the releases API
+            # URL and gates which release URLs are trusted; that one has to move
+            # in the same commit as the rename or update checking breaks.
             f"Clawdmeter  v{app_settings.APP_VERSION}\n"
             "by Nick Welter (@weltern) & Claude\n"
             "github.com/weltern/Clawdmeter-Windows\n\n"

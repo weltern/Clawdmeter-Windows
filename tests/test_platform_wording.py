@@ -81,9 +81,29 @@ def test_about_uses_the_product_name_not_the_repo_name(monkeypatch):
     joined = "\n".join(_hints(monkeypatch, "darwin"))
     assert "Clawdmeter-Windows  v" not in joined, \
         "About shows the repo name as the product name"
-    # The repo URL is a different thing and MUST keep matching the real
-    # repository: update_check rejects any release URL that doesn't start with
-    # https://github.com/<REPO>/, so renaming it here before the repo is
-    # actually renamed would silently break update checking.
+    # The link is a different thing from the product name and must keep naming
+    # the real repository, or it 404s. Nothing reads this string, so changing
+    # it cannot break update checking -- that risk belongs to update_check.REPO,
+    # which builds the releases API URL and gates which release URLs are
+    # trusted. Both move in the same commit as the rename, for different reasons.
     assert "github.com/weltern/Clawdmeter-Windows" in joined, \
         "the About link must keep pointing at the real repository"
+
+
+def test_the_hint_and_the_checkbox_use_the_same_verb(monkeypatch):
+    """They sit four lines apart on screen, so a mismatch is glaring.
+
+    Caught in review: the hint branched per platform and the checkbox did not,
+    so Linux read "Launch Clawdmeter automatically when you log in" directly
+    above "Start when I sign in".
+    """
+    for platform, verb, wrong in (("win32", "sign in", "log in"),
+                                  ("darwin", "log in", "sign in"),
+                                  ("linux", "log in", "sign in")):
+        texts = _hints(monkeypatch, platform)
+        startup = [t for t in texts if "Launch Clawdmeter automatically" in t
+                   or t.startswith("Start when I")]
+        assert len(startup) == 2, f"{platform}: expected the hint and the checkbox"
+        for t in startup:
+            assert verb in t, f"{platform}: {t!r} should say {verb!r}"
+            assert wrong not in t, f"{platform}: {t!r} should not say {wrong!r}"

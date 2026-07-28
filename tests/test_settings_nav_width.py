@@ -39,12 +39,20 @@ app_settings.set_theme = lambda name: None
 
 @pytest.fixture
 def panel():
+    # Restore the application stylesheet afterwards. Setting it and walking
+    # away leaks ~14KB of QSS into every test module that runs later, and a
+    # test in this suite has already been broken once by exactly that kind of
+    # cross-module global leak.
+    _previous = _app.styleSheet()
     _app.setStyleSheet(theme.build_qss(theme.active()))
     host = QWidget()
     p = dashboard.SettingsPanel(host, lambda *_a: None, lambda *_a: None)
-    yield p
-    p.deleteLater()
-    host.deleteLater()
+    try:
+        yield p
+    finally:
+        p.deleteLater()
+        host.deleteLater()
+        _app.setStyleSheet(_previous)
 
 
 def _rail(panel):
