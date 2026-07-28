@@ -52,10 +52,18 @@ DEFAULT_SERVICE_NAME = "Claude Code-credentials"
 # dialog they have never seen before, so there is no right value — the timeout
 # itself was the bug. Real apps do not hit this because the framework API blocks
 # for as long as the prompt is up; the fuse was an artifact of shelling out to a
-# subprocess. Waiting is safe: this runs on a QThread worker (never the UI
-# thread), only one read is ever in flight (see the lock below), `security`
-# exits as soon as the dialog is answered OR cancelled, and once the grant is
-# stored the call returns in milliseconds forever after.
+# subprocess. Waiting is safe PROVIDED the caller is a worker: only one read is
+# ever in flight (see the lock below), `security` exits as soon as the dialog is
+# answered OR cancelled, and once the grant is stored the call returns in
+# milliseconds forever after.
+#
+# That proviso used to be stated here as a fact -- "this runs on a QThread
+# worker (never the UI thread)" -- and enforced nowhere, which is precisely how
+# it stopped being true: SettingsPanel called through to read_credentials()
+# while constructing itself during Dashboard startup, and on any macOS update
+# the app hung before drawing anything. UI callers now have their own entry
+# point, cached_credentials(), which never touches the Keychain. Do not point a
+# widget at read_credentials() again.
 #
 # CLAWD_KEYCHAIN_TIMEOUT sets a limit in seconds for tests and for anyone who
 # wants a hard bound. Unset = wait.
@@ -148,6 +156,31 @@ def _read_via_framework() -> str | None | bool:
     return blob or None
 
 
+# Last blob a *worker* read successfully. The UI reads this instead of the
+# Keychain: the real read can block for as long as a user takes to answer a
+# security dialog, and on the UI thread that freezes the whole app before it has
+# drawn anything (see cached_credentials).
+_cached_blob: str | None = None
+
+
+def cached_credentials() -> str | None:
+    """The last successfully-read blob, or None. Never touches the Keychain.
+
+    For callers on the UI thread. read_credentials() can block indefinitely --
+    macOS puts up an authorisation dialog and waits -- so anything painting or
+    building widgets must use this and accept that it is empty until the poller
+    has run once.
+
+    This exists because the opposite was a real, shipped bug: SettingsPanel
+    built itself during Dashboard construction and called through to
+    read_credentials(), so on any macOS update -- a new signature invalidates
+    the Keychain ACL and forces a re-prompt -- the app hung before creating its
+    window or menu-bar icon. The user saw only an unexplained password dialog
+    from an app with no Dock icon.
+    """
+    return _cached_blob
+
+
 def read_credentials() -> str | None:
     """Return the raw credentials JSON blob from the login Keychain, or None.
 
@@ -155,7 +188,14 @@ def read_credentials() -> str | None:
     ``security`` CLI otherwise. Returns None (never raises) when not on macOS,
     when the item isn't present, when access is denied, or when the item is
     empty — every failure mode a caller should treat as "no token here, move on".
+
+    MAY BLOCK INDEFINITELY on a Keychain authorisation dialog. Call it only from
+    a worker; UI code wants cached_credentials(). This used to be asserted in a
+    comment and enforced nowhere, which is exactly how the UI ended up calling
+    it -- so successful reads now populate the cache the UI reads from, and the
+    two callers are no longer the same function.
     """
+    global _cached_blob
     if not is_macos():
         return None
     # Single-flight. The first read on a machine blocks on a Keychain dialog for
@@ -166,9 +206,11 @@ def read_credentials() -> str | None:
         return None
     try:
         blob = _read_via_framework()
-        if blob is not False:            # the framework path handled it
-            return blob
-        return _read_via_cli()
+        if blob is False:                # the framework path declined it
+            blob = _read_via_cli()
+        if blob is not None:
+            _cached_blob = blob
+        return blob
     finally:
         _read_lock.release()
 

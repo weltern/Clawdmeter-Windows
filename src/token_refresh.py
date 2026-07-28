@@ -71,14 +71,21 @@ def _macos_keychain_active() -> bool:
     return macos_keychain.is_macos() and not os.environ.get("CLAUDE_CREDENTIALS_PATH")
 
 
-def _read_credentials_raw(path: Path) -> str | None:
+def _read_credentials_raw(path: Path, *, blocking: bool = True) -> str | None:
     """Raw credentials JSON — from the macOS Keychain, else the file at ``path``.
 
     Read-only: this never writes. Used by the expiry helpers so the Settings
     token-status line shows the real expiry on macOS too.
+
+    ``blocking=False`` is for callers on the UI thread. The macOS Keychain read
+    can hang indefinitely on an authorisation dialog, so those callers take the
+    last blob a worker cached and accept None until the poller has run once. It
+    is a keyword argument with a safe default so a new caller has to opt into
+    the blocking behaviour deliberately.
     """
     if _macos_keychain_active():
-        blob = macos_keychain.read_credentials()
+        blob = (macos_keychain.read_credentials() if blocking
+                else macos_keychain.cached_credentials())
         if blob is not None:
             return blob
         # Fall through to the file on the off chance one exists.
@@ -88,8 +95,8 @@ def _read_credentials_raw(path: Path) -> str | None:
         return None
 
 
-def token_expiry_ms(path: Path) -> int | None:
-    raw = _read_credentials_raw(path)
+def token_expiry_ms(path: Path, *, blocking: bool = True) -> int | None:
+    raw = _read_credentials_raw(path, blocking=blocking)
     if raw is None:
         return None
     try:

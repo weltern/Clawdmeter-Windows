@@ -69,6 +69,7 @@ from PySide6.QtWidgets import (
 )
 
 import app_settings
+import macos_keychain
 import poll_cadence
 import run_at_startup
 import start_menu
@@ -2340,7 +2341,12 @@ class SettingsPanel(QWidget):
         actually needed (expired / near expiry) so a valid token can't be
         needlessly refreshed into a rate-limit error."""
         path = credentials_path()
-        exp = token_refresh.token_expiry_ms(path)
+        # blocking=False because this runs on the UI thread, and SettingsPanel
+        # is built during Dashboard construction -- a blocking macOS Keychain
+        # read here hung the app before it drew anything, showing the user only
+        # a bare password dialog from an app with no Dock icon. The expiry line
+        # fills in once the poller has read credentials on its worker.
+        exp = token_refresh.token_expiry_ms(path, blocking=False)
         if token_refresh._macos_keychain_active():
             # On macOS the token lives in the login Keychain and write-back isn't
             # implemented, so a manual refresh could only ever return the "not
@@ -3887,6 +3893,23 @@ class Dashboard(QMainWindow):
             if poller is not None:
                 poller.wake()
 
+    def _refresh_token_status_once(self) -> None:
+        """Re-render the token-expiry line the first time real data exists.
+
+        Only once: recomputing it on every 60s sample would be pointless work,
+        and the expiry only changes when the token itself is replaced -- which
+        routes through _on_refresh_status instead.
+        """
+        if getattr(self, "_token_status_filled", False):
+            return
+        if not macos_keychain.is_macos():
+            self._token_status_filled = True     # nothing was ever deferred
+            return
+        if macos_keychain.cached_credentials() is None:
+            return                               # worker hasn't read it yet
+        self._token_status_filled = True
+        self.settings_panel.refresh_token_status()
+
     def _on_refresh_status(self, result) -> None:
         """token_refresh.RefreshResult from the poll thread (auto or manual)."""
         if result.ok:
@@ -4066,6 +4089,15 @@ class Dashboard(QMainWindow):
         self._on_sessions(states)
 
     def _on_sample(self, s: UsageSample) -> None:
+        # The poller has just read credentials on its worker, so the macOS
+        # Keychain cache the Settings expiry line reads from is now warm. That
+        # line is built with blocking=False (it cannot touch the Keychain from
+        # the UI thread) so it starts out blank, and this is what fills it in.
+        # It has to happen here rather than in _on_refresh_status: that only
+        # fires on a token REFRESH, which never happens on macOS, so the line
+        # would otherwise read "unknown" forever on the one platform the
+        # non-blocking read exists for.
+        self._refresh_token_status_once()
         # Feed every sample (incl. errors) so the notifiers can ignore them
         # without disturbing their baselines.
         decision = self._reset_notifier.observe(s)
