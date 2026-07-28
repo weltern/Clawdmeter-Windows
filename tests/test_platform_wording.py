@@ -69,12 +69,21 @@ def test_macos_says_menu_bar_not_system_tray(monkeypatch):
     assert "menu bar" in joined, "macOS Settings never mentions the menu bar"
     assert "system tray" not in joined, \
         "macOS Settings says 'system tray', which does not exist there"
+    # "tray menu" is a THIRD spelling, and the assertions above are blind to it:
+    # "menu bar" still matches the STARTUP hint, and "tray menu" is not the
+    # substring "system tray". So the UPDATES hint could silently revert to
+    # "the tray menu shows an Update available item" with the suite green --
+    # which is precisely what happened, and is why this line exists.
+    assert "tray menu" not in joined, \
+        "macOS Settings says 'tray menu'; on macOS the affordance is the menu bar"
 
 
 def test_windows_wording_is_unchanged(monkeypatch):
     joined = "\n".join(_hints(monkeypatch, "win32"))
     assert "system tray" in joined
     assert "menu bar" not in joined, "Windows Settings should not say menu bar"
+    assert "tray menu" in joined, \
+        "Windows lost the UPDATES hint's pointer to the tray menu"
 
 
 def test_about_uses_the_product_name_not_the_repo_name(monkeypatch):
@@ -88,6 +97,53 @@ def test_about_uses_the_product_name_not_the_repo_name(monkeypatch):
     # trusted. Both move in the same commit as the rename, for different reasons.
     assert "github.com/weltern/Clawdmeter-Windows" in joined, \
         "the About link must keep pointing at the real repository"
+
+
+def _token_line(monkeypatch, *, keychain: bool, secs_left: float) -> str:
+    """The token-validity line as a user on that platform would read it."""
+    import time as _time
+
+    import token_refresh
+    monkeypatch.setattr(token_refresh, "_macos_keychain_active", lambda: keychain)
+    monkeypatch.setattr(token_refresh, "token_expiry_ms",
+                        lambda _p, **_kw: (_time.time() + secs_left) * 1000)
+    monkeypatch.setattr(token_refresh, "is_expired", lambda _p: secs_left <= 0)
+    host = QWidget()
+    panel = dashboard.SettingsPanel(host, lambda *_a: None, lambda *_a: None)
+    try:
+        return panel.token_status.text()
+    finally:
+        panel.deleteLater()
+        host.deleteLater()
+
+
+@pytest.mark.parametrize("secs_left", [4 * 3600, -60])
+def test_macos_never_promises_an_auto_refresh_it_cannot_do(monkeypatch, secs_left):
+    """The line sits directly beneath two controls this panel just greyed out.
+
+    refresh_token_status() disables the refresh button ("Managed by the macOS
+    Keychain") and force-unchecks auto-refresh, because token_refresh.refresh()
+    returns "not supported" on macOS unconditionally. The shared tail still
+    said "refreshes automatically" / "wait for auto-refresh", which left the
+    user waiting on something that never arrives. Renewal there is Claude
+    Code's job.
+    """
+    line = _token_line(monkeypatch, keychain=True, secs_left=secs_left)
+    lowered = line.lower()
+    assert "automatic" not in lowered, \
+        f"macOS token line promises an auto-refresh it cannot perform: {line!r}"
+    assert "auto-refresh" not in lowered, \
+        f"macOS token line points at auto-refresh, which is disabled: {line!r}"
+    assert "claude" in lowered, \
+        f"macOS token line must name what actually renews the token: {line!r}"
+
+
+@pytest.mark.parametrize("secs_left", [4 * 3600, -60])
+def test_windows_token_wording_is_unchanged(monkeypatch, secs_left):
+    """The macOS branch must not have rerouted the platform that has users."""
+    line = _token_line(monkeypatch, keychain=False, secs_left=secs_left)
+    assert "auto-refresh" in line.lower() or "automatically" in line.lower(), \
+        f"Windows lost its auto-refresh wording: {line!r}"
 
 
 def test_the_hint_and_the_checkbox_use_the_same_verb(monkeypatch):

@@ -225,7 +225,19 @@ class ThemedPopup(QWidget):
         # a no-op off macOS and nothing else cleared this window, so on Linux
         # it stayed opaque black and the radius framed the corners in black.
         # Qt only honours this if it is set before the window is first shown.
-        if sys.platform.startswith("linux") and linux_compositing():
+        #
+        # Latched, not re-probed. Qt cannot change WA_TranslucentBackground
+        # after the first show, so this answer is final for the life of the
+        # popup -- and _ThemedCombo.showPopup caches one instance per combo for
+        # the whole process. apply_theme_style() therefore has to square the
+        # corners off the SAME latched value: it runs again on every theme
+        # switch, and asking linux_compositing() afresh there let a compositor
+        # started mid-session restore the radius on a window that never got
+        # translucency, i.e. the black corner notches this whole branch exists
+        # to remove.
+        self._linux_translucent = (
+            sys.platform.startswith("linux") and linux_compositing())
+        if self._linux_translucent:
             self.setAttribute(Qt.WA_TranslucentBackground, True)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -246,7 +258,7 @@ class ThemedPopup(QWidget):
         qss = theme.build_qss(theme.active())
         if sys.platform == "darwin":
             qss += "\nQWidget#popupRoot{border-radius:8px}"
-        elif sys.platform.startswith("linux") and not linux_compositing():
+        elif sys.platform.startswith("linux") and not self._linux_translucent:
             # Nothing can make the corners transparent here, so square them off
             # rather than leave black notches: a square drop-down reads as
             # deliberate, a rounded one framed in black reads as broken.

@@ -2388,6 +2388,22 @@ class SettingsPanel(QWidget):
             self.token_status.setText("Token expiry unknown.")
             return
         secs = exp / 1000 - time.time()
+        if token_refresh._macos_keychain_active():
+            # macOS needs its own wording, not the shared tail below. That tail
+            # promises an auto-refresh, and this method has just disabled every
+            # mechanism that could deliver one -- the refresh button, and the
+            # auto-refresh checkbox. Telling a macOS user to "wait for
+            # auto-refresh" beside two greyed-out controls sends them waiting
+            # for something that is never coming; renewal there is Claude
+            # Code's job, and Clawdmeter re-reads the Keychain each poll.
+            if secs <= 0:
+                self.token_status.setText(
+                    "Token expired — run `claude` to renew it.")
+            else:
+                h, m = int(secs // 3600), int((secs % 3600) // 60)
+                self.token_status.setText(
+                    f"Valid for ~{h}h {m}m — Claude Code renews it in the Keychain.")
+            return
         if secs <= 0:
             self.token_status.setText("Token expired — refresh now, or wait for auto-refresh.")
         elif needs_refresh:

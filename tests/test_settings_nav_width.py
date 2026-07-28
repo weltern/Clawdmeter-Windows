@@ -60,9 +60,35 @@ def _rail(panel):
 
 
 def test_rail_is_never_narrower_than_the_shipped_windows_width(panel):
-    # Widening only. If a font measures small we keep 148 so the Windows
-    # layout stays byte-identical to what users already have.
-    assert _rail(panel).minimumWidth() >= dashboard.SettingsPanel.NAV_MIN_WIDTH
+    """Widening only: a font that measures small keeps 148, so the Windows
+    layout stays byte-identical to what users already have.
+
+    The font has to be shrunk deliberately. Asserting the floor against the
+    default offscreen font proves nothing -- it measures "Notifications" at
+    13 chars x 13px = 169px, so the computed width already clears 148 and the
+    max() never binds. Deleting the max() outright left this green, which is
+    how an earlier pass wrongly recorded this claim as refuted: the revert it
+    tested was not one this assertion could ever have caught.
+    """
+    rail = _rail(panel)
+    tiny = QFont()
+    tiny.setPixelSize(1)
+    for btn in panel._nav_group.buttons():
+        btn.setFont(tiny)
+    panel._size_settings_nav(rail, rail.layout())
+
+    # The branch is only under test when the natural width is below the floor.
+    widest = max(b.fontMetrics().horizontalAdvance(b.text())
+                 for b in panel._nav_group.buttons())
+    m = rail.layout().contentsMargins()
+    natural = (widest + dashboard.SettingsPanel.NAV_BTN_H_PADDING
+               + m.left() + m.right())
+    assert natural < dashboard.SettingsPanel.NAV_MIN_WIDTH, (
+        f"font did not shrink below the floor (natural={natural}) -- this "
+        f"test would pass without the floor being applied at all")
+
+    assert rail.minimumWidth() == dashboard.SettingsPanel.NAV_MIN_WIDTH, \
+        "a narrow font shrank the rail below the width Windows shipped with"
 
 
 def test_rail_widens_when_the_font_needs_more_room(panel):

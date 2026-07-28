@@ -572,6 +572,36 @@ def test_without_a_compositor_the_popup_squares_its_corners(monkeypatch):
         popup.deleteLater()
 
 
+def test_a_compositor_starting_later_cannot_unsquare_the_corners(monkeypatch):
+    """The two halves of the fix have to agree, forever.
+
+    Translucency is decided once -- Qt will not honour WA_TranslucentBackground
+    after the first show -- but apply_theme_style() runs again on every theme
+    switch, and _ThemedCombo.showPopup caches ONE popup per combo for the life
+    of the process (dashboard.py, `if getattr(self, "_mac_popup", None) is
+    None`). So when the radius decision re-probed live while translucency
+    stayed latched, a compositor that started mid-session (picom launched, or
+    an X11 compositor restarted after a crash) restored the rounded corners on
+    a window that was still opaque: the black notches, back again.
+    """
+    from PySide6.QtCore import Qt
+    uiutil, popup = _fresh_popup(monkeypatch, platform="linux", compositing=False)
+    try:
+        assert "QWidget#popupRoot{border-radius:0}" in popup._card.styleSheet(), \
+            "precondition: no compositor at construction means squared corners"
+
+        monkeypatch.setattr(uiutil, "linux_compositing", lambda: True)
+        popup.apply_theme_style()
+
+        assert not popup.testAttribute(Qt.WA_TranslucentBackground), \
+            "Qt cannot grant translucency post-show, so it must still be off"
+        assert "QWidget#popupRoot{border-radius:0}" in popup._card.styleSheet(), (
+            "the radius came back on a window that never got translucency -- "
+            "that is the black-corner bug returning")
+    finally:
+        popup.deleteLater()
+
+
 def test_the_other_platforms_are_untouched(monkeypatch):
     from PySide6.QtCore import Qt
     for platform in ("darwin", "win32"):
@@ -607,10 +637,29 @@ def test_compositing_probe_defaults_to_the_prettier_branch(monkeypatch):
         uiutil.linux_compositing.cache_clear()
         # And a probe that cannot run answers True rather than squaring corners
         # on every desktop that mainstream users actually have.
-        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-        monkeypatch.delenv("XDG_SESSION_TYPE", raising=False)
-        monkeypatch.setattr(
-            "ctypes.util.find_library", lambda _n: (_ for _ in ()).throw(OSError()))
+        #
+        # is_wayland MUST go back to False first. It is still patched True from
+        # the half above, and that short-circuits before the probe is reached --
+        # so this assertion used to pass without ever entering the fallback it
+        # names, and deleting the fallback outright left it green. (The two
+        # env vars this used to clear were vestigial for the same reason: the
+        # current is_wayland() asks Qt for its platform plugin and never reads
+        # the environment at all.)
+        monkeypatch.setattr(uiutil, "is_wayland", lambda: False)
+
+        attempts = []
+
+        def _boom(name):
+            attempts.append(name)
+            raise OSError()
+
+        monkeypatch.setattr("ctypes.util.find_library", _boom)
         assert uiutil.linux_compositing() is True
+        # Proves the fallback was actually entered rather than short-circuited:
+        # without this the assertion above is satisfied by any branch returning
+        # True, which is exactly how the bug hid.
+        assert attempts, \
+            "linux_compositing() never reached the X11 probe -- it returned " \
+            "True from somewhere else, so this test is not guarding the fallback"
     finally:
         uiutil.linux_compositing.cache_clear()
