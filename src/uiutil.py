@@ -7,9 +7,8 @@ import back from dashboard).
 
 from __future__ import annotations
 
-import functools
-import os
 import sys
+import time
 
 import app_settings
 
@@ -70,7 +69,75 @@ def is_wayland() -> bool:
     return bool(app) and app.platformName().lower().startswith("wayland")
 
 
-@functools.lru_cache(maxsize=1)
+# How long a cached compositing answer stays good. Compositing genuinely
+# toggles at runtime -- a user turns their compositor off for a game, or KWin
+# restarts -- and a result cached for the whole process would leave the popup
+# corners wrong until the app was restarted. Popups are opened by hand, so
+# re-asking every few seconds costs nothing measurable.
+_COMPOSITING_TTL_S = 5.0
+# Ceiling on how long the X11 probe may hold the GUI thread. XOpenDisplay is a
+# synchronous connect plus auth handshake against whatever $DISPLAY names; it
+# is normally instant against a local socket, but nothing bounds it if $DISPLAY
+# points somewhere unreachable (a stale SSH-forwarded display, say). The UI
+# must not be able to freeze on a cosmetic question.
+_COMPOSITING_PROBE_TIMEOUT_S = 1.5
+
+_compositing_cache: "tuple[float, bool] | None" = None
+
+
+def _probe_x11_compositing() -> bool:
+    """Ask X whether a compositing manager owns _NET_WM_CM_Sn. Blocking."""
+    import ctypes
+    import ctypes.util
+    libname = ctypes.util.find_library("X11")
+    if not libname:
+        return True
+    x11 = ctypes.CDLL(libname)
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    dpy = x11.XOpenDisplay(None)
+    if not dpy:
+        return True
+    try:
+        x11.XDefaultScreen.restype = ctypes.c_int
+        x11.XDefaultScreen.argtypes = [ctypes.c_void_p]
+        x11.XInternAtom.restype = ctypes.c_ulong
+        x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        x11.XGetSelectionOwner.restype = ctypes.c_ulong
+        x11.XGetSelectionOwner.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        atom = x11.XInternAtom(
+            dpy, f"_NET_WM_CM_S{x11.XDefaultScreen(dpy)}".encode(), 0)
+        return bool(x11.XGetSelectionOwner(dpy, atom))
+    finally:
+        x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+        x11.XCloseDisplay(dpy)
+
+
+def _x11_compositing_bounded() -> bool:
+    """_probe_x11_compositing() with a wall-clock ceiling.
+
+    A blocked C call cannot be cancelled, so the worker is a daemon thread we
+    simply stop waiting on -- it either finishes into the void or dies with the
+    process. That leaks at most one thread, once per TTL window, in the failure
+    case that should never happen. A frozen UI is much worse.
+    """
+    import threading
+    out: list[bool] = []
+
+    def _run():
+        try:
+            out.append(_probe_x11_compositing())
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_run, name="clawd-x11-composite-probe",
+                         daemon=True)
+    t.start()
+    t.join(_COMPOSITING_PROBE_TIMEOUT_S)
+    # No answer in time -> assume composited, the better-looking branch.
+    return out[0] if out else True
+
+
 def linux_compositing() -> bool:
     """Can this desktop composite a translucent top-level window?
 
@@ -86,7 +153,11 @@ def linux_compositing() -> bool:
     owning the _NET_WM_CM_Sn selection, which is what this asks. Anything
     unexpected answers True, because every mainstream desktop composites and
     that is the better-looking branch.
+
+    The answer is cached for _COMPOSITING_TTL_S rather than for the process
+    lifetime: compositing really does get toggled while an app is running.
     """
+    global _compositing_cache
     if not sys.platform.startswith("linux"):
         return True
     # Wayland always composites. Ask Qt which platform it is on rather than
@@ -94,35 +165,34 @@ def linux_compositing() -> bool:
     # display through XWayland, and in that case it is the X display's
     # compositing state we need, not the Wayland session's. Same reasoning as
     # is_wayland(), which this now shares so the two cannot answer differently.
+    #
+    # Deliberately NOT cached: it is a cheap attribute read, and caching it
+    # would mean a call made before the QGuiApplication exists could freeze in
+    # a wrong answer for the rest of the run.
     if is_wayland():
         return True
+    now = time.monotonic()
+    if _compositing_cache is not None and now - _compositing_cache[0] < _COMPOSITING_TTL_S:
+        return _compositing_cache[1]
     try:
-        import ctypes
-        import ctypes.util
-        libname = ctypes.util.find_library("X11")
-        if not libname:
-            return True
-        x11 = ctypes.CDLL(libname)
-        x11.XOpenDisplay.restype = ctypes.c_void_p
-        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
-        dpy = x11.XOpenDisplay(None)
-        if not dpy:
-            return True
-        try:
-            x11.XDefaultScreen.restype = ctypes.c_int
-            x11.XDefaultScreen.argtypes = [ctypes.c_void_p]
-            x11.XInternAtom.restype = ctypes.c_ulong
-            x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
-            x11.XGetSelectionOwner.restype = ctypes.c_ulong
-            x11.XGetSelectionOwner.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
-            atom = x11.XInternAtom(
-                dpy, f"_NET_WM_CM_S{x11.XDefaultScreen(dpy)}".encode(), 0)
-            return bool(x11.XGetSelectionOwner(dpy, atom))
-        finally:
-            x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
-            x11.XCloseDisplay(dpy)
+        value = _x11_compositing_bounded()
     except Exception:
+        # Not cached: a transient failure should not pin the answer for the
+        # rest of the TTL window.
         return True
+    _compositing_cache = (now, value)
+    return value
+
+
+def _clear_compositing_cache() -> None:
+    """Drop the cached answer. For tests; also safe to call at runtime."""
+    global _compositing_cache
+    _compositing_cache = None
+
+
+# Kept as an attribute so callers and tests written against the previous
+# lru_cache implementation keep working unchanged.
+linux_compositing.cache_clear = _clear_compositing_cache
 
 
 class ThemedPopup(QWidget):

@@ -130,3 +130,64 @@ def test_x11_still_reflects_the_stored_setting(monkeypatch):
     finally:
         p.deleteLater()
         host.deleteLater()
+
+
+# --- the X11 compositing probe: bounded, and not cached forever --------------
+
+def test_a_hanging_x11_probe_cannot_freeze_the_ui(monkeypatch):
+    """XOpenDisplay is a blocking connect against whatever $DISPLAY names.
+
+    Normally instant against a local socket, but nothing bounds it if $DISPLAY
+    points somewhere unreachable -- a stale SSH-forwarded display, say. This is
+    called on the GUI thread to answer a cosmetic question about popup corners,
+    so it must never be able to hang the app.
+    """
+    import time as _time
+    monkeypatch.setattr(uiutil, "_COMPOSITING_PROBE_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(uiutil.sys, "platform", "linux")
+    monkeypatch.setattr(uiutil, "is_wayland", lambda: False)
+
+    def _hang():
+        _time.sleep(30)
+        return False
+    monkeypatch.setattr(uiutil, "_probe_x11_compositing", _hang)
+    uiutil.linux_compositing.cache_clear()
+
+    started = _time.monotonic()
+    result = uiutil.linux_compositing()
+    elapsed = _time.monotonic() - started
+    uiutil.linux_compositing.cache_clear()
+
+    assert elapsed < 5, f"the probe blocked for {elapsed:.1f}s -- the UI froze"
+    assert result is True, "on timeout, assume composited (the prettier branch)"
+
+
+def test_the_answer_is_rechecked_after_the_ttl(monkeypatch):
+    """Compositing genuinely toggles at runtime -- a user turns their
+    compositor off for a game, or KWin restarts. Caching for the whole process
+    would leave the popup corners wrong until the app was restarted."""
+    monkeypatch.setattr(uiutil.sys, "platform", "linux")
+    monkeypatch.setattr(uiutil, "is_wayland", lambda: False)
+    calls = []
+    answer = [True]
+    monkeypatch.setattr(uiutil, "_probe_x11_compositing",
+                        lambda: (calls.append(1), answer[0])[1])
+    clock = [1000.0]
+    monkeypatch.setattr(uiutil.time, "monotonic", lambda: clock[0])
+    uiutil.linux_compositing.cache_clear()
+    try:
+        assert uiutil.linux_compositing() is True
+        assert uiutil.linux_compositing() is True
+        assert len(calls) == 1, "a second call within the TTL must use the cache"
+
+        # A fixed advance, deliberately NOT _COMPOSITING_TTL_S + 1: reading the
+        # constant would make this test adapt to any value, so it would pass
+        # even against a cache that never expires. 60s is the outer bound of
+        # what counts as "noticed promptly" for a cosmetic corner radius.
+        clock[0] += 60
+        answer[0] = False
+        assert uiutil.linux_compositing() is False, \
+            "the compositor was turned off and the app never noticed"
+        assert len(calls) == 2
+    finally:
+        uiutil.linux_compositing.cache_clear()
