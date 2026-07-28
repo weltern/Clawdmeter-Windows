@@ -89,7 +89,12 @@ def linux_compositing() -> bool:
     """
     if not sys.platform.startswith("linux"):
         return True
-    if os.environ.get("WAYLAND_DISPLAY") or os.environ.get("XDG_SESSION_TYPE") == "wayland":
+    # Wayland always composites. Ask Qt which platform it is on rather than
+    # reading WAYLAND_DISPLAY: that variable stays set while Qt draws to an X
+    # display through XWayland, and in that case it is the X display's
+    # compositing state we need, not the Wayland session's. Same reasoning as
+    # is_wayland(), which this now shares so the two cannot answer differently.
+    if is_wayland():
         return True
     try:
         import ctypes
@@ -178,8 +183,12 @@ class ThemedPopup(QWidget):
             qss += "\nQWidget#popupRoot{border-radius:0}"
         self._card.setStyleSheet(qss)
         if sys.platform.startswith("linux"):
-            # With a translucent window the card has to paint its own opaque
-            # rounded background, or the whole popup goes see-through.
+            # The card must paint its own background rather than inherit one.
+            # With a compositor the window behind it is translucent, so without
+            # this the whole popup goes see-through; without a compositor the
+            # window is opaque but the card still needs to own its fill for the
+            # squared-off corners above to look deliberate. Unconditional
+            # because it is required either way.
             self._card.setAttribute(Qt.WA_StyledBackground, True)
 
     def set_items(self, items, icon_size=None) -> None:

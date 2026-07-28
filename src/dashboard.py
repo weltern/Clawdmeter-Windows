@@ -1830,9 +1830,6 @@ class SettingsPanel(QWidget):
         layout = gen_layout
         layout.addWidget(QLabel("WINDOW", objectName="sectionLabel"))
         self.aot_check = QCheckBox("Always on top")
-        self.aot_check.setChecked(app_settings.get_always_on_top())
-        self.aot_check.toggled.connect(self._on_aot_toggled)
-        layout.addWidget(self.aot_check)
         # Wayland gives a client no way to raise itself above other windows --
         # it is a deliberate property of the protocol, not a Qt gap, and no
         # flag or plugin changes it. Confirmed on a real compositor: the hint
@@ -1841,10 +1838,20 @@ class SettingsPanel(QWidget):
         # it works on X11 -- so the user deserves to know why it is unavailable
         # here rather than wonder where the setting went.
         if is_wayland():
+            # Shown unticked, because a ticked-and-greyed box asserts a state
+            # the window is not in and offers no way to clear it. Set before
+            # the signal is connected, and the stored setting is left alone --
+            # this is a display decision for this session only, so the user's
+            # real preference survives for when they next log into X11.
+            self.aot_check.setChecked(False)
             self.aot_check.setEnabled(False)
             self.aot_check.setToolTip(
                 "Wayland doesn't let apps put themselves above other windows. "
                 "Use your compositor's own always-on-top shortcut instead.")
+        else:
+            self.aot_check.setChecked(app_settings.get_always_on_top())
+        self.aot_check.toggled.connect(self._on_aot_toggled)
+        layout.addWidget(self.aot_check)
 
         self.auto_hide_check = QCheckBox("Auto-hide title bar")
         self.auto_hide_check.setChecked(

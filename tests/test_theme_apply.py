@@ -591,9 +591,19 @@ def test_compositing_probe_defaults_to_the_prettier_branch(monkeypatch):
     uiutil.linux_compositing.cache_clear()
     try:
         # Wayland always composites, so it must not be probed via X11 at all.
+        #
+        # Asserting `is True` alone would prove nothing here: the Wayland
+        # branch and the give-up fallback BOTH return True, so the test could
+        # not tell which ran. Instead spy on find_library -- if the Wayland
+        # short-circuit works, the X11 probe is never even looked up.
         monkeypatch.setattr(uiutil.sys, "platform", "linux")
-        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        monkeypatch.setattr(uiutil, "is_wayland", lambda: True)
+        probed = []
+        monkeypatch.setattr("ctypes.util.find_library",
+                            lambda n: probed.append(n))
         assert uiutil.linux_compositing() is True
+        assert probed == [], \
+            "Wayland short-circuit failed: it went looking for libX11 anyway"
         uiutil.linux_compositing.cache_clear()
         # And a probe that cannot run answers True rather than squaring corners
         # on every desktop that mainstream users actually have.

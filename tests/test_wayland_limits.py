@@ -94,3 +94,39 @@ def test_is_wayland_asks_qt_not_the_environment(monkeypatch):
     monkeypatch.setattr("PySide6.QtGui.QGuiApplication.instance",
                         staticmethod(lambda: _FakeApp()))
     assert uiutil.is_wayland() is True
+
+
+def test_wayland_shows_the_box_unticked_without_destroying_the_setting(monkeypatch):
+    """A ticked-but-greyed box asserts a state the window is not in.
+
+    It also cannot be cleared, since the control is disabled. So on Wayland it
+    renders unticked -- but the STORED preference must survive untouched, or
+    merely opening Settings on a Wayland session would wipe the user's choice
+    for their next X11 login.
+    """
+    import app_settings
+    monkeypatch.setattr(app_settings, "get_always_on_top", lambda: True)
+    wrote = []
+    monkeypatch.setattr(app_settings, "set_always_on_top", lambda v: wrote.append(v))
+
+    p, host = _panel(monkeypatch, True)
+    try:
+        assert p.aot_check.isChecked() is False, \
+            "a disabled control must not display a state it cannot honour"
+        assert wrote == [], \
+            f"opening Settings on Wayland overwrote the stored setting: {wrote}"
+    finally:
+        p.deleteLater()
+        host.deleteLater()
+
+
+def test_x11_still_reflects_the_stored_setting(monkeypatch):
+    import app_settings
+    monkeypatch.setattr(app_settings, "get_always_on_top", lambda: True)
+    p, host = _panel(monkeypatch, False)
+    try:
+        assert p.aot_check.isChecked() is True
+        assert p.aot_check.isEnabled() is True
+    finally:
+        p.deleteLater()
+        host.deleteLater()
