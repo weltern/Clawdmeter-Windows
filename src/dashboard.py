@@ -1851,16 +1851,25 @@ class SettingsPanel(QWidget):
 
         layout.addSpacing(10)
         layout.addWidget(QLabel("STARTUP", objectName="sectionLabel"))
-        startup_hint = QLabel(
-            "Launch Clawdmeter automatically when you sign in to Windows. It "
-            "starts quietly in the system tray — click the tray icon to open it.",
-            objectName="sectionHint",
-        )
+        # "system tray" vs "menu bar" is the one bit that genuinely differs --
+        # it's what the user has to look at to find the app -- so it branches.
+        # The rest is written to be true everywhere rather than per-platform.
+        if sys.platform == "darwin":
+            _startup_text = (
+                "Launch Clawdmeter automatically when you log in. It starts "
+                "quietly in the menu bar — click the menu bar icon to open it.")
+        else:
+            _verb = "sign in" if winutil.is_windows() else "log in"
+            _startup_text = (
+                f"Launch Clawdmeter automatically when you {_verb}. It starts "
+                "quietly in the system tray — click the tray icon to open it.")
+        startup_hint = QLabel(_startup_text, objectName="sectionHint")
         startup_hint.setWordWrap(True)
         layout.addWidget(startup_hint)
-        self.startup_check = QCheckBox(
-            "Start when I sign in to Windows" if winutil.is_windows()
-            else "Start when I sign in")
+        # No platform branch: this wording is correct on all three, and the
+        # conditional that used to be here is exactly how the paragraph above
+        # drifted out of sync and kept saying "Windows" on Linux.
+        self.startup_check = QCheckBox("Start when I sign in")
         self.startup_check.setChecked(run_at_startup.is_enabled())
         self.startup_check.setEnabled(run_at_startup.is_supported())
         self.startup_check.toggled.connect(self._on_run_at_startup_toggled)
@@ -1868,10 +1877,15 @@ class SettingsPanel(QWidget):
 
         layout.addSpacing(10)
         layout.addWidget(QLabel("UPDATES", objectName="sectionLabel"))
+        # The old wording said "ships as a single .exe", which is false on macOS
+        # (.dmg) and Linux (.tar.gz). The point was never the file format -- it
+        # was "nothing updates itself" -- so say that instead of branching three
+        # ways on a detail that does not matter to the reader.
+        _menu = "menu bar menu" if sys.platform == "darwin" else "tray menu"
         updates_hint = QLabel(
-            "Clawdmeter ships as a single .exe with no auto-installer. When a "
-            "newer release is published on GitHub, the tray menu shows an "
-            "“Update available” item — click it to open the download page.",
+            "Clawdmeter doesn't update itself. When a newer release is "
+            f"published on GitHub, the {_menu} shows an “Update available” "
+            "item — click it to open the download page.",
             objectName="sectionHint",
         )
         updates_hint.setWordWrap(True)
@@ -2172,7 +2186,10 @@ class SettingsPanel(QWidget):
         layout = about_layout
         layout.addWidget(QLabel("ABOUT", objectName="sectionLabel"))
         about = QLabel(
-            f"Clawdmeter-Windows  v{app_settings.APP_VERSION}\n"
+            # The product is "Clawdmeter" on every platform. The repo is a
+            # separate thing, and its URL below must keep matching the real
+            # repository -- update_check rejects release URLs that don't.
+            f"Clawdmeter  v{app_settings.APP_VERSION}\n"
             "by Nick Welter (@weltern) & Claude\n"
             "github.com/weltern/Clawdmeter-Windows\n\n"
             "MIT licensed · the Clawd mascot is © Anthropic PBC and is "

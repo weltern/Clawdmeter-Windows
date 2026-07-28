@@ -198,14 +198,14 @@ if sys.platform == 'win32':
                 StringTable('040904B0', [
                     StringStruct('CompanyName', 'Nick Welter'),
                     StringStruct('FileDescription',
-                                 'Clawdmeter-Windows — Claude Code usage dashboard'),
+                                 'Clawdmeter — Claude Code usage dashboard'),
                     StringStruct('FileVersion', _ver_str),
                     StringStruct('InternalName', 'Clawdmeter'),
                     StringStruct('LegalCopyright',
                                  '© 2026 Nick Welter · MIT licensed · '
                                  'Clawd mascot © Anthropic PBC'),
                     StringStruct('OriginalFilename', 'Clawdmeter.exe'),
-                    StringStruct('ProductName', 'Clawdmeter-Windows'),
+                    StringStruct('ProductName', 'Clawdmeter'),
                     StringStruct('ProductVersion', _ver_str),
                     StringStruct('Comments',
                                  'Unofficial; not affiliated with Anthropic. '
