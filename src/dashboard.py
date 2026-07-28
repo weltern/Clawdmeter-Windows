@@ -1714,7 +1714,6 @@ class SettingsPanel(QWidget):
         outer.addLayout(content_row, 1)
 
         nav_w = QWidget(objectName="settingsNav")
-        nav_w.setFixedWidth(148)
         nav = QVBoxLayout(nav_w)
         nav.setContentsMargins(8, 8, 8, 8)
         nav.setSpacing(4)
@@ -1757,6 +1756,7 @@ class SettingsPanel(QWidget):
         notif_layout = _make_tab("\uF0F3", "Notifications")
         about_layout = _make_tab("\uF129", "About")
         nav.addStretch(1)
+        self._size_settings_nav(nav_w, nav)
         self._nav_group.idClicked.connect(self._stack.setCurrentIndex)
         self._nav_group.button(0).setChecked(True)
 
@@ -2205,6 +2205,41 @@ class SettingsPanel(QWidget):
         for _page_layout in (gen_layout, disp_layout, appearance_layout,
                              conn_layout, notif_layout, about_layout):
             _page_layout.addStretch(1)
+
+    # Width of the Settings tab rail on Windows before this was made adaptive.
+    # Kept as a floor so the Windows layout is byte-identical to what shipped.
+    NAV_MIN_WIDTH = 148
+    # Horizontal padding from the QPushButton#navBtn QSS rule ("padding: 9px
+    # 14px"). Duplicated here because Qt gives no way to read a stylesheet's
+    # box model back off a widget; test_settings_nav_width guards the pairing.
+    NAV_BTN_H_PADDING = 14 * 2
+
+    def _size_settings_nav(self, nav_w: QWidget, nav: QVBoxLayout) -> None:
+        """Widen the tab rail if the current font needs more than the floor.
+
+        A hard 148px fits Segoe UI but clips "Appearance", "Connection" and
+        "Notifications" in the wider fonts Linux desktops ship -- confirmed on
+        Ubuntu with Cantarell 11, where those three rendered as "Appearanc",
+        "Connectior" and "Notificatior".
+
+        Measured from fontMetrics rather than sizeHint deliberately.
+        QPushButton.sizeHint() reports ~250px for these buttons even where 148
+        renders perfectly, so sizing from it would balloon the rail on every
+        platform. ensurePolished() first: a QSS font-family/font-size is not on
+        the widget's own QFont until it has been polished, and measuring before
+        that silently uses the default application font.
+
+        Widening only, never narrowing -- if a font measures small we keep the
+        original width so the Windows build looks exactly as it always has.
+        """
+        need = 0
+        for btn in self._nav_group.buttons():
+            btn.ensurePolished()
+            need = max(need, btn.fontMetrics().horizontalAdvance(btn.text()))
+        margins = nav.contentsMargins()
+        nav_w.setFixedWidth(max(
+            self.NAV_MIN_WIDTH,
+            need + self.NAV_BTN_H_PADDING + margins.left() + margins.right()))
 
     def _refresh_dynamic_theme_colors(self) -> None:
         """Ask the owning Dashboard to re-render its dynamic (non-QSS) colours.
