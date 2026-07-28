@@ -117,6 +117,9 @@ def _token_line(monkeypatch, *, keychain: bool, secs_left: float) -> str:
         host.deleteLater()
 
 
+# secs_left is arbitrary "a while from now" / "already past" test data. The app
+# never assumes a cadence: it renders the real expiry out of the credentials
+# blob, so these numbers only steer which branch runs.
 @pytest.mark.parametrize("secs_left", [4 * 3600, -60])
 def test_macos_never_promises_an_auto_refresh_it_cannot_do(monkeypatch, secs_left):
     """The line sits directly beneath two controls this panel just greyed out.
@@ -125,8 +128,7 @@ def test_macos_never_promises_an_auto_refresh_it_cannot_do(monkeypatch, secs_lef
     Keychain") and force-unchecks auto-refresh, because token_refresh.refresh()
     returns "not supported" on macOS unconditionally. The shared tail still
     said "refreshes automatically" / "wait for auto-refresh", which left the
-    user waiting on something that never arrives. Renewal there is Claude
-    Code's job.
+    user waiting on something that never arrives.
     """
     line = _token_line(monkeypatch, keychain=True, secs_left=secs_left)
     lowered = line.lower()
@@ -134,8 +136,16 @@ def test_macos_never_promises_an_auto_refresh_it_cannot_do(monkeypatch, secs_lef
         f"macOS token line promises an auto-refresh it cannot perform: {line!r}"
     assert "auto-refresh" not in lowered, \
         f"macOS token line points at auto-refresh, which is disabled: {line!r}"
-    assert "claude" in lowered, \
-        f"macOS token line must name what actually renews the token: {line!r}"
+    assert "renew" not in lowered, (
+        f"macOS token line claims something renews the Keychain entry, which "
+        f"is unverified -- the write-back experiment was inconclusive: {line!r}")
+
+
+def test_an_expired_macos_token_names_the_one_action_that_works(monkeypatch):
+    """A dead token with every control greyed out must not be a dead end."""
+    line = _token_line(monkeypatch, keychain=True, secs_left=-60)
+    assert "claude" in line.lower(), \
+        f"expired macOS token line gives the user nothing to do: {line!r}"
 
 
 @pytest.mark.parametrize("secs_left", [4 * 3600, -60])

@@ -2394,15 +2394,24 @@ class SettingsPanel(QWidget):
             # mechanism that could deliver one -- the refresh button, and the
             # auto-refresh checkbox. Telling a macOS user to "wait for
             # auto-refresh" beside two greyed-out controls sends them waiting
-            # for something that is never coming; renewal there is Claude
-            # Code's job, and Clawdmeter re-reads the Keychain each poll.
+            # for something that is never coming.
+            #
+            # Says only what is established. It states where the token came
+            # from (Clawdmeter demonstrably reads it from there) and, when
+            # expired, the one action known to fix it -- the same guidance
+            # token_refresh.refresh() already returns on macOS. It deliberately
+            # does NOT claim Claude Code renews the Keychain entry on its own:
+            # plausible, but unverified here, and the write-back experiment
+            # that would have settled it was inconclusive (three runs, all
+            # HTTP 429). Replacing a false promise with an unproven one would
+            # not be a fix.
             if secs <= 0:
                 self.token_status.setText(
-                    "Token expired — run `claude` to renew it.")
+                    "Token expired — run `claude` to re-authenticate.")
             else:
                 h, m = int(secs // 3600), int((secs % 3600) // 60)
                 self.token_status.setText(
-                    f"Valid for ~{h}h {m}m — Claude Code renews it in the Keychain.")
+                    f"Valid for ~{h}h {m}m — read from the login Keychain.")
             return
         if secs <= 0:
             self.token_status.setText("Token expired — refresh now, or wait for auto-refresh.")
