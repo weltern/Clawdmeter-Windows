@@ -184,10 +184,11 @@ five tabs that each scroll on their own. Here's every setting, grouped by tab.
 
 - **Window** — toggle **Always on top**, **Auto-hide title bar** (the title bar
   collapses until you hover the top edge), and **Quit on close** (closes the app
-  instead of minimizing to the tray).
-- **Startup** — **Start when I sign in to Windows** launches Clawdmeter
-  automatically at sign-in. It comes up quietly in the system tray (no window
-  pops open) — click the tray icon to open it.
+  instead of minimizing to the tray). **Always on top** is greyed out on
+  Wayland — see [Linux notes](#linux-notes).
+- **Startup** — **Start when I sign in** launches Clawdmeter automatically at
+  sign-in. It comes up quietly in the system tray (the menu bar on macOS), with
+  no window — click the icon to open it.
 - **Updates** — **Automatically check for updates** (on by default — checks the
   GitHub releases on launch, then about once a day) and **Check for updates now**.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
@@ -293,9 +294,28 @@ against a bundled price map — no extra API calls. The window minimises to the
 system tray; closing the window hides it. **Quit** from the tray menu fully
 exits.
 
+## Linux notes
+
+Clawdmeter runs on X11 and Wayland. Two things behave differently on **Wayland**,
+and neither is fixable from the application side — Wayland deliberately does not
+let a program raise or place its own windows:
+
+- **Always on top does nothing**, so the setting is greyed out rather than left
+  looking broken. Use your compositor's own always-on-top shortcut instead — on
+  GNOME that's the window menu (`Alt`+`Space`) → **Always on Top**.
+- **The mini and compact views don't reopen where you left them.** The app still
+  remembers the position; the compositor decides where the window actually goes.
+
+Both work normally on an X11 session if you need them.
+
+**No tray icon?** GNOME has no system tray of its own. Install the
+**AppIndicator and KStatusNotifierItem Support** extension and the icon appears.
+Clawdmeter says so on startup if it can't find a tray — the window works either
+way.
+
 ## Requirements
 
-- Windows 10 or 11
+- Windows 10 or 11, macOS 13 or newer, or a current Linux desktop
 - Python 3.10 or newer (the code uses 3.10+ syntax)
 
 ## Run from source

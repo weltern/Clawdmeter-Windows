@@ -109,7 +109,7 @@ from transcript import (
     account_window_tokens,
     fmt_tokens,
 )
-from uiutil import (ThemedPopup, bar_warn_thresholds, make_popup,
+from uiutil import (ThemedPopup, bar_warn_thresholds, is_wayland, make_popup,
                     format_minutes as _format_minutes, heat as _heat)
 
 
@@ -1833,6 +1833,18 @@ class SettingsPanel(QWidget):
         self.aot_check.setChecked(app_settings.get_always_on_top())
         self.aot_check.toggled.connect(self._on_aot_toggled)
         layout.addWidget(self.aot_check)
+        # Wayland gives a client no way to raise itself above other windows --
+        # it is a deliberate property of the protocol, not a Qt gap, and no
+        # flag or plugin changes it. Confirmed on a real compositor: the hint
+        # is simply ignored for every view. Disabled rather than hidden (unlike
+        # auto-hide below) because unlike that one this IS a thing on Linux --
+        # it works on X11 -- so the user deserves to know why it is unavailable
+        # here rather than wonder where the setting went.
+        if is_wayland():
+            self.aot_check.setEnabled(False)
+            self.aot_check.setToolTip(
+                "Wayland doesn't let apps put themselves above other windows. "
+                "Use your compositor's own always-on-top shortcut instead.")
 
         self.auto_hide_check = QCheckBox("Auto-hide title bar")
         self.auto_hide_check.setChecked(

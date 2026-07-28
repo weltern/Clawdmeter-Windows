@@ -53,6 +53,23 @@ from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 import macos_window
 
 
+def is_wayland() -> bool:
+    """True when Qt is actually speaking Wayland.
+
+    Asks Qt which platform plugin it loaded rather than reading
+    WAYLAND_DISPLAY. A session can advertise itself as Wayland while Qt
+    connects through XWayland/xcb, and what matters to callers is which
+    protocol our windows really speak -- an X11 window in a Wayland session
+    can still raise and position itself, a native Wayland one cannot.
+
+    Not cached: it is cheap, and caching it before the QGuiApplication exists
+    would freeze in a wrong answer.
+    """
+    from PySide6.QtGui import QGuiApplication
+    app = QGuiApplication.instance()
+    return bool(app) and app.platformName().lower().startswith("wayland")
+
+
 @functools.lru_cache(maxsize=1)
 def linux_compositing() -> bool:
     """Can this desktop composite a translucent top-level window?
