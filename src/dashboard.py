@@ -137,6 +137,24 @@ def _view_states(raw, show_multiple, show_subagents, single_id=_SINGLE_TILE_ID):
     return states
 
 
+def _should_persist_size(fit_armed: bool, fitting: bool) -> bool:
+    """Whether a resize should schedule a save of the window size.
+
+    `fit_armed` is False until the first show has settled, so construction and
+    the startup content snap cannot overwrite the very size just restored.
+    `fitting` is True during our own snap animation; that height IS worth
+    saving, but resizeEvent is the wrong place to notice it -- the animation's
+    final QResizeEvent arrives before _on_fit_anim_finished flips the flag, so
+    the snap is persisted from there instead.
+
+    A module-level predicate rather than an inline condition so it can be
+    tested directly. Inlined, the whole save path had no coverage at all:
+    deleting the _real_quit() flush, dropping the timer connection, or forcing
+    this gate false each left the entire feature broken with the suite green.
+    """
+    return fit_armed and not fitting
+
+
 # Valid view modes, largest -> smallest.
 VIEW_ORDER = ("full", "compact", "mini")
 
@@ -4525,12 +4543,7 @@ class Dashboard(QMainWindow):
         if (self._auto_hide_enabled
                 and self._titlebar_anim_group.state() == QAbstractAnimation.Stopped):
             self._collapsed_window_height = self.height() - self.title_bar.maximumHeight()
-        # Persist the settled size. Debounced, and only once the first show has
-        # settled (_fit_armed) so construction and the startup snap don't
-        # overwrite the very size we just restored. A kill -9 or a crash
-        # therefore still leaves the last size on disk -- waiting for
-        # _real_quit() alone would lose it.
-        if self._fit_armed and not self._fitting:
+        if _should_persist_size(self._fit_armed, self._fitting):
             self._size_save_timer.start()
 
     def _apply_status_badge(self, status: str) -> None:

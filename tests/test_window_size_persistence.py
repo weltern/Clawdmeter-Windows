@@ -201,57 +201,189 @@ def test_a_maximised_window_with_no_normal_geometry_saves_nothing():
     assert app_settings.get_main_size() == (880, 640), "the good value survived"
 
 
+
+
 # --- nothing resizes the window on its own ----------------------------------
+#
+# These used to match the literal string "_fit_window_height()" in the source.
+# That was defeated by the most natural way anyone would reintroduce the bug:
+#   QTimer.singleShot(0, self._fit_window_height)
+# has no "()" after the name, so a deferred refit slipped past every one of
+# them and all three background triggers could come back with the suite green.
+# It also counted the name inside docstrings, so merely mentioning the method
+# in prose broke the caller count.
+#
+# AST instead of text: an ast.Attribute node named _fit_window_height catches
+# the call, the bare bound-method reference, and line-wrapped forms, and never
+# sees docstrings or comments at all.
 
-def _src(fn):
+def _fit_refs(obj):
+    """Every reference to _fit_window_height in `obj`, however it is written."""
+    import ast
     import inspect
-    return inspect.getsource(fn)
+    import textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(obj)))
+    return [n for n in ast.walk(tree)
+            if isinstance(n, ast.Attribute) and n.attr == "_fit_window_height"]
 
 
-def test_background_events_no_longer_resize_the_window():
-    """The three triggers that made the window move while unattended.
-
-    Source inspection: each of these is reached from a poll or a timer, so a
-    behavioural test would have to stand up the whole polling stack. What
-    matters is simply that none of them calls the snap any more.
-    """
-    for name, fn in (
-        ("the rate-limit badge appearing/clearing",
-         dashboard.Dashboard._apply_status_badge),
-        ("a session starting or ending in the shelf",
-         dashboard.Dashboard._apply_session_view),
-    ):
-        assert "_fit_window_height()" not in _src(fn), \
-            f"{name} resizes the window behind the user's back again"
+@pytest.mark.parametrize("name,fn", [
+    ("the rate-limit badge appearing/clearing",
+     dashboard.Dashboard._apply_status_badge),
+    ("a session starting or ending in the shelf",
+     dashboard.Dashboard._apply_session_view),
+    ("returning to the Dashboard page",
+     dashboard.Dashboard._show_page),
+])
+def test_background_events_no_longer_resize_the_window(name, fn):
+    assert _fit_refs(fn) == [], \
+        f"{name} resizes the window behind the user's back again"
 
 
-def test_switching_pages_no_longer_resizes():
-    """Returning to the Dashboard used to re-snap the height, which threw away
-    a height the user had chosen before wandering off to Settings."""
-    assert "_fit_window_height()" not in _src(dashboard.Dashboard._show_page)
-
-
-def test_the_only_callers_of_the_snap_are_deliberate():
-    """First run, and the user double-clicking the title bar. If a third
-    caller appears, automatic resizing has crept back in."""
-    import inspect
-    src = inspect.getsource(dashboard)
-    callers = [ln.strip() for ln in src.splitlines()
-               if "_fit_window_height()" in ln and not ln.strip().startswith("#")]
-    assert len(callers) == 2, (
-        f"expected exactly 2 deliberate callers (first-run snap, double-click "
-        f"reset), found {len(callers)}: {callers}")
+def test_the_only_references_to_the_snap_are_deliberate():
+    """First run and the title-bar double-click. A third means automatic
+    resizing has crept back in -- including via a deferred QTimer call, which
+    the old string match could not see."""
+    refs = _fit_refs(dashboard)
+    assert len(refs) == 2, (
+        f"expected exactly 2 references (first-run snap, double-click reset), "
+        f"found {len(refs)} at lines {[n.lineno for n in refs]}")
 
 
 def test_first_run_snaps_but_a_restored_size_does_not():
-    init = _src(dashboard.Dashboard.__init__)
-    assert "if not self._size_restored:" in init, \
-        "the first-run snap is no longer gated -- it will overwrite a restored size"
-    assert "self._size_restored = self._restore_window_size()" in init
+    """`_size_restored` must be assigned exactly once, from the restore, and
+    the gate must come after it.
+
+    A presence check alone was defeated by inserting `self._size_restored =
+    False` above the gate: both strings stayed present, the snap ran on every
+    launch, and the user's height was discarded each time.
+    """
+    import inspect
+    init = inspect.getsource(dashboard.Dashboard.__init__)
+    assign = "self._size_restored = self._restore_window_size()"
+    gate = "if not self._size_restored:"
+    assert init.count("self._size_restored =") == 1, \
+        "_size_restored is assigned more than once; a later one can defeat the gate"
+    assert assign in init and gate in init
+    assert init.index(assign) < init.index(gate), \
+        "the snap is gated before the restore has run, so the gate reads stale state"
 
 
-def test_double_click_to_fit_survives():
-    """Kept on purpose: with nothing resizing the window automatically, this is
-    now the only way back to a snug height."""
-    assert "_fit_window_height()" in _src(dashboard.Dashboard.reset_to_fit)
-    assert "reset_to_fit()" in _src(dashboard.TitleBar.mouseDoubleClickEvent)
+class _ResetWin:
+    """reset_to_fit against a fake, so the guard is exercised rather than read.
+
+    A source check could not tell `self._fit_window_height()` from the same
+    line wrapped in `if False:`.
+    """
+
+    reset_to_fit = dashboard.Dashboard.reset_to_fit
+
+    def __init__(self, *, maximized=False):
+        self._maximized = maximized
+        self.fitted = False
+        self.restored = False
+
+    def isMaximized(self):
+        return self._maximized
+
+    def showNormal(self):
+        self.restored = True
+        self._maximized = False
+
+    def _fit_window_height(self):
+        self.fitted = True
+
+
+def test_double_click_to_fit_actually_fits():
+    """Kept on purpose: with nothing resizing automatically, this is now the
+    only way back to a snug height."""
+    win = _ResetWin()
+    win.reset_to_fit()
+    assert win.fitted is True
+
+
+def test_double_click_un_maximises_first():
+    """Fitting a maximised window would be a no-op -- _fit_window_height bails
+    on isMaximized()."""
+    win = _ResetWin(maximized=True)
+    win.reset_to_fit()
+    assert win.restored is True, "a maximised window must be restored down first"
+    assert win.fitted is True
+
+
+# --- the save path is actually wired up -------------------------------------
+#
+# Every test above calls _save_window_size() directly, so all of them would
+# pass with nothing in the app ever calling it. Three separate one-line breaks
+# used to ship a build that never remembered its size, with the suite green:
+# the resizeEvent gate forced false, the timer's timeout never connected, and
+# the _real_quit() flush deleted. The gate is now a testable predicate, and
+# the two end-to-end tests below drive a real Dashboard.
+
+@pytest.mark.parametrize("armed,fitting,expected", [
+    (True,  False, True),    # a settled user resize -- the only case that saves
+    (False, False, False),   # before the first show settles
+    (True,  True,  False),   # mid snap-animation; saved by _on_fit_anim_finished
+    (False, True,  False),
+])
+def test_should_persist_size(armed, fitting, expected):
+    assert dashboard._should_persist_size(armed, fitting) is expected
+
+
+@pytest.fixture
+def live_dashboard():
+    """A real Dashboard in mock mode -- no poller threads, no file watchers,
+    and UsageHistory(persist=False), so nothing touches real state."""
+    d = dashboard.Dashboard(mock=True)
+    d.show()
+    _app.processEvents()
+    d._fit_armed = True          # stand in for the post-show singleShot
+    try:
+        yield d
+    finally:
+        d._size_save_timer.stop()
+        if getattr(d, "_mock_sample_timer", None) is not None:
+            d._mock_sample_timer.stop()
+        d._countdown.stop()
+        d.close()
+        d.deleteLater()
+        _app.processEvents()
+
+
+def _pump(ms):
+    from PySide6.QtCore import QEventLoop, QTimer
+    loop = QEventLoop()
+    QTimer.singleShot(ms, loop.quit)
+    loop.exec()
+
+
+def test_resizing_schedules_and_then_writes_the_size(live_dashboard):
+    """End to end: the debounce starts on resize and the value reaches disk
+    without anyone calling _save_window_size()."""
+    d = live_dashboard
+    target_w = d.width() + 90
+    target_h = d.height() + 70
+    d.resize(target_w, target_h)
+    _app.processEvents()
+    assert d._size_save_timer.isActive(), \
+        "resizing did not schedule a save -- the size will never be remembered"
+
+    _pump(d._size_save_timer.interval() + 250)
+    saved = app_settings.get_main_size()
+    assert saved is not None, "the debounce fired but nothing was written"
+    assert saved[0] == target_w
+
+
+def test_quitting_flushes_a_pending_save(live_dashboard, monkeypatch):
+    """Quitting inside the debounce window must not drop the last resize."""
+    d = live_dashboard
+    monkeypatch.setattr(dashboard.QGuiApplication, "quit", staticmethod(lambda: None))
+    target_w = d.width() + 120
+    d.resize(target_w, d.height())
+    _app.processEvents()
+    assert d._size_save_timer.isActive(), "precondition: a save is pending"
+
+    d._real_quit()               # quit patched out; everything else real
+    saved = app_settings.get_main_size()
+    assert saved is not None and saved[0] == target_w, \
+        "_real_quit did not flush the pending size"
