@@ -81,6 +81,17 @@ def status() -> int | None:
         return None
 
 
+def _svc_status(svc) -> int | None:
+    """``svc.status()`` as an int, or None if the bridge call raises — the same
+    guard ``status()`` applies, for callers that already hold the service. A raw
+    ``int(svc.status())`` on the launch/migration path would otherwise crash the
+    app before its window ever appears."""
+    try:
+        return int(svc.status())
+    except Exception:      # noqa: BLE001 - never let a status read crash a caller
+        return None
+
+
 def is_enabled() -> bool:
     """True only when macOS will actually launch us at login."""
     return status() == STATUS_ENABLED
@@ -98,7 +109,7 @@ def register(*, interactive: bool = True) -> tuple[bool, str]:
     svc = _service()
     if svc is None:
         return False, "SMAppService is unavailable"
-    if int(svc.status()) == STATUS_ENABLED:
+    if _svc_status(svc) == STATUS_ENABLED:
         return True, "already registered"     # re-registering is pointless
     try:
         ok, err = svc.registerAndReturnError_(None)
@@ -111,7 +122,7 @@ def register(*, interactive: bool = True) -> tuple[bool, str]:
     # previously switched us off in System Settings — macOS remembers that and
     # will not silently re-enable. Send them to the exact pane rather than
     # leaving a checkbox that ticks but does nothing.
-    if int(svc.status()) == STATUS_REQUIRES_APPROVAL:
+    if _svc_status(svc) == STATUS_REQUIRES_APPROVAL:
         if interactive:
             _open_login_items_settings()
         return False, _APPROVAL_HINT
@@ -130,7 +141,7 @@ def unregister() -> tuple[bool, str]:
     if not ok:
         # Unregistering something that was never registered is the state the
         # caller asked for, so don't report it as a failure.
-        if int(svc.status()) in (STATUS_NOT_REGISTERED, STATUS_NOT_FOUND):
+        if _svc_status(svc) in (STATUS_NOT_REGISTERED, STATUS_NOT_FOUND):
             return True, ""
         detail = err.localizedDescription() if err is not None else "unknown error"
         return False, f"Could not remove the login item: {detail}"

@@ -40,8 +40,14 @@ def main() -> int:
 
     # macOS: fold any legacy LaunchAgent plist into an SMAppService registration
     # (no-op elsewhere, and on a Mac that never had one). After the
-    # single-instance check so only the surviving process touches it.
-    run_at_startup.migrate_macos_login_item()
+    # single-instance check so only the surviving process touches it. Guarded so
+    # an unexpected SMAppService/bridge failure can never crash the launch before
+    # the window is even built — worst case, the migration just doesn't run.
+    try:
+        run_at_startup.migrate_macos_login_item()
+    except Exception:   # noqa: BLE001 - a startup migration must never crash launch
+        logging.getLogger(__name__).exception(
+            "Login-item migration failed; continuing without it")
 
     # Apply persisted credentials override before the poller starts.
     cred = app_settings.get_credentials_override()
