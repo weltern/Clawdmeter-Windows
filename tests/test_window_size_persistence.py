@@ -77,13 +77,28 @@ class _FakeWindow:
 
     _restore_window_size = dashboard.Dashboard._restore_window_size
     _save_window_size = dashboard.Dashboard._save_window_size
+    _titlebar_height_now = dashboard.Dashboard._titlebar_height_now
 
-    def __init__(self, *, avail=QRect(0, 0, 1920, 1080), min_w=668, min_h=0):
+    # Derived from the real class rather than copied: an earlier version of this
+    # fake hard-coded 668, which was stale by NavRail.COLLAPSED and drifting.
+    REAL_MIN_W = 520 + dashboard.NavRail.COLLAPSED       # dashboard.py setMinimumSize
+
+    def __init__(self, *, avail=QRect(0, 0, 1920, 1080), min_w=REAL_MIN_W,
+                 min_h=0, auto_hide=False):
         self._avail, self._min_w, self._min_h = avail, min_w, min_h
         self.resized_to: tuple[int, int] | None = None
-        self._h, self._w = 520, 668
+        self._h, self._w = 520, self.REAL_MIN_W
         self._maximized = self._fullscreen = False
         self._normal = QSize(0, 0)
+        # Auto-hide state: the size methods normalise the title bar out of the
+        # stored height. Default off, which is the shipped default.
+        self._auto_hide_enabled = auto_hide
+        self._collapsed_window_height = None
+
+        class _Bar:
+            def maximumHeight(_s):
+                return 0 if auto_hide else dashboard.TitleBar.HEIGHT
+        self.title_bar = _Bar()
 
     def screen(self):
         outer = self

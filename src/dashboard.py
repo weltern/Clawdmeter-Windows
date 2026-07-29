@@ -2378,6 +2378,11 @@ class SettingsPanel(QWidget):
                     "Disabled because your token is still valid — it refreshes "
                     "automatically when it expires."
                 )
+        # A full re-render replaces whatever set_token_status() put there, so
+        # the message is no longer transient. Reached by the user opening or
+        # re-entering the Connection tab, or by a refresh actually succeeding --
+        # all cases where the stale failure text should go.
+        self._token_status_is_transient = False
         if exp is None:
             self.token_status.setText("Token expiry unknown.")
             return
@@ -2435,7 +2440,19 @@ class SettingsPanel(QWidget):
             self.refresh_token_status()
 
     def set_token_status(self, text: str) -> None:
+        """Show a transient message -- in practice always a refresh failure.
+
+        Flagged so the per-sample freshening cannot wipe it. It is the only
+        place the app ever states WHY a refresh failed, and the sample that
+        follows a failed refresh arrives about a second later in the same poll
+        cycle, so the reason was gone before it could be read and the user was
+        left being told to retry the thing that had just failed.
+        """
+        self._token_status_is_transient = True
         self.token_status.setText(text)
+
+    def showing_transient_token_status(self) -> bool:
+        return getattr(self, "_token_status_is_transient", False)
 
     def _on_auto_refresh_toggled(self, checked: bool) -> None:
         app_settings.set_auto_refresh(checked)
@@ -3710,10 +3727,20 @@ class Dashboard(QMainWindow):
         self._titlebar_anim_group.stop()
         h = TitleBar.HEIGHT
 
+        # The window's own minimum is deliberately NOT adjusted here. Collapsing
+        # the title bar to 0 already drops the layout's minimumSizeHint by h, so
+        # Qt recomputes the floor by itself. The old code did it by hand --
+        # setMinimumHeight(self.minimumHeight() - h) -- and that ran during
+        # construction, before the layout had activated, when minimumHeight()
+        # was still the explicit 0 from setMinimumSize(). Qt clamped the
+        # resulting -48 up to 0 but kept the "explicitly set" flag, so
+        # QLayout::activate() never raised the floor again: with auto-hide on,
+        # the window had NO height floor for the whole process and could be
+        # dragged down to ~120px with the usage bars overlapping. Auto-fit used
+        # to snap that back; nothing does now, and the broken height persists.
         if on:
             self.title_bar.setMinimumHeight(0)
             self.title_bar.setMaximumHeight(0)
-            self.setMinimumHeight(self.minimumHeight() - h)
             new_h = max(self.minimumHeight(), self.height() - h)
             self.resize(self.width(), new_h)
             self._collapsed_window_height = new_h
@@ -3722,7 +3749,6 @@ class Dashboard(QMainWindow):
             self._mouse_poll.stop()
             self.title_bar.setMinimumHeight(h)
             self.title_bar.setMaximumHeight(h)
-            self.setMinimumHeight(self.minimumHeight() + h)
             self.resize(self.width(), self.height() + h)
             self._collapsed_window_height = None
 
@@ -3960,6 +3986,8 @@ class Dashboard(QMainWindow):
             return
         if not self.settings_panel.connection_tab_is_current():
             return
+        if self.settings_panel.showing_transient_token_status():
+            return   # a refresh failure is on screen; don't overwrite the reason
         self.settings_panel.refresh_token_status()
 
     def _on_refresh_status(self, result) -> None:
@@ -4311,6 +4339,12 @@ class Dashboard(QMainWindow):
         if size is None:
             return False
         w, h = size
+        # Saved as if the title bar were shown (see _save_window_size). The bar
+        # starts collapsed when auto-hide is on, so take it back off -- without
+        # this the window would open 48px too tall and, because that becomes the
+        # new collapsed baseline, stay that way.
+        if self._auto_hide_enabled:
+            h -= TitleBar.HEIGHT
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is not None:
             avail = screen.availableGeometry()
@@ -4319,26 +4353,65 @@ class Dashboard(QMainWindow):
         self.resize(max(w, self.minimumWidth()), max(h, self.minimumHeight()))
         return True
 
+    def _titlebar_height_now(self) -> int:
+        """How much of the current window height is title bar, right now.
+
+        With auto-hide off it is a fixed TitleBar.HEIGHT. With auto-hide on it
+        is 0 at rest, TitleBar.HEIGHT while revealed, and anything in between
+        mid-animation -- which is exactly why the raw window height is not a
+        safe thing to persist.
+        """
+        if not self._auto_hide_enabled:
+            return TitleBar.HEIGHT
+        return self.title_bar.maximumHeight()
+
     def _save_window_size(self) -> None:
         """Persist the current size. Debounced; also called on quit.
 
-        normalGeometry() rather than size() so a maximised or full-screen
-        window saves the size it will restore DOWN to -- saving the maximised
-        size would make un-maximising a no-op on the next launch.
+        Two normalisations, both because the live window height is sometimes
+        not the height the user chose:
+
+        normalGeometry() rather than size() when maximised or full-screen, so
+        the saved value is the size the window restores DOWN to -- saving the
+        maximised size would make un-maximising a no-op on the next launch.
+
+        The height is stored as if the title bar were fully shown, so the
+        value does not depend on whether auto-hide happens to be on, or on
+        whether the bar was revealed at that instant. It was: with auto-hide
+        on, the close button lives IN the title bar, so the cursor has to be
+        up there to click it -- which reveals the bar -- and _real_quit() then
+        saved collapsed+48. Restoring that made it the new resting height and
+        it grew another 48px every single launch (measured 447 -> 495 -> 543).
         """
         if self.isMaximized() or self.isFullScreen():
             sz = self.normalGeometry().size()
             if not sz.isValid() or sz.isEmpty():
                 return
+            width, height = sz.width(), sz.height()
         else:
-            sz = self.size()
-        app_settings.set_main_size(sz.width(), sz.height())
+            width = self.width()
+            # Rebuild from the collapsed baseline rather than subtracting the
+            # live bar height: the baseline is only updated while no title-bar
+            # animation is running, so it is stable even if a save lands
+            # mid-reveal.
+            if self._auto_hide_enabled and self._collapsed_window_height is not None:
+                height = self._collapsed_window_height + TitleBar.HEIGHT
+            else:
+                height = self.height() - self._titlebar_height_now() + TitleBar.HEIGHT
+        app_settings.set_main_size(width, height)
 
     def _target_window_height(self) -> int:
         """Snug window height for the current content: the title bar plus the
         content area, counting the shelf at its settled (target) height rather
         than a value still mid-animation, so the fit aims at the final size."""
-        tb_h = self.title_bar.height() or TitleBar.HEIGHT  # may be 0 before show
+        # Derived from the mode, never measured. Reading title_bar.height() got
+        # this wrong twice: with auto-hide ON the bar is deliberately collapsed
+        # to 0, and the `or TitleBar.HEIGHT` fallback read that as "not laid out
+        # yet" and added 48px for a bar that is not there; with auto-hide OFF
+        # and the window not yet shown it returned Qt's default 30 rather than
+        # the real 48. The mode alone says how much room the bar occupies at
+        # rest: none when it auto-hides, a full bar otherwise.
+        tb_h = 0 if self._auto_hide_enabled else TitleBar.HEIGHT
         content_min = self._content.minimumSizeHint().height()
         if self._shelf_active:
             content_min += self.shelf.reserved_target() - self.shelf.reserved_current()
@@ -4380,6 +4453,13 @@ class Dashboard(QMainWindow):
 
     def _on_fit_anim_finished(self) -> None:
         self._fitting = False
+        # Persist the snapped height. resizeEvent cannot do it: the animation's
+        # final QResizeEvent is delivered while _fitting is still True (this
+        # slot runs after it), so the debounce was never started and the new
+        # height only reached disk if the user happened to quit cleanly. That
+        # made double-click-to-fit -- now the ONLY way to fix a bad height --
+        # the one change most likely to be lost.
+        self._size_save_timer.start()
 
     def reset_to_fit(self) -> None:
         """Snap back to the snug content height — the title-bar double-click.

@@ -141,6 +141,9 @@ class _FakeDashboard:
             def connection_tab_is_current(self):
                 return connection_current
 
+            def showing_transient_token_status(self):
+                return False      # no refresh failure on screen
+
             def refresh_token_status(self):
                 outer.calls += 1
 
@@ -166,6 +169,38 @@ def test_a_sample_freshens_the_line_while_it_is_on_screen():
     d = _FakeDashboard(page_idx=2, connection_current=True)
     d._refresh_token_status_if_watched()
     assert d.calls == 1
+
+
+def test_a_refresh_failure_is_not_wiped_by_the_next_sample(panel):
+    """The reason a refresh failed is the only diagnostic the app produces.
+
+    UsagePoller emits `sample` immediately after `refresh_status` in the same
+    cycle, so the freshening landed about a second after the error and replaced
+    it with the generic "Token expired -- refresh now" -- telling the user to
+    retry the thing that had just failed, with the reason already gone. This is
+    a Windows regression: the old once-per-process latch returned early off
+    macOS, so `_on_sample` never touched the label there.
+    """
+    _open_connection(panel)
+    panel.set_token_status("⚠ Rate limited by token endpoint — backing off")
+    assert panel.showing_transient_token_status() is True
+
+    d = _FakeDashboard(page_idx=2, connection_current=True)
+    d.settings_panel = panel                 # the real panel, not the stub
+    d._refresh_token_status_if_watched()
+
+    assert "Rate limited" in panel.token_status.text(), \
+        "the failure reason was overwritten before the user could read it"
+
+
+def test_the_user_reopening_connection_clears_a_stale_failure(panel):
+    """It must not stick forever -- navigating back is the user asking again."""
+    _open_connection(panel)
+    panel.set_token_status("⚠ Rate limited by token endpoint — backing off")
+    _open_some_other_tab(panel)
+    _open_connection(panel)
+    assert "Rate limited" not in panel.token_status.text()
+    assert panel.showing_transient_token_status() is False
 
 
 @pytest.mark.parametrize("page_idx,connection", [
