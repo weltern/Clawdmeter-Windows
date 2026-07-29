@@ -1725,6 +1725,7 @@ class SettingsPanel(QWidget):
 
         self._nav_group = QButtonGroup(self)
         self._nav_group.setExclusive(True)
+        self._tab_index: dict[str, int] = {}
 
         def _make_tab(glyph: str, label: str) -> QVBoxLayout:
             btn = QPushButton(f"{glyph}   {label}", objectName="navBtn")
@@ -1744,7 +1745,11 @@ class SettingsPanel(QWidget):
             lay = QVBoxLayout(page_body)
             lay.setContentsMargins(14, 8, 16, 18)
             lay.setSpacing(12)
-            self._nav_group.addButton(btn, self._stack.addWidget(page))
+            idx = self._stack.addWidget(page)
+            self._nav_group.addButton(btn, idx)
+            # Recorded by name so callers never hard-code a tab position; the
+            # order of these has changed before.
+            self._tab_index[label] = idx
             return lay
 
         # Font Awesome 6 Free (Solid) glyphs: gear, display, circle-nodes, bell,
@@ -1760,6 +1765,10 @@ class SettingsPanel(QWidget):
         self._size_settings_nav(nav_w, nav)
         self._nav_group.idClicked.connect(self._stack.setCurrentIndex)
         self._nav_group.button(0).setChecked(True)
+        # Recompute the token line whenever Connection is opened, rather than
+        # holding a snapshot taken at construction. currentChanged (not
+        # idClicked) so a programmatic switch counts too.
+        self._stack.currentChanged.connect(self._on_settings_tab_changed)
 
         # ── Appearance: three options — Follow System / Custom / Preset ──
         appearance_layout.addWidget(QLabel("THEME", objectName="sectionLabel"))
@@ -2420,6 +2429,25 @@ class SettingsPanel(QWidget):
         else:
             h, m = int(secs // 3600), int((secs % 3600) // 60)
             self.token_status.setText(f"Valid for ~{h}h {m}m — refreshes automatically.")
+
+    def connection_tab_is_current(self) -> bool:
+        """True when the Connection tab is the one on screen."""
+        idx = self._tab_index.get("Connection")
+        return idx is not None and self._stack.currentIndex() == idx
+
+    def _on_settings_tab_changed(self, idx: int) -> None:
+        if idx == self._tab_index.get("Connection"):
+            self.refresh_token_status()
+
+    def on_shown(self) -> None:
+        """The Settings page itself became visible again.
+
+        Needed on top of the tab signal: leaving Settings and coming back does
+        not change the sub-tab index, so currentChanged stays silent and the
+        line would still be whatever it was minutes ago.
+        """
+        if self.connection_tab_is_current():
+            self.refresh_token_status()
 
     def set_token_status(self, text: str) -> None:
         self.token_status.setText(text)
@@ -3284,6 +3312,10 @@ class Dashboard(QMainWindow):
             # Returning to the Dashboard: re-snap to its (possibly changed)
             # content height, which was left alone while away.
             self._fit_window_height()
+        elif idx == 2:
+            # Re-entering Settings on the Connection tab: the sub-tab index has
+            # not changed, so its own currentChanged never fires.
+            self.settings_panel.on_shown()
 
     def _build_stats_page(self) -> QWidget:
         """Stats page: ROI + extra-usage spend, a per-day value strip, a 7x24
@@ -3925,21 +3957,21 @@ class Dashboard(QMainWindow):
             if poller is not None:
                 poller.wake()
 
-    def _refresh_token_status_once(self) -> None:
-        """Re-render the token-expiry line the first time real data exists.
+    def _refresh_token_status_if_watched(self) -> None:
+        """Keep the token line live while the user is actually looking at it.
 
-        Only once: recomputing it on every 60s sample would be pointless work,
-        and the expiry only changes when the token itself is replaced -- which
-        routes through _on_refresh_status instead.
+        Replaces an earlier once-per-process latch. That filled the line as
+        soon as the poller had warmed the Keychain cache, then froze it -- so
+        a countdown could sit at "Valid for ~7h 58m" hours after the token had
+        expired, because on macOS nothing else re-renders it (a real refresh
+        would, and macOS cannot do one). Recomputing per sample is cheap: it
+        reads the cached blob and formats a string, no Keychain call, and only
+        when the Connection tab is the page on screen.
         """
-        if getattr(self, "_token_status_filled", False):
+        if self._pages.currentIndex() != 2:       # Settings isn't showing
             return
-        if not macos_keychain.is_macos():
-            self._token_status_filled = True     # nothing was ever deferred
+        if not self.settings_panel.connection_tab_is_current():
             return
-        if macos_keychain.cached_credentials() is None:
-            return                               # worker hasn't read it yet
-        self._token_status_filled = True
         self.settings_panel.refresh_token_status()
 
     def _on_refresh_status(self, result) -> None:
@@ -4124,12 +4156,14 @@ class Dashboard(QMainWindow):
         # The poller has just read credentials on its worker, so the macOS
         # Keychain cache the Settings expiry line reads from is now warm. That
         # line is built with blocking=False (it cannot touch the Keychain from
-        # the UI thread) so it starts out blank, and this is what fills it in.
-        # It has to happen here rather than in _on_refresh_status: that only
-        # fires on a token REFRESH, which never happens on macOS, so the line
-        # would otherwise read "unknown" forever on the one platform the
-        # non-blocking read exists for.
-        self._refresh_token_status_once()
+        # the UI thread), so it starts out blank and needs filling from here.
+        # It cannot ride on _on_refresh_status: that only fires on a token
+        # REFRESH, which never happens on macOS, so the line would read
+        # "unknown" forever on the one platform the non-blocking read exists
+        # for. Gated on the line being on screen -- opening the Connection tab
+        # re-renders it anyway, so this only has to serve someone already
+        # sitting on the page.
+        self._refresh_token_status_if_watched()
         # Feed every sample (incl. errors) so the notifiers can ignore them
         # without disturbing their baselines.
         decision = self._reset_notifier.observe(s)
