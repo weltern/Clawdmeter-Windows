@@ -1,30 +1,31 @@
-"""The auto-hide title bar must not leak into the persisted window size.
+"""Only a settled window size is ever remembered.
 
-Found by review after window-size persistence landed. The title bar's height is
-transient in two ways -- it is 0 at rest when auto-hide is on, and animates to
-TitleBar.HEIGHT whenever the cursor nears the top edge -- so the live window
-height is not the height the user chose. Persisting it produced three separate
-defects:
+The window height is transient in several states -- the auto-hide title bar is
+0 at rest and 48 while revealed, a maximised window is temporarily screen-sized,
+a hidden window never had a real geometry at all. Three successive attempts to
+NORMALISE those back to a resting height each fixed one case and broke another:
 
-  1. The close button lives IN the title bar, so clicking it requires the
-     cursor to be up there, which reveals the bar. _real_quit() then saved
-     collapsed+48, which became the next launch's resting height, and the
-     window grew another 48px every launch. Measured on the real windows
-     platform: 447 -> 495 -> 543.
-  2. _apply_auto_hide adjusted the window's own minimum by hand, during
-     construction, before the layout had activated -- so minimumHeight() was
-     still the explicit 0 and it set -48. Qt clamped that to 0 but kept the
-     "explicitly set" flag, and the floor was never raised again: the window
-     could be dragged to ~120px with the usage bars overlapping. Auto-fit used
-     to heal it; nothing does now, so the broken height persisted forever.
-  3. _target_window_height read title_bar.height() and treated a deliberately
-     collapsed bar as "not laid out yet", adding 48px for a bar that is not
-     there. window/main_size is a new key, so _size_restored is False for every
-     existing user on the upgrade launch -- all of them got the phantom 48px
-     once, which then seeded (1).
+  1. saving the raw height grew the window 48px per launch (447 -> 495 -> 543),
+     because the close button lives IN the title bar, so quitting always
+     happens with the bar revealed;
+  2. rebuilding from the collapsed baseline instead then clobbered the saved
+     height on any launch that never showed the window -- a run-at-login start,
+     or a session spent in compact/mini -- because Qt delivers no resizeEvent
+     to a hidden widget, so the baseline was still the construction
+     placeholder (measured: a good 748 overwritten with 520);
+  3. and leaving normalGeometry() un-normalised walked the height 48px DOWN
+     per launch when maximising with Win+Up (652 -> 604 -> 556 -> 508).
 
-The fix is one idea: the stored height is normalised to "as if the title bar
-were shown", and converted back on restore. Nothing else needs to know.
+So the arithmetic is gone. _size_is_settled() refuses to look at the size in
+any of those states, _remember_settled_size() snapshots it only when settled,
+and the disk write just replays that snapshot. One normalisation survives --
+storing the height as if the bar were shown -- so the value still means the
+same thing if the user toggles auto-hide between sessions.
+
+The snapshot and the write are deliberately separate. The last resize before
+quitting is made at rest, but the quit itself happens with the bar revealed:
+reading live geometry at quit time would either record the bar or, if it
+refused outright, lose that final resize.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import pytest  # noqa: E402
-from PySide6.QtCore import QRect, QSize  # noqa: E402
+from PySide6.QtCore import QAbstractAnimation, QRect, QSize  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import app_settings  # noqa: E402
@@ -55,17 +56,22 @@ def _isolated_settings(monkeypatch, tmp_path):
 
 
 class _Win:
-    """The slice of Dashboard the size normalisation touches."""
+    """The slice of Dashboard the size snapshot touches."""
 
+    _size_is_settled = dashboard.Dashboard._size_is_settled
+    _remember_settled_size = dashboard.Dashboard._remember_settled_size
     _save_window_size = dashboard.Dashboard._save_window_size
     _restore_window_size = dashboard.Dashboard._restore_window_size
-    _titlebar_height_now = dashboard.Dashboard._titlebar_height_now
 
-    def __init__(self, *, auto_hide, height, bar_shown=False, collapsed=None):
+    def __init__(self, *, auto_hide=False, height=400, bar_shown=False,
+                 visible=True, maximized=False, fullscreen=False,
+                 animating=False):
         self._auto_hide_enabled = auto_hide
         self._h, self._w = height, 668
-        self._collapsed_window_height = collapsed
-        self._maximized = self._fullscreen = False
+        self._visible, self._maximized, self._fullscreen = (
+            visible, maximized, fullscreen)
+        self._last_settled_size = None
+        self._collapsed_window_height = None
         self.resized_to = None
 
         class _Bar:
@@ -75,15 +81,16 @@ class _Win:
                 return H if bar_shown else 0
         self.title_bar = _Bar()
 
-    # -- geometry surface
-    def width(self):
-        return self._w
+        state = (QAbstractAnimation.Running if animating
+                 else QAbstractAnimation.Stopped)
 
-    def height(self):
-        return self._h
+        class _Group:
+            def state(_s):
+                return state
+        self._titlebar_anim_group = _Group()
 
-    def size(self):
-        return QSize(self._w, self._h)
+    def isVisible(self):
+        return self._visible
 
     def isMaximized(self):
         return self._maximized
@@ -91,8 +98,11 @@ class _Win:
     def isFullScreen(self):
         return self._fullscreen
 
-    def normalGeometry(self):
-        return QRect(0, 0, 0, 0)
+    def height(self):
+        return self._h
+
+    def width(self):
+        return self._w
 
     def minimumWidth(self):
         return 566
@@ -103,7 +113,7 @@ class _Win:
     def screen(self):
         class _S:
             def availableGeometry(_s):
-                return QRect(0, 0, 3840, 2160)   # never the binding constraint
+                return QRect(0, 0, 3840, 2160)
         return _S()
 
     def resize(self, w, h):
@@ -111,84 +121,143 @@ class _Win:
         self._w, self._h = w, h
 
 
-# --- 1. the compounding growth -----------------------------------------------
+# --- what counts as settled --------------------------------------------------
 
-def test_quitting_with_the_bar_revealed_saves_the_resting_height():
-    """The exact 447 -> 495 -> 543 bug: the ✕ is in the bar, so quitting
-    always happens with the bar revealed."""
-    resting = 447
-    win = _Win(auto_hide=True, height=resting + H, bar_shown=True,
-               collapsed=resting)
+@pytest.mark.parametrize("kwargs,why", [
+    (dict(visible=False), "never shown -- run-at-login, or a compact/mini session"),
+    (dict(maximized=True), "maximised is temporary"),
+    (dict(fullscreen=True), "full-screen is temporary"),
+    (dict(auto_hide=True, animating=True), "mid reveal/hide animation"),
+    (dict(auto_hide=True, bar_shown=True), "bar revealed -- height includes 48px of bar"),
+])
+def test_unsettled_states_are_not_remembered(kwargs, why):
+    win = _Win(**kwargs)
+    win._remember_settled_size()
+    assert win._last_settled_size is None, f"recorded a size while {why}"
+
+
+def test_a_resting_window_is_remembered():
+    win = _Win(auto_hide=False, height=610)
+    win._remember_settled_size()
+    assert win._last_settled_size == (668, 610)
+
+
+# --- 1. the compounding growth (447 -> 495 -> 543) ---------------------------
+
+def test_quitting_with_the_bar_revealed_writes_the_resting_height():
+    """The ✕ is inside the title bar, so quitting always reveals it."""
+    win = _Win(auto_hide=True, height=419, bar_shown=False)
+    win._remember_settled_size()             # the user's last resize, at rest
+
+    win._h, win.title_bar = 419 + H, _Win(auto_hide=True, bar_shown=True).title_bar
+    win._remember_settled_size()             # cursor moves to the ✕: ignored
     win._save_window_size()
-    assert app_settings.get_main_size() == (668, resting + H), \
-        "saved value must be the normalised (bar-shown) height, not collapsed+48+48"
+
+    assert app_settings.get_main_size() == (668, 419 + H), \
+        "the revealed bar leaked into the saved height"
 
 
 def test_save_restore_is_a_fixed_point_under_auto_hide():
-    """Three launches must not drift. This is the property that failed."""
-    resting = 447
+    resting = 419
     for _ in range(3):
-        win = _Win(auto_hide=True, height=resting + H, bar_shown=True,
-                   collapsed=resting)
+        win = _Win(auto_hide=True, height=resting, bar_shown=False)
+        win._remember_settled_size()
         win._save_window_size()
-        nxt = _Win(auto_hide=True, height=0)
+        nxt = _Win(auto_hide=True, height=0, visible=False)
         nxt._restore_window_size()
-        assert nxt.resized_to == (668, resting), \
-            f"resting height drifted to {nxt.resized_to}"
+        assert nxt.resized_to == (668, resting), f"drifted to {nxt.resized_to}"
         resting = nxt.resized_to[1]
-    assert resting == 447
+    assert resting == 419
 
 
-def test_a_save_landing_mid_reveal_still_records_the_resting_height():
-    """The debounce can fire while the reveal animation is part-way."""
-    win = _Win(auto_hide=True, height=447 + 20, bar_shown=True, collapsed=447)
+# --- 2. the never-shown launch clobbering a good height ----------------------
+
+def test_a_launch_that_never_shows_the_window_keeps_the_saved_size():
+    """Run-at-login, or a session spent in compact/mini, then quit from the
+    tray. Measured before the fix: a saved 748 was overwritten with 520."""
+    app_settings.set_main_size(668, 748)
+    win = _Win(auto_hide=True, height=472, visible=False)
+    win._restore_window_size()
+    win._remember_settled_size()             # window was never shown
     win._save_window_size()
-    assert app_settings.get_main_size() == (668, 447 + H)
+    assert app_settings.get_main_size() == (668, 748), \
+        "a hidden window overwrote a size the user actually chose"
 
 
-# --- 3. the phantom 48px on the upgrade launch -------------------------------
+def test_restoring_updates_the_collapsed_baseline():
+    """Qt delivers no resizeEvent to an unshown window, so the baseline would
+    otherwise stay at the construction placeholder and drive a phantom reveal
+    to the wrong height."""
+    app_settings.set_main_size(668, 748)
+    win = _Win(auto_hide=True, height=472, visible=False)
+    win._collapsed_window_height = 472
+    win._restore_window_size()
+    assert win._collapsed_window_height == 748 - H
+
+
+# --- 3. maximising walking the height downhill -------------------------------
+
+def test_maximising_does_not_drift_the_saved_height():
+    """Win+Up with the bar collapsed. Measured before the fix, four launches:
+    652 -> 604 -> 556 -> 508, running down to the layout floor."""
+    height = 652
+    for _ in range(4):
+        win = _Win(auto_hide=True, height=height, bar_shown=False)
+        win._remember_settled_size()          # settled, pre-maximise
+        win._save_window_size()
+        win._maximized = True                 # Win+Up
+        win._h = 1392
+        win._remember_settled_size()          # must be ignored
+        win._save_window_size()
+
+        nxt = _Win(auto_hide=True, height=0, visible=False)
+        nxt._restore_window_size()
+        assert nxt.resized_to == (668, height), f"drifted to {nxt.resized_to}"
+        height = nxt.resized_to[1]
+    assert height == 652
+
+
+# --- the surviving normalisation ---------------------------------------------
 
 def test_the_stored_height_does_not_depend_on_auto_hide():
-    """Saved with auto-hide on, restored with it off (or vice versa) must give
-    the same visible content height -- that is what "normalised" buys."""
-    win_on = _Win(auto_hide=True, height=400, bar_shown=False, collapsed=400)
-    win_on._save_window_size()
+    """Saved with auto-hide on, restored with it off must give the same visible
+    content -- the user can toggle it in Settings between sessions."""
+    win = _Win(auto_hide=True, height=400, bar_shown=False)
+    win._remember_settled_size()
+    win._save_window_size()
     assert app_settings.get_main_size() == (668, 400 + H)
 
-    off = _Win(auto_hide=False, height=0)
+    off = _Win(auto_hide=False, height=0, visible=False)
     off._restore_window_size()
-    assert off.resized_to == (668, 400 + H), "with the bar shown it occupies 48px"
+    assert off.resized_to == (668, 400 + H), "the shown bar occupies 48px"
 
-    on = _Win(auto_hide=True, height=0)
+    on = _Win(auto_hide=True, height=0, visible=False)
     on._restore_window_size()
-    assert on.resized_to == (668, 400), "with the bar hidden those 48px are gone"
+    assert on.resized_to == (668, 400), "the hidden bar occupies none"
 
 
 def test_auto_hide_off_round_trips_unchanged():
     win = _Win(auto_hide=False, height=610)
+    win._remember_settled_size()
     win._save_window_size()
-    assert app_settings.get_main_size() == (668, 610)
-    back = _Win(auto_hide=False, height=0)
+    back = _Win(auto_hide=False, height=0, visible=False)
     back._restore_window_size()
     assert back.resized_to == (668, 610)
 
 
-# --- 2. the missing height floor ---------------------------------------------
+# --- the missing height floor ------------------------------------------------
 
 def test_apply_auto_hide_no_longer_adjusts_the_window_minimum():
-    """Collapsing the bar drops the layout's minimumSizeHint by itself, so the
-    hand-rolled arithmetic was redundant -- and destructive, because it ran
-    before the layout had activated and pinned the floor at 0 permanently."""
+    """Collapsing the bar drops the layout's minimumSizeHint by itself. Doing
+    it by hand ran before the layout had activated and pinned the floor at 0
+    for the whole process, so the window could be dragged to ~120px."""
     import inspect
     src = inspect.getsource(dashboard.Dashboard._apply_auto_hide)
-    assert "self.setMinimumHeight(" not in src, (
-        "_apply_auto_hide adjusts the window minimum again; during construction "
-        "that pins it to 0 for the whole process and the window loses its floor")
+    assert "self.setMinimumHeight(" not in src, \
+        "_apply_auto_hide adjusts the window minimum again; that removes the floor"
 
 
 def test_the_window_keeps_a_real_height_floor_with_auto_hide_on():
-    """The behavioural half, on the real Qt platform: a collapsed title bar
-    must still leave a floor that refuses to clip the usage bars."""
     from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
     host = QWidget()
     lay = QVBoxLayout(host)
@@ -205,23 +274,20 @@ def test_the_window_keeps_a_real_height_floor_with_auto_hide_on():
     _app.processEvents()
     with_bar = host.minimumSizeHint().height()
 
-    # Collapse the bar the way _apply_auto_hide does -- and nothing else.
     bar.setMinimumHeight(0)
     bar.setMaximumHeight(0)
     host.layout().activate()
     _app.processEvents()
     without_bar = host.minimumSizeHint().height()
 
-    assert without_bar >= 300, \
-        "collapsing the bar must not drop the floor below the content"
-    assert with_bar - without_bar == H, \
-        "Qt already accounts for the bar; the manual adjustment was redundant"
+    assert without_bar >= 300, "the floor must not drop below the content"
+    assert with_bar - without_bar == H, "Qt already accounts for the bar"
     host.deleteLater()
 
 
-class _FitWin:
-    """Just enough Dashboard to compute a target height."""
+# --- the first-run snap ------------------------------------------------------
 
+class _FitWin:
     _target_window_height = dashboard.Dashboard._target_window_height
 
     def __init__(self, *, auto_hide, content_h=400):
@@ -229,8 +295,6 @@ class _FitWin:
         self._shelf_active = False
 
         class _Bar:
-            # What the REAL widget reports: a collapsed bar measures 0, which
-            # the old `or TitleBar.HEIGHT` fallback misread as "not laid out".
             def height(_s):
                 return 0 if auto_hide else H
         self.title_bar = _Bar()
@@ -242,26 +306,18 @@ class _FitWin:
 
 
 def test_the_first_run_snap_does_not_reserve_a_hidden_title_bar():
-    """The phantom 48px every existing user gets on the upgrade launch.
-
-    window/main_size is a new key, so _size_restored is False for everyone the
-    first time they run this build -- meaning everyone with auto-hide on took
-    the snap, and the snap added room for a bar that is collapsed to nothing.
-    That extra 48px was then persisted and fed the compounding growth above.
-    """
+    """window/main_size is a new key, so every existing user takes the snap
+    once on the upgrade launch -- and it used to add 48px for a bar collapsed
+    to nothing, which then seeded the compounding growth."""
     assert _FitWin(auto_hide=True)._target_window_height() == 400, \
         "reserved space for a title bar that is collapsed to 0"
-    assert _FitWin(auto_hide=False)._target_window_height() == 400 + H, \
-        "a shown title bar does occupy its full height"
+    assert _FitWin(auto_hide=False)._target_window_height() == 400 + H
 
 
-# --- 5. the snap must persist ------------------------------------------------
-
-def test_the_fit_animation_schedules_a_save_when_it_finishes():
+def test_the_fit_animation_snapshots_and_schedules_a_save():
     """resizeEvent cannot: the animation's final QResizeEvent arrives while
-    _fitting is still True, so the debounce never started and double-click --
-    now the only manual fix -- was the change most likely to be lost."""
+    _fitting is still True."""
     import inspect
     src = inspect.getsource(dashboard.Dashboard._on_fit_anim_finished)
-    assert "_size_save_timer.start()" in src, \
-        "a snapped height is never scheduled for saving"
+    assert "_remember_settled_size()" in src, "the snapped height is never captured"
+    assert "_size_save_timer.start()" in src, "the snapped height is never scheduled"

@@ -2348,10 +2348,18 @@ class SettingsPanel(QWidget):
             self.cred_status.setText(f"Default: {token_source_description()}")
             self.cred_reset_btn.hide()
 
-    def refresh_token_status(self) -> None:
+    def refresh_token_status(self, *, preserve_message: bool = False) -> None:
         """Show access-token validity; enable manual refresh only when it's
         actually needed (expired / near expiry) so a valid token can't be
-        needlessly refreshed into a rate-limit error."""
+        needlessly refreshed into a rate-limit error.
+
+        ``preserve_message`` re-evaluates the CONTROLS but leaves the status
+        line alone, for when a refresh failure is on screen and should still be
+        readable. Protecting that message by skipping this method wholesale --
+        the first attempt -- also froze the button and the checkbox, so the
+        warning ended up sitting above a greyed-out button captioned "Token
+        valid — refresh disabled", with the one in-app remedy unclickable.
+        """
         path = credentials_path()
         # blocking=False because this runs on the UI thread, and SettingsPanel
         # is built during Dashboard construction -- a blocking macOS Keychain
@@ -2396,6 +2404,8 @@ class SettingsPanel(QWidget):
                     "Disabled because your token is still valid — it refreshes "
                     "automatically when it expires."
                 )
+        if preserve_message:
+            return          # controls are up to date; the message stays put
         # A full re-render replaces whatever set_token_status() put there, so
         # the message is no longer transient. Reached by the user opening or
         # re-entering the Connection tab, or by a refresh actually succeeding --
@@ -2458,13 +2468,19 @@ class SettingsPanel(QWidget):
             self.refresh_token_status()
 
     def set_token_status(self, text: str) -> None:
-        """Show a transient message -- in practice always a refresh failure.
+        """Show a message that outranks the computed status line.
 
-        Flagged so the per-sample freshening cannot wipe it. It is the only
-        place the app ever states WHY a refresh failed, and the sample that
-        follows a failed refresh arrives about a second later in the same poll
-        cycle, so the reason was gone before it could be read and the user was
-        left being told to retry the thing that had just failed.
+        Callers: a refresh failure ("⚠ ..."), the in-flight "Refreshing…", and
+        mock mode. Flagged so the per-sample freshening cannot wipe it -- the
+        failure case is the only place the app ever states WHY a refresh
+        failed, and the sample after a failed refresh arrives about a second
+        later in the same poll cycle, so the reason used to be gone before it
+        could be read, leaving the user told to retry what had just failed.
+
+        "Held" rather than "transient": nothing expires it on a timer. It is
+        cleared by a full refresh_token_status() -- opening or re-entering the
+        Connection tab, or a refresh succeeding. Anything added here that is
+        NOT followed by one of those will pin the status line indefinitely.
         """
         self._token_status_is_transient = True
         self.token_status.setText(text)
@@ -3177,6 +3193,10 @@ class Dashboard(QMainWindow):
         self._fit_anim.finished.connect(self._on_fit_anim_finished)
         self._fitting = False        # True during our own height snap/animation
         self._fit_armed = False      # don't treat the first show as a user resize
+        # Last size observed while the window was settled (see
+        # _size_is_settled). None until one is seen, which is why a session
+        # that never shows the main window cannot overwrite a good saved size.
+        self._last_settled_size: tuple[int, int] | None = None
         # Debounce for persisting the size: a drag emits a resize per frame, and
         # each one would otherwise be a registry write.
         self._size_save_timer = QTimer(self)
@@ -4004,9 +4024,10 @@ class Dashboard(QMainWindow):
             return
         if not self.settings_panel.connection_tab_is_current():
             return
-        if self.settings_panel.showing_transient_token_status():
-            return   # a refresh failure is on screen; don't overwrite the reason
-        self.settings_panel.refresh_token_status()
+        # Keep the controls live even when a refresh failure is on screen --
+        # only the message is held back. See refresh_token_status().
+        self.settings_panel.refresh_token_status(
+            preserve_message=self.settings_panel.showing_transient_token_status())
 
     def _on_refresh_status(self, result) -> None:
         """token_refresh.RefreshResult from the poll thread (auto or manual)."""
@@ -4369,54 +4390,69 @@ class Dashboard(QMainWindow):
             w = min(w, avail.width())
             h = min(h, avail.height())
         self.resize(max(w, self.minimumWidth()), max(h, self.minimumHeight()))
+        # Keep the auto-hide baseline in step. resizeEvent normally maintains
+        # it, but Qt does not deliver one to a window that has not been shown,
+        # so without this the baseline stays at the pre-restore placeholder --
+        # which then drove a phantom title-bar reveal to the wrong height.
+        if self._auto_hide_enabled:
+            self._collapsed_window_height = self.height()
         return True
 
-    def _titlebar_height_now(self) -> int:
-        """How much of the current window height is title bar, right now.
+    def _size_is_settled(self) -> bool:
+        """Whether the window's current height is one worth remembering.
 
-        With auto-hide off it is a fixed TitleBar.HEIGHT. With auto-hide on it
-        is 0 at rest, TitleBar.HEIGHT while revealed, and anything in between
-        mid-animation -- which is exactly why the raw window height is not a
-        safe thing to persist.
+        Earlier versions tried to NORMALISE a transient height back to a
+        resting one -- subtracting the title bar, rebuilding from the collapsed
+        baseline, special-casing normalGeometry(). Each round of that arithmetic
+        fixed one case and broke another: the window grew 48px per launch, then
+        a never-shown window wrote a stale baseline over a good height, then
+        Win+Up maximising walked it 48px DOWN per launch. Observing only
+        settled states removes the arithmetic instead of correcting it.
+
+        Unsettled means any of:
+          - not visible: a run-at-login start, or a session spent in the
+            compact/mini view, never gives the main window a real geometry
+          - maximised or full-screen: transient by definition, and the size to
+            restore down to was already recorded before the user maximised
+          - a title-bar reveal/hide animation in flight: height is mid-tween
+          - auto-hide on with the bar revealed: the height includes 48px of
+            bar that is not there at rest. The close button lives IN that bar,
+            so quitting ALWAYS happens in this state -- which is exactly how
+            the 48px-per-launch growth got in.
         """
-        if not self._auto_hide_enabled:
-            return TitleBar.HEIGHT
-        return self.title_bar.maximumHeight()
+        if not self.isVisible():
+            return False
+        if self.isMaximized() or self.isFullScreen():
+            return False
+        if self._titlebar_anim_group.state() != QAbstractAnimation.Stopped:
+            return False
+        if self._auto_hide_enabled and self.title_bar.maximumHeight() != 0:
+            return False
+        return True
+
+    def _remember_settled_size(self) -> None:
+        """Snapshot the size if the window is settled; otherwise leave the last
+        good one alone.
+
+        Split from the disk write so the two can happen at different moments.
+        They must: the last resize before quitting is made at rest, but the
+        quit itself happens with the title bar revealed, so a save that read
+        the live geometry at quit time would either record the bar or, if it
+        refused, lose that final resize entirely.
+        """
+        if not self._size_is_settled():
+            return
+        # Stored as if the bar were shown, so the value survives the user
+        # toggling auto-hide between sessions. This is the ONLY normalisation
+        # left, and it applies to a height already known to be at rest.
+        height = self.height() + (TitleBar.HEIGHT if self._auto_hide_enabled else 0)
+        self._last_settled_size = (self.width(), height)
 
     def _save_window_size(self) -> None:
-        """Persist the current size. Debounced; also called on quit.
-
-        Two normalisations, both because the live window height is sometimes
-        not the height the user chose:
-
-        normalGeometry() rather than size() when maximised or full-screen, so
-        the saved value is the size the window restores DOWN to -- saving the
-        maximised size would make un-maximising a no-op on the next launch.
-
-        The height is stored as if the title bar were fully shown, so the
-        value does not depend on whether auto-hide happens to be on, or on
-        whether the bar was revealed at that instant. It was: with auto-hide
-        on, the close button lives IN the title bar, so the cursor has to be
-        up there to click it -- which reveals the bar -- and _real_quit() then
-        saved collapsed+48. Restoring that made it the new resting height and
-        it grew another 48px every single launch (measured 447 -> 495 -> 543).
-        """
-        if self.isMaximized() or self.isFullScreen():
-            sz = self.normalGeometry().size()
-            if not sz.isValid() or sz.isEmpty():
-                return
-            width, height = sz.width(), sz.height()
-        else:
-            width = self.width()
-            # Rebuild from the collapsed baseline rather than subtracting the
-            # live bar height: the baseline is only updated while no title-bar
-            # animation is running, so it is stable even if a save lands
-            # mid-reveal.
-            if self._auto_hide_enabled and self._collapsed_window_height is not None:
-                height = self._collapsed_window_height + TitleBar.HEIGHT
-            else:
-                height = self.height() - self._titlebar_height_now() + TitleBar.HEIGHT
-        app_settings.set_main_size(width, height)
+        """Write the last settled size to disk. Debounced; also called on quit."""
+        if self._last_settled_size is None:
+            return          # no settled size observed this session; keep what's saved
+        app_settings.set_main_size(*self._last_settled_size)
 
     def _target_window_height(self) -> int:
         """Snug window height for the current content: the title bar plus the
@@ -4477,6 +4513,7 @@ class Dashboard(QMainWindow):
         # height only reached disk if the user happened to quit cleanly. That
         # made double-click-to-fit -- now the ONLY way to fix a bad height --
         # the one change most likely to be lost.
+        self._remember_settled_size()
         self._size_save_timer.start()
 
     def reset_to_fit(self) -> None:
@@ -4544,6 +4581,7 @@ class Dashboard(QMainWindow):
                 and self._titlebar_anim_group.state() == QAbstractAnimation.Stopped):
             self._collapsed_window_height = self.height() - self.title_bar.maximumHeight()
         if _should_persist_size(self._fit_armed, self._fitting):
+            self._remember_settled_size()
             self._size_save_timer.start()
 
     def _apply_status_badge(self, status: str) -> None:

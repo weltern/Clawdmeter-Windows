@@ -144,8 +144,9 @@ class _FakeDashboard:
             def showing_transient_token_status(self):
                 return False      # no refresh failure on screen
 
-            def refresh_token_status(self):
+            def refresh_token_status(self, *, preserve_message=False):
                 outer.calls += 1
+                outer.preserved = preserve_message
 
         self._pages, self.settings_panel = _Pages(), _Panel()
 
@@ -191,6 +192,43 @@ def test_a_refresh_failure_is_not_wiped_by_the_next_sample(panel):
 
     assert "Rate limited" in panel.token_status.text(), \
         "the failure reason was overwritten before the user could read it"
+
+
+@pytest.mark.parametrize("panel", [False], indirect=True)   # file-backed, i.e. Windows
+def test_a_refresh_failure_does_not_freeze_the_controls(panel):
+    """Holding the MESSAGE must not hold the button and checkbox with it.
+
+    Windows specifically: on macOS the refresh button is disabled permanently
+    and by design ("Managed by the macOS Keychain"), so it cannot show this.
+
+    The first attempt protected the message by skipping refresh_token_status()
+    entirely -- which also froze refresh_token_btn and auto_refresh_check. A
+    token expiring while the user sat on Connection then left "⚠ Rate limited"
+    directly above a greyed-out button captioned "Token valid — refresh
+    disabled", with the one in-app remedy unclickable.
+    """
+    _open_connection(panel)
+    panel._clock.secs_left = 4 * 3600
+    panel.refresh_token_status()
+    assert panel.refresh_token_btn.isEnabled() is False, "precondition: token valid"
+
+    panel._clock.secs_left = -60                 # token expires
+    panel.set_token_status("⚠ Rate limited by token endpoint — backing off")
+    panel.refresh_token_status(preserve_message=True)
+
+    assert "Rate limited" in panel.token_status.text(), "the reason was lost"
+    assert panel.refresh_token_btn.isEnabled() is True, \
+        "the retry button is still greyed out while the token is expired"
+    assert panel.refresh_token_btn.text() == "Refresh token now", \
+        f"button still says {panel.refresh_token_btn.text()!r}"
+
+
+def test_preserve_message_keeps_the_flag_set(panel):
+    """Otherwise the next sample would clear it and wipe the message anyway."""
+    _open_connection(panel)
+    panel.set_token_status("⚠ something failed")
+    panel.refresh_token_status(preserve_message=True)
+    assert panel.showing_transient_token_status() is True
 
 
 def test_the_user_reopening_connection_clears_a_stale_failure(panel):

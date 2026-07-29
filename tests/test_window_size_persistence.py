@@ -77,7 +77,8 @@ class _FakeWindow:
 
     _restore_window_size = dashboard.Dashboard._restore_window_size
     _save_window_size = dashboard.Dashboard._save_window_size
-    _titlebar_height_now = dashboard.Dashboard._titlebar_height_now
+    _remember_settled_size = dashboard.Dashboard._remember_settled_size
+    _size_is_settled = dashboard.Dashboard._size_is_settled
 
     # Derived from the real class rather than copied: an earlier version of this
     # fake hard-coded 668, which was stale by NavRail.COLLAPSED and drifting.
@@ -94,11 +95,23 @@ class _FakeWindow:
         # stored height. Default off, which is the shipped default.
         self._auto_hide_enabled = auto_hide
         self._collapsed_window_height = None
+        self._last_settled_size = None
+        self._visible = True
 
         class _Bar:
             def maximumHeight(_s):
                 return 0 if auto_hide else dashboard.TitleBar.HEIGHT
         self.title_bar = _Bar()
+
+        from PySide6.QtCore import QAbstractAnimation
+
+        class _Group:
+            def state(_s):
+                return QAbstractAnimation.Stopped
+        self._titlebar_anim_group = _Group()
+
+    def isVisible(self):
+        return self._visible
 
     def screen(self):
         outer = self
@@ -173,34 +186,51 @@ def test_the_minimum_size_still_wins():
     assert win.resized_to == (668, 300)
 
 
-def test_saving_records_the_current_size():
+def test_saving_records_the_last_settled_size():
     win = _FakeWindow()
     win._w, win._h = 900, 700
+    win._remember_settled_size()
     win._save_window_size()
     assert app_settings.get_main_size() == (900, 700)
 
 
-def test_a_maximised_window_saves_the_size_it_restores_down_to():
-    """Otherwise the next launch opens at the maximised size and un-maximising
-    does nothing visible."""
+def test_saving_without_a_settled_observation_writes_nothing():
+    """A session that never showed the window must not overwrite a good size."""
+    app_settings.set_main_size(880, 640)
     win = _FakeWindow()
-    win._w, win._h = 1920, 1080      # currently filling the screen
-    win._normal = QSize(820, 610)    # what the green/restore button returns to
+    win._visible = False
+    win._remember_settled_size()
+    win._save_window_size()
+    assert app_settings.get_main_size() == (880, 640)
+
+
+def test_maximising_does_not_overwrite_the_size_it_restores_down_to():
+    """The old approach converted normalGeometry(); this one simply declines to
+    look while maximised, because the pre-maximise size was already recorded.
+
+    Not looking is the safer half: normalGeometry() was NOT normalised for the
+    title bar while restore still subtracted it, which walked the height 48px
+    down every launch when maximising with Win+Up (652 -> 604 -> 556 -> 508).
+    """
+    win = _FakeWindow()
+    win._w, win._h = 820, 610
+    win._remember_settled_size()          # settled, before maximising
     win._maximized = True
+    win._w, win._h = 1920, 1080
+    win._remember_settled_size()          # ignored
     win._save_window_size()
     assert app_settings.get_main_size() == (820, 610)
 
 
-def test_a_maximised_window_with_no_normal_geometry_saves_nothing():
-    """Rather than persisting a 0x0 that would restore to the minimum."""
+def test_a_window_maximised_from_the_start_writes_nothing():
+    """No settled observation was ever made, so whatever is on disk stands."""
     app_settings.set_main_size(880, 640)
     win = _FakeWindow()
     win._maximized = True
-    win._normal = QSize(0, 0)
+    win._w, win._h = 1920, 1080
+    win._remember_settled_size()
     win._save_window_size()
     assert app_settings.get_main_size() == (880, 640), "the good value survived"
-
-
 
 
 # --- nothing resizes the window on its own ----------------------------------
