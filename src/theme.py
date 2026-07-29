@@ -378,6 +378,24 @@ def ensure_contrast(fg: str, bg: str, target: float = 4.5) -> str:
     return out
 
 
+def _ensure_readable_on(bg_color: str, fg: str, safe_bg: str,
+                        target: float = 4.5) -> str:
+    """Nudge a *background* colour toward ``safe_bg`` — where ``fg`` is already
+    known readable — only as far as needed for ``fg`` to clear ``target`` on it.
+
+    Guarantees text painted on this surface can't go invisible, while keeping
+    the user's chosen hue as much as possible. Blending all the way to safe_bg
+    always succeeds (fg is AA there), so the loop is bounded and can't fail."""
+    if contrast(fg, bg_color) >= target:
+        return bg_color
+    out = bg_color
+    for i in range(1, 101):
+        out = _blend(bg_color, safe_bg, i / 100)
+        if contrast(fg, out) >= target:
+            break
+    return out
+
+
 def is_light(p: "Palette") -> bool:
     """Whether a palette is a light theme (used to set the OS colour-scheme hint
     so native/un-QSS'd surfaces match)."""
@@ -393,11 +411,22 @@ CUSTOM_ROLES = ("bg", "surface", "border", "text",
 def derive_palette(base: dict) -> Palette:
     """Build a full Palette from the 8 user-edited base roles, deriving the
     shade/variant roles. Works for a light or dark base (direction flips off
-    bg luminance). The primary and derived text roles are all clamped to WCAG
-    AA on bg so a custom or *imported* theme can never produce unreadable text
-    (the in-picker contrast warning is advisory; this is the hard floor)."""
-    bg, surface, border = base["bg"], base["surface"], base["border"]
-    text = ensure_contrast(base["text"], base["bg"], 4.5)
+    bg luminance). Text roles are clamped to WCAG AA on bg, and surface/border
+    are pulled toward bg as needed so text stays AA on the buttons and hover
+    fills it is painted on too — so a custom or *imported* theme can't render
+    unreadable text (the in-picker contrast warning is advisory; this is the
+    hard floor)."""
+    bg = base["bg"]
+    text = ensure_contrast(base["text"], bg, 4.5)
+    # `text` is painted on surface (buttons, dropdowns) and border
+    # (button:hover), not only on bg. Clamping it against bg alone let a custom
+    # or imported theme pick e.g. a light surface under a dark bg and render
+    # invisible button text while every text-vs-bg check still passed. Pull
+    # surface and border toward bg — where text is already AA — only as far as
+    # needed, so text stays readable everywhere it's drawn while keeping the
+    # user's hue as much as possible.
+    surface = _ensure_readable_on(base["surface"], text, bg, 4.5)
+    border = _ensure_readable_on(base["border"], text, bg, 4.5)
     accent, warn, danger, positive = (base["accent"], base["warn"],
                                       base["danger"], base["positive"])
     black, white = "#000000", "#ffffff"
