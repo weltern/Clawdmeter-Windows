@@ -148,7 +148,31 @@ def _desktop_entry() -> str:
 
 
 def _linux_is_enabled() -> bool:
-    return _desktop_file_path().exists()
+    """True only if the autostart entry exists AND hasn't been switched off in
+    the desktop's own Startup Applications UI.
+
+    GNOME disables an entry by writing ``X-GNOME-Autostart-enabled=false`` into
+    the file and KDE by writing ``Hidden=true`` — neither deletes it. Checking
+    only for existence read those as "on", so ``_linux_sync_if_enabled`` would
+    rewrite the file with ``=true`` on the next launch and silently undo the
+    user's disable. Honour both keys (spec allows spaces around ``=``)."""
+    path = _desktop_file_path()
+    if not path.exists():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return True   # exists but unreadable: treat as present, don't churn it
+    for raw in text.splitlines():
+        key, sep, val = raw.partition("=")
+        if not sep:
+            continue
+        key, val = key.strip().lower(), val.strip().lower()
+        if key == "x-gnome-autostart-enabled" and val == "false":
+            return False
+        if key == "hidden" and val == "true":
+            return False
+    return True
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
