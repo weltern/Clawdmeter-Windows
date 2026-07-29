@@ -1641,7 +1641,11 @@ class CustomThemeEditor(QDialog):
                 # MAX_THEME_BYTES, so an over-size (or hostile) file is refused
                 # cleanly instead of being slurped whole.
                 text = f.read(theme.MAX_THEME_BYTES + 1)
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
+            # A non-UTF-8 file (a UTF-16 export, a renamed binary) raises
+            # UnicodeDecodeError from f.read(), which is a ValueError, not an
+            # OSError — uncaught, it terminates the app on PySide6 6.11 instead
+            # of showing this dialog.
             QMessageBox.warning(self, "Import failed",
                                 f"Couldn't read the file:\n{e}")
             return
