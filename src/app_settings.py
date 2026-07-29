@@ -17,7 +17,6 @@ KEY_QUIT_ON_CLOSE = "window/quit_on_close"
 KEY_MINI_POS = "window/mini_pos"
 KEY_COMPACT_POS = "window/compact_pos"
 KEY_MAIN_SIZE = "window/main_size"
-KEY_MAIN_HEIGHT_MANUAL = "window/main_height_manual"
 KEY_VIEW_MODE = "window/view_mode"
 KEY_THEME = "ui/theme"
 KEY_CUSTOM_THEME = "ui/custom_theme"
@@ -185,22 +184,6 @@ def get_main_size() -> tuple[int, int] | None:
 
 def set_main_size(w: int, h: int) -> None:
     _settings().setValue(KEY_MAIN_SIZE, f"{int(w)},{int(h)}")
-
-
-def get_main_height_manual() -> bool:
-    """True when the user has dragged the window height themselves.
-
-    The window otherwise hugs its content, so a saved height is only worth
-    restoring once the user has overridden that. See Dashboard._auto_fit_height.
-    """
-    v = _settings().value(KEY_MAIN_HEIGHT_MANUAL, False)
-    if isinstance(v, str):
-        return v.lower() in ("true", "1", "yes")
-    return bool(v)
-
-
-def set_main_height_manual(on: bool) -> None:
-    _settings().setValue(KEY_MAIN_HEIGHT_MANUAL, bool(on))
 
 
 def get_view_mode() -> str:

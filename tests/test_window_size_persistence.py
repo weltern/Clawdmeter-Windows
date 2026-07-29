@@ -1,23 +1,26 @@
-"""The main window reopens at the size it was left at.
+"""The main window keeps the size the user gave it, and nothing else moves it.
 
-Every other window already remembered something -- the mini and compact views
-persist their position -- but the main window hard-coded resize(520+rail, 520)
-on every launch, so a user who widened it to see more shelf tiles got it back
-at 520 the next morning.
+Two changes are guarded here, and they are two halves of one behaviour.
 
-The interesting part is not the persistence, it is the interaction with
-_fit_window_height(). The window normally hugs its content and only stops once
-the user drags the height themselves (_auto_fit_height releases in
-resizeEvent). So the height is only worth restoring in that released state:
-restoring it unconditionally would freeze a height captured while the shelf
-held four mascots onto a launch that has none. Width has no such tension --
-nothing computes it -- so width is always restored.
+The window used to resize itself to hug its content: it followed the mascot
+shelf as sessions came and went, grew when the rate-limit badge appeared, and
+re-snapped whenever you returned to the Dashboard page. That is a normal
+pattern for a menu-bar/tray utility, but the triggers were background events,
+so the window moved while the user was doing something else -- and it got
+worse as the mascots gained more range to expand and shrink. All three
+triggers are gone. Only two things size the window now: a one-time snap on
+first run, and the user double-clicking the title bar (reset_to_fit).
 
-These tests drive SettingsPanel's owner, Dashboard, through its real resize
-plumbing rather than asserting on the settings functions alone, because the
-bug this guards against lives in the ordering: restore has to release the fit
-BEFORE it resizes, or construction's own _fit_window_height() snaps the
-restored height straight back.
+With nothing computing the height any more, a saved height is simply the
+user's height, so both dimensions are restored unconditionally. An earlier
+version of this file had an elaborate "restore the height only if they took
+manual control" rule; that existed solely because the window used to re-fit
+itself, and it went away with the auto-fit.
+
+These tests drive the real methods rather than asserting on the settings
+functions alone, because the bug worth guarding lives in the wiring: a
+first-run snap that also runs after a restore would throw the user's height
+away on every single launch.
 """
 
 from __future__ import annotations
@@ -65,9 +68,9 @@ def test_corrupt_or_absent_values_are_ignored(junk, _isolated_settings):
 
 
 class _FakeWindow:
-    """The parts of Dashboard that _restore_window_size touches.
+    """The parts of Dashboard that the size methods touch.
 
-    Calling the real method unbound against this is deliberate: it exercises
+    Calling the real methods unbound against this is deliberate: it exercises
     the shipped code, but without constructing a Dashboard, which starts
     pollers and file watchers and leaks global state into other test modules.
     """
@@ -77,7 +80,6 @@ class _FakeWindow:
 
     def __init__(self, *, avail=QRect(0, 0, 1920, 1080), min_w=668, min_h=0):
         self._avail, self._min_w, self._min_h = avail, min_w, min_h
-        self._auto_fit_height = True
         self.resized_to: tuple[int, int] | None = None
         self._h, self._w = 520, 668
         self._maximized = self._fullscreen = False
@@ -120,31 +122,29 @@ class _FakeWindow:
         self._w, self._h = w, h
 
 
-def test_width_is_restored_even_when_the_height_is_still_auto_fitting():
+def test_both_dimensions_are_restored():
+    """Nothing computes the height any more, so a saved height is the user's."""
     app_settings.set_main_size(1100, 900)
-    app_settings.set_main_height_manual(False)
     win = _FakeWindow()
-    win._restore_window_size()
-    assert win.resized_to == (1100, 520), \
-        "width must be restored, and the height left to the content fit"
-    assert win._auto_fit_height is True, "the fit must not be released"
-
-
-def test_height_is_restored_once_the_user_has_taken_it_over():
-    app_settings.set_main_size(1100, 900)
-    app_settings.set_main_height_manual(True)
-    win = _FakeWindow()
-    win._restore_window_size()
+    assert win._restore_window_size() is True
     assert win.resized_to == (1100, 900)
-    assert win._auto_fit_height is False, (
-        "the fit has to be released BEFORE the resize, or construction's own "
-        "_fit_window_height() snaps the restored height straight back")
+
+
+def test_restore_reports_whether_it_applied_a_size():
+    """The return value gates the first-run content snap. If it ever lies by
+    returning False after restoring, the snap runs on top and the user's
+    height is discarded on every launch."""
+    win = _FakeWindow()
+    assert win._restore_window_size() is False, "nothing saved -- must report so"
+    assert win.resized_to is None
+
+    app_settings.set_main_size(900, 700)
+    assert _FakeWindow()._restore_window_size() is True
 
 
 def test_a_size_from_a_bigger_monitor_is_clamped_to_this_one():
     """The saved size can outlive the display it was made on."""
     app_settings.set_main_size(3400, 1900)          # a 4K panel
-    app_settings.set_main_height_manual(True)
     win = _FakeWindow(avail=QRect(0, 0, 1366, 768))  # ...restored on a laptop
     win._restore_window_size()
     assert win.resized_to == (1366, 768), \
@@ -153,23 +153,16 @@ def test_a_size_from_a_bigger_monitor_is_clamped_to_this_one():
 
 def test_the_minimum_size_still_wins():
     app_settings.set_main_size(100, 50)
-    app_settings.set_main_height_manual(True)
     win = _FakeWindow(min_w=668, min_h=300)
     win._restore_window_size()
     assert win.resized_to == (668, 300)
 
 
-def test_saving_records_whether_the_height_was_manual():
+def test_saving_records_the_current_size():
     win = _FakeWindow()
     win._w, win._h = 900, 700
-    win._auto_fit_height = False
     win._save_window_size()
     assert app_settings.get_main_size() == (900, 700)
-    assert app_settings.get_main_height_manual() is True
-
-    win._auto_fit_height = True
-    win._save_window_size()
-    assert app_settings.get_main_height_manual() is False
 
 
 def test_a_maximised_window_saves_the_size_it_restores_down_to():
@@ -183,28 +176,6 @@ def test_a_maximised_window_saves_the_size_it_restores_down_to():
     assert app_settings.get_main_size() == (820, 610)
 
 
-def test_the_plumbing_is_actually_wired_up():
-    """The tests above call the methods directly, so every one of them would
-    still pass if nothing in Dashboard ever reached them. This is the check
-    that they are called at all -- source inspection rather than behaviour,
-    because constructing a real Dashboard starts pollers and file watchers and
-    leaks global state into other test modules.
-    """
-    import inspect
-    init = inspect.getsource(dashboard.Dashboard.__init__)
-    assert "self._restore_window_size()" in init, \
-        "nothing restores the saved size at startup"
-    assert "self._size_save_timer" in init, "the debounce timer is not created"
-
-    resize = inspect.getsource(dashboard.Dashboard.resizeEvent)
-    assert "_size_save_timer.start()" in resize, \
-        "resizing no longer schedules a save, so only a clean quit persists"
-
-    quit_src = inspect.getsource(dashboard.Dashboard._real_quit)
-    assert "self._save_window_size()" in quit_src, \
-        "quitting inside the debounce window would drop the last resize"
-
-
 def test_a_maximised_window_with_no_normal_geometry_saves_nothing():
     """Rather than persisting a 0x0 that would restore to the minimum."""
     app_settings.set_main_size(880, 640)
@@ -213,3 +184,59 @@ def test_a_maximised_window_with_no_normal_geometry_saves_nothing():
     win._normal = QSize(0, 0)
     win._save_window_size()
     assert app_settings.get_main_size() == (880, 640), "the good value survived"
+
+
+# --- nothing resizes the window on its own ----------------------------------
+
+def _src(fn):
+    import inspect
+    return inspect.getsource(fn)
+
+
+def test_background_events_no_longer_resize_the_window():
+    """The three triggers that made the window move while unattended.
+
+    Source inspection: each of these is reached from a poll or a timer, so a
+    behavioural test would have to stand up the whole polling stack. What
+    matters is simply that none of them calls the snap any more.
+    """
+    for name, fn in (
+        ("the rate-limit badge appearing/clearing",
+         dashboard.Dashboard._apply_status_badge),
+        ("a session starting or ending in the shelf",
+         dashboard.Dashboard._apply_session_view),
+    ):
+        assert "_fit_window_height()" not in _src(fn), \
+            f"{name} resizes the window behind the user's back again"
+
+
+def test_switching_pages_no_longer_resizes():
+    """Returning to the Dashboard used to re-snap the height, which threw away
+    a height the user had chosen before wandering off to Settings."""
+    assert "_fit_window_height()" not in _src(dashboard.Dashboard._show_page)
+
+
+def test_the_only_callers_of_the_snap_are_deliberate():
+    """First run, and the user double-clicking the title bar. If a third
+    caller appears, automatic resizing has crept back in."""
+    import inspect
+    src = inspect.getsource(dashboard)
+    callers = [ln.strip() for ln in src.splitlines()
+               if "_fit_window_height()" in ln and not ln.strip().startswith("#")]
+    assert len(callers) == 2, (
+        f"expected exactly 2 deliberate callers (first-run snap, double-click "
+        f"reset), found {len(callers)}: {callers}")
+
+
+def test_first_run_snaps_but_a_restored_size_does_not():
+    init = _src(dashboard.Dashboard.__init__)
+    assert "if not self._size_restored:" in init, \
+        "the first-run snap is no longer gated -- it will overwrite a restored size"
+    assert "self._size_restored = self._restore_window_size()" in init
+
+
+def test_double_click_to_fit_survives():
+    """Kept on purpose: with nothing resizing the window automatically, this is
+    now the only way back to a snug height."""
+    assert "_fit_window_height()" in _src(dashboard.Dashboard.reset_to_fit)
+    assert "reset_to_fit()" in _src(dashboard.TitleBar.mouseDoubleClickEvent)

@@ -137,21 +137,6 @@ def _view_states(raw, show_multiple, show_subagents, single_id=_SINGLE_TILE_ID):
     return states
 
 
-def _should_release_autofit(height_changed, fitting, armed, max_involved, titlebar_animating):
-    """Decide whether a resize is a genuine user height-drag (so we should stop
-    auto-fitting the window height). True only when the height actually changed
-    and it wasn't one of OUR programmatic resizes — the fit animation (`fitting`),
-    a maximize/restore (`max_involved`), or the auto-hide title-bar animation —
-    and only after the first show has settled (`armed`)."""
-    return (
-        height_changed
-        and armed
-        and not fitting
-        and not max_involved
-        and not titlebar_animating
-    )
-
-
 # Valid view modes, largest -> smallest.
 VIEW_ORDER = ("full", "compact", "mini")
 
@@ -3155,19 +3140,18 @@ class Dashboard(QMainWindow):
         self._fit_anim.setDuration(240)  # matches the shelf enter/resize animation
         self._fit_anim.setEasingCurve(QEasingCurve.OutCubic)
         self._fit_anim.finished.connect(self._on_fit_anim_finished)
-        # Auto-fit height state: we stop auto-fitting once the user drags the
-        # window height themselves, so a manual size sticks (width is always free).
-        self._auto_fit_height = True
-        self._fitting = False        # True during our own height resize/animation
+        self._fitting = False        # True during our own height snap/animation
         self._fit_armed = False      # don't treat the first show as a user resize
-        self._was_maximized = False
         # Debounce for persisting the size: a drag emits a resize per frame, and
         # each one would otherwise be a registry write.
         self._size_save_timer = QTimer(self)
         self._size_save_timer.setSingleShot(True)
         self._size_save_timer.setInterval(600)
         self._size_save_timer.timeout.connect(self._save_window_size)
-        self._restore_window_size()
+        # A saved size wins outright. With nothing left that resizes the window
+        # on its own, the content snap is a first-run default only -- running it
+        # after a restore would throw the user's height away on every launch.
+        self._size_restored = self._restore_window_size()
 
         self._rate = RateGroupTracker()
         self._reset_notifier = ResetNotifier()
@@ -3288,6 +3272,14 @@ class Dashboard(QMainWindow):
         # samples never land in the real on-disk history.
         self.usage_history = UsageHistory(persist=not mock)
 
+        # First run only: pick a snug starting height instead of the arbitrary
+        # 520 above. Everything is built by now, so minimumSizeHint is real, and
+        # the window has not been shown yet so this is a silent snap rather than
+        # a visible resize. A restored size already won, and after this nothing
+        # resizes the window again unless the user asks (reset_to_fit).
+        if not self._size_restored:
+            self._fit_window_height()
+
         if mock:
             self._start_mock()
         else:
@@ -3308,11 +3300,7 @@ class Dashboard(QMainWindow):
         """Switch the content stack to a nav-rail destination (0=Dashboard,
         1=Stats, 2=Settings)."""
         self._pages.setCurrentIndex(idx)
-        if idx == 0:
-            # Returning to the Dashboard: re-snap to its (possibly changed)
-            # content height, which was left alone while away.
-            self._fit_window_height()
-        elif idx == 2:
+        if idx == 2:
             # Re-entering Settings on the Connection tab: the sub-tab index has
             # not changed, so its own currentChanged never fires.
             self.settings_panel.on_shown()
@@ -4304,15 +4292,16 @@ class Dashboard(QMainWindow):
             self._last_tooltip = text
             self._tray.setToolTip(text)
 
-    def _restore_window_size(self) -> None:
+    def _restore_window_size(self) -> bool:
         """Reopen at the size the window was left at, clamped to this screen.
 
-        Width always; height only once the user has taken it over. The window
-        otherwise hugs its content (_fit_window_height), and a height captured
-        while the shelf held four mascots would be plain wrong on a launch with
-        none -- the fit computes a better answer than any saved number. Once
-        they HAVE dragged it, the fit is already permanently released, so
-        restoring the height is just continuing that.
+        Returns True when a saved size was applied, so the caller knows not to
+        snap to content over the top of it.
+
+        Both dimensions, unconditionally. Nothing computes the height any more,
+        so a saved height is simply the user's height -- the earlier "only if
+        they took manual control" rule existed because the window used to
+        re-fit itself in the background, and it no longer does.
 
         Clamped because the saved size may come from a monitor that is no
         longer attached: a 2000px-tall window restored onto a 1080p laptop
@@ -4320,22 +4309,15 @@ class Dashboard(QMainWindow):
         """
         size = app_settings.get_main_size()
         if size is None:
-            return
+            return False
         w, h = size
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is not None:
             avail = screen.availableGeometry()
             w = min(w, avail.width())
             h = min(h, avail.height())
-        w = max(w, self.minimumWidth())
-        if not app_settings.get_main_height_manual():
-            self.resize(w, self.height())
-            return
-        # Release the fit BEFORE resizing: _fit_window_height() is called later
-        # in construction and would otherwise snap the restored height straight
-        # back to the content's.
-        self._auto_fit_height = False
-        self.resize(w, max(h, self.minimumHeight()))
+        self.resize(max(w, self.minimumWidth()), max(h, self.minimumHeight()))
+        return True
 
     def _save_window_size(self) -> None:
         """Persist the current size. Debounced; also called on quit.
@@ -4351,7 +4333,6 @@ class Dashboard(QMainWindow):
         else:
             sz = self.size()
         app_settings.set_main_size(sz.width(), sz.height())
-        app_settings.set_main_height_manual(not self._auto_fit_height)
 
     def _target_window_height(self) -> int:
         """Snug window height for the current content: the title bar plus the
@@ -4364,14 +4345,19 @@ class Dashboard(QMainWindow):
         return tb_h + content_min
 
     def _fit_window_height(self) -> None:
-        """Resize the window's height to hug its content so there's no dead space
-        below the bars; the height follows the shelf as it grows/shrinks. Does
-        nothing once the user has set their own height (auto-fit released)."""
-        if not self._auto_fit_height:
-            return
-        # Only the Dashboard hugs its content. On Stats/Settings the height stays
-        # put (those pages scroll) — otherwise a background shelf/badge change on
-        # the hidden Dashboard would resize the window out from under those pages.
+        """Snap the window height to hug its content, with no dead space below
+        the bars.
+
+        Only ever called deliberately: once before the first show when there is
+        no saved size, and from reset_to_fit() when the user double-clicks the
+        title bar. It used to run on every shelf change, badge change and page
+        switch, which meant a session starting in the background resized the
+        window while the user was doing something else. Mascot sprites are
+        scale-to-fit and the shelf reserves a text-only floor, so the content
+        absorbs those changes within the height it already has.
+        """
+        # Only the Dashboard has a content-hugging height. Stats/Settings scroll,
+        # so snapping to their content is meaningless.
         if self._pages.currentIndex() != 0:
             return
         if self.isMaximized() or self.isFullScreen():
@@ -4396,11 +4382,15 @@ class Dashboard(QMainWindow):
         self._fitting = False
 
     def reset_to_fit(self) -> None:
-        """Re-enable auto-fit and snap back to the snug content height — the
-        title-bar double-click 'reset' after a manual height resize."""
+        """Snap back to the snug content height — the title-bar double-click.
+
+        Kept deliberately when automatic resizing was removed: it is the manual
+        way back to a tidy height after dragging, and with nothing resizing the
+        window on its own it is now the ONLY way, which makes it more useful
+        than it was, not less.
+        """
         if self.isMaximized():
             self.showNormal()
-        self._auto_fit_height = True
         self._fit_window_height()
 
     def _macos_apply_native_chrome(self) -> None:
@@ -4451,33 +4441,17 @@ class Dashboard(QMainWindow):
         super().resizeEvent(event)
         # Keep the auto-hide collapsed-height baseline in step with manual resizes
         # (only when no title-bar animation is in flight, so animation ticks don't
-        # poison it). Must run regardless of _auto_fit_height — it matters most
-        # once the user has set their own height (auto-fit released).
+        # poison it).
         if (self._auto_hide_enabled
                 and self._titlebar_anim_group.state() == QAbstractAnimation.Stopped):
             self._collapsed_window_height = self.height() - self.title_bar.maximumHeight()
-        old = event.oldSize()
-        max_involved = self.isMaximized() or self._was_maximized
-        self._was_maximized = self.isMaximized()
         # Persist the settled size. Debounced, and only once the first show has
-        # settled (_fit_armed) so construction and the initial fit don't
-        # overwrite the very size we just restored. Runs regardless of
-        # _auto_fit_height: width is always the user's, whatever the height is
-        # doing. A kill -9 or a crash therefore still leaves the last size on
-        # disk -- waiting for _real_quit() alone would lose it.
+        # settled (_fit_armed) so construction and the startup snap don't
+        # overwrite the very size we just restored. A kill -9 or a crash
+        # therefore still leaves the last size on disk -- waiting for
+        # _real_quit() alone would lose it.
         if self._fit_armed and not self._fitting:
             self._size_save_timer.start()
-        if not self._auto_fit_height:
-            return
-        height_changed = old.height() > 0 and event.size().height() != old.height()
-        if _should_release_autofit(
-            height_changed,
-            self._fitting,
-            self._fit_armed,
-            max_involved,
-            self._titlebar_anim_group.state() == QAbstractAnimation.Running,
-        ):
-            self._auto_fit_height = False  # respect the user's height from now on
 
     def _apply_status_badge(self, status: str) -> None:
         """Show/hide the bottom-left rate-limit badge and reflow the window.
@@ -4510,9 +4484,10 @@ class Dashboard(QMainWindow):
         self.status_text.style().unpolish(self.status_text)
         self.status_text.style().polish(self.status_text)
 
-        # The badge row changes the content height; refit so the window grows to
-        # show it (and shrinks back when it clears) with no dead space.
-        self._fit_window_height()
+        # Deliberately does NOT resize the window. The badge appears and clears
+        # on its own schedule, so refitting here moved the window while the user
+        # was not touching it. Qt's layout minimum still guarantees the row is
+        # not clipped; it just uses the space already there.
 
     def _reset_line(self, minutes: int, tokens: int) -> str:
         line = f"resets in {_format_minutes(minutes)}"
@@ -4602,8 +4577,12 @@ class Dashboard(QMainWindow):
             if self._view_mode == "full":
                 self.sprite.resume()
 
-        # Resize the window to hug the new content (no dead space below the bars).
-        self._fit_window_height()
+        # Deliberately does NOT resize the window. Sessions start and end on
+        # their own, so following the shelf here meant the window grew and
+        # shrank while the user was doing something else -- the single most
+        # intrusive thing a background event can do. Mascot sprites are
+        # scale-to-fit, so the shelf absorbs the change within whatever height
+        # it already has.
 
     def _apply_token_view(self) -> None:
         """Token-usage display toggled in Settings: re-render the per-bar token
