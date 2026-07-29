@@ -3133,6 +3133,13 @@ class Dashboard(QMainWindow):
         self._fitting = False        # True during our own height resize/animation
         self._fit_armed = False      # don't treat the first show as a user resize
         self._was_maximized = False
+        # Debounce for persisting the size: a drag emits a resize per frame, and
+        # each one would otherwise be a registry write.
+        self._size_save_timer = QTimer(self)
+        self._size_save_timer.setSingleShot(True)
+        self._size_save_timer.setInterval(600)
+        self._size_save_timer.timeout.connect(self._save_window_size)
+        self._restore_window_size()
 
         self._rate = RateGroupTracker()
         self._reset_notifier = ResetNotifier()
@@ -4263,6 +4270,55 @@ class Dashboard(QMainWindow):
             self._last_tooltip = text
             self._tray.setToolTip(text)
 
+    def _restore_window_size(self) -> None:
+        """Reopen at the size the window was left at, clamped to this screen.
+
+        Width always; height only once the user has taken it over. The window
+        otherwise hugs its content (_fit_window_height), and a height captured
+        while the shelf held four mascots would be plain wrong on a launch with
+        none -- the fit computes a better answer than any saved number. Once
+        they HAVE dragged it, the fit is already permanently released, so
+        restoring the height is just continuing that.
+
+        Clamped because the saved size may come from a monitor that is no
+        longer attached: a 2000px-tall window restored onto a 1080p laptop
+        panel puts its lower half, and often the resize edge, out of reach.
+        """
+        size = app_settings.get_main_size()
+        if size is None:
+            return
+        w, h = size
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            w = min(w, avail.width())
+            h = min(h, avail.height())
+        w = max(w, self.minimumWidth())
+        if not app_settings.get_main_height_manual():
+            self.resize(w, self.height())
+            return
+        # Release the fit BEFORE resizing: _fit_window_height() is called later
+        # in construction and would otherwise snap the restored height straight
+        # back to the content's.
+        self._auto_fit_height = False
+        self.resize(w, max(h, self.minimumHeight()))
+
+    def _save_window_size(self) -> None:
+        """Persist the current size. Debounced; also called on quit.
+
+        normalGeometry() rather than size() so a maximised or full-screen
+        window saves the size it will restore DOWN to -- saving the maximised
+        size would make un-maximising a no-op on the next launch.
+        """
+        if self.isMaximized() or self.isFullScreen():
+            sz = self.normalGeometry().size()
+            if not sz.isValid() or sz.isEmpty():
+                return
+        else:
+            sz = self.size()
+        app_settings.set_main_size(sz.width(), sz.height())
+        app_settings.set_main_height_manual(not self._auto_fit_height)
+
     def _target_window_height(self) -> int:
         """Snug window height for the current content: the title bar plus the
         content area, counting the shelf at its settled (target) height rather
@@ -4369,6 +4425,14 @@ class Dashboard(QMainWindow):
         old = event.oldSize()
         max_involved = self.isMaximized() or self._was_maximized
         self._was_maximized = self.isMaximized()
+        # Persist the settled size. Debounced, and only once the first show has
+        # settled (_fit_armed) so construction and the initial fit don't
+        # overwrite the very size we just restored. Runs regardless of
+        # _auto_fit_height: width is always the user's, whatever the height is
+        # doing. A kill -9 or a crash therefore still leaves the last size on
+        # disk -- waiting for _real_quit() alone would lose it.
+        if self._fit_armed and not self._fitting:
+            self._size_save_timer.start()
         if not self._auto_fit_height:
             return
         height_changed = old.height() > 0 and event.size().height() != old.height()
@@ -4818,6 +4882,11 @@ class Dashboard(QMainWindow):
         worker = getattr(self, "_stats_worker", None)
         if worker is not None:
             worker.wait(2000)   # don't destroy a QThread mid-scan
+        # Flush the debounced size now: quitting inside the debounce window
+        # (resize, then straight to the tray menu) would otherwise drop the
+        # last resize the user made.
+        self._size_save_timer.stop()
+        self._save_window_size()
         self._transcript.stop()
         self.sprite.stop()
         self.shelf.stop_all()

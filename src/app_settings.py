@@ -16,6 +16,8 @@ KEY_AUTO_HIDE_TITLEBAR = "window/auto_hide_titlebar"
 KEY_QUIT_ON_CLOSE = "window/quit_on_close"
 KEY_MINI_POS = "window/mini_pos"
 KEY_COMPACT_POS = "window/compact_pos"
+KEY_MAIN_SIZE = "window/main_size"
+KEY_MAIN_HEIGHT_MANUAL = "window/main_height_manual"
 KEY_VIEW_MODE = "window/view_mode"
 KEY_THEME = "ui/theme"
 KEY_CUSTOM_THEME = "ui/custom_theme"
@@ -159,6 +161,46 @@ def get_compact_pos() -> tuple[int, int] | None:
 
 def set_compact_pos(x: int, y: int) -> None:
     _settings().setValue(KEY_COMPACT_POS, f"{int(x)},{int(y)}")
+
+
+def get_main_size() -> tuple[int, int] | None:
+    """Last size the main window was left at, or None if never resized.
+
+    Stored as "w,h" to match the position keys above rather than a
+    QByteArray from saveGeometry(): only the size is wanted here (position
+    is left to the window manager), and a plain string stays readable in
+    the registry and survives a Qt version change, which an opaque
+    geometry blob does not.
+    """
+    v = _settings().value(KEY_MAIN_SIZE, "")
+    if not v:
+        return None
+    try:
+        w, h = str(v).split(",")
+        w, h = int(w), int(h)
+    except (ValueError, TypeError):
+        return None
+    return (w, h) if w > 0 and h > 0 else None
+
+
+def set_main_size(w: int, h: int) -> None:
+    _settings().setValue(KEY_MAIN_SIZE, f"{int(w)},{int(h)}")
+
+
+def get_main_height_manual() -> bool:
+    """True when the user has dragged the window height themselves.
+
+    The window otherwise hugs its content, so a saved height is only worth
+    restoring once the user has overridden that. See Dashboard._auto_fit_height.
+    """
+    v = _settings().value(KEY_MAIN_HEIGHT_MANUAL, False)
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_main_height_manual(on: bool) -> None:
+    _settings().setValue(KEY_MAIN_HEIGHT_MANUAL, bool(on))
 
 
 def get_view_mode() -> str:
