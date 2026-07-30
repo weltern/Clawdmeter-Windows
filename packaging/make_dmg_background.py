@@ -14,9 +14,11 @@ Design (settled 2026-07-26 after a nine-round mockup pass): "Light THINKING" —
 a flat warm-paper field in the industry style (Slack/Discord/Chrome all ship
 light; Finder hard-codes dark filename labels over any custom background, so
 light is the only field they stay readable on). Clawd's session-shelf treatment
-is baked in around the real icon slot: the THINKING activity glow painted where
-Finder places the app icon, the activity + status lines beneath, and four
-salmon chevrons walking toward Applications.
+is baked in around the real icon slot: the activity + status lines sit beneath
+where Finder places the app icon, and four salmon chevrons walk toward
+Applications. The icon slot itself is left bare — no glow or silhouette behind
+it — so the real icon reads cleanly whatever shape macOS gives it (bare mascot
+on macOS 15, rounded tile on macOS 26 / Tahoe).
 
 Geometry MUST stay in sync with ``packaging/dmg_settings.py``: the icon slots
 below are where dmgbuild is told to place Clawdmeter.app and the Applications
@@ -33,8 +35,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import (QColor, QFont, QFontDatabase, QFontMetricsF,  # noqa: E402
-                           QImage, QPainter, QPainterPath, QPen,
-                           QRadialGradient)
+                           QImage, QPainter, QPainterPath, QPen)
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 # The offscreen platform plugin ships no fonts, so text renders as tofu boxes
@@ -67,38 +68,6 @@ def _load_ui_font() -> str:
         if fams:
             return fams[0]
     raise SystemExit("no usable UI font found — add one to _FONT_CANDIDATES")
-
-
-def _icon_path() -> str:
-    here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(here, "..", "assets", "icon.png")
-
-
-def _tinted_mascot(color: QColor) -> QImage:
-    """The mascot's silhouette filled with a flat colour, on a padded canvas so
-    the blur passes below have room to spill past the sprite's edges."""
-    src = QImage(_icon_path())
-    if src.isNull():
-        raise SystemExit(f"cannot read {_icon_path()}")
-    pad = src.width() // 2
-    canvas = QImage(src.width() + 2 * pad, src.height() + 2 * pad,
-                    QImage.Format_ARGB32_Premultiplied)
-    canvas.fill(Qt.transparent)
-    p = QPainter(canvas)
-    p.drawImage(pad, pad, src)
-    p.setCompositionMode(QPainter.CompositionMode_SourceIn)
-    p.fillRect(canvas.rect(), color)
-    p.end()
-    return canvas
-
-
-def _blurred(img: QImage, factor: int) -> QImage:
-    """Cheap gaussian-ish blur: downscale smooth, upscale smooth back."""
-    small = img.scaled(max(1, img.width() // factor),
-                       max(1, img.height() // factor),
-                       Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-    return small.scaled(img.width(), img.height(),
-                        Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
 
 def _grain(p: QPainter, scale: int) -> None:
@@ -140,23 +109,11 @@ def _draw(p: QPainter, scale: int) -> None:
     p.fillRect(QRectF(0, 0, W, H), QColor(PAPER))
     _grain(p, scale)
 
-    # Soft radial wash behind the app slot — the widest ring of the glow.
-    halo = QRadialGradient(QPointF(*APP_SLOT), 130)
-    c = QColor(THINKING)
-    c.setAlphaF(0.22)
-    halo.setColorAt(0.0, c)
-    halo.setColorAt(1.0, QColor(91, 141, 239, 0))
-    p.fillRect(QRectF(0, 0, W, H), halo)
-
-    # The THINKING glow: blurred blue silhouettes of the mascot, painted where
-    # Finder will place the real icon so the icon appears to glow. Padded
-    # canvas is 2x the sprite, so draw it at 2x the icon box.
-    sil = _tinted_mascot(QColor(THINKING))
-    box = QRectF(APP_SLOT[0] - ICON, APP_SLOT[1] - ICON, ICON * 2, ICON * 2)
-    for factor, opacity in ((48, 0.5), (24, 0.6), (14, 0.7)):
-        p.setOpacity(opacity)
-        p.drawImage(box, _blurred(sil, factor))
-    p.setOpacity(1.0)
+    # The app-icon slot is left bare — no glow, no silhouette. Finder drops the
+    # real Clawdmeter icon here, and with nothing painted behind it there is no
+    # placeholder shape to clash with the icon: it works identically for the
+    # bare mascot on macOS 15 and the rounded tile macOS 26 (Tahoe) wraps it in.
+    # Only the session-shelf text below the slot and the chevrons remain.
 
     # --- chevrons: four, brightening toward Applications --------------------
     pen = QPen(QColor(ACCENT), 5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
