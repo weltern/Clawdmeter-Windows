@@ -140,8 +140,11 @@ A plan badge (e.g. `Max 5× · $100/mo`) sits at the top, and below it:
 - **Value per day** — a per-day value bar strip across the month, with date ticks.
 - **When you work** — a 7×24 weekday-by-hour heatmap of your activity.
 - a **this-month recap** — top model, busiest day, biggest day ever, and totals.
+- **Usage windows** — the **per-model** rate-limit windows the API reports (e.g.
+  `Weekly · Opus`), kept at the very bottom. The overall 5h/7d windows aren't
+  repeated here; they live on the Dashboard.
 
-![Clawdmeter Stats page — subscription value and ROI, cache savings, value by model/project, code by language, an activity heatmap and a monthly recap](assets/Screenshot-stats.png)
+![Clawdmeter Stats page — the full page: API value and ROI, extra usage, cache savings, time to cap, streak and sessions, value by model and project, code by language, activity mix, this week vs last, value per day, a weekday-by-hour heatmap, a monthly recap and per-model usage windows](assets/Screenshot-stats.png)
 
 ## Overage
 
