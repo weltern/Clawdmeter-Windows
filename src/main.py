@@ -19,6 +19,63 @@ from dashboard import Dashboard, apply_theme
 from sprite_player import assets_root
 
 
+TRAY_GRACE_MS = 5000     # how long a sign-in launch waits for a tray host
+TRAY_STEP_MS = 500       # re-poll interval within that grace period
+
+
+def show_unless_tray_appears(win, *, grace_ms: int = TRAY_GRACE_MS,
+                             step_ms: int = TRAY_STEP_MS, available=None) -> None:
+    """Pop the window only if there is STILL no system tray after a short wait.
+
+    A sign-in launch belongs in the tray. Where there is no tray to stay in --
+    some Linux DEs have none -- staying hidden would leave the app invisible and
+    unrecoverable, so the window has to show instead.
+
+    The trap is that at LOGIN the app can beat the panel's tray host to the
+    socket, so the snapshot taken in ``Dashboard.__init__`` reads "no tray" on a
+    desktop that is about to have one, and acting on it pops a window at every
+    single login. Re-poll instead of trusting that snapshot -- the same reason
+    ``Dashboard.closeEvent`` re-queries rather than reusing it.
+
+    Nothing has to be done when a host does turn up: the tray icon is already
+    ``show()``n, so it docks by itself. All this has to get right is *not*
+    showing the window.
+
+    Only the no-tray answer is delayed. A DE that genuinely has none waits
+    ``grace_ms`` before its window appears, which is nothing against a login.
+
+    ``available`` is injectable so the wait can be tested without a real tray.
+    """
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QSystemTrayIcon
+
+    if available is None:
+        available = QSystemTrayIcon.isSystemTrayAvailable
+
+    if available():          # already up: the snapshot was simply stale
+        win.tray_available = True
+        return
+
+    waited = {"ms": 0}
+    timer = QTimer()         # unparented; the reference below keeps it alive
+    timer.setInterval(step_ms)
+
+    def _tick() -> None:
+        if available():
+            win.tray_available = True
+            timer.stop()
+            return
+        waited["ms"] += step_ms
+        if waited["ms"] >= grace_ms:
+            timer.stop()
+            win.show_initial()
+
+    timer.timeout.connect(_tick)
+    timer.start()
+    win._tray_wait_timer = timer
+    return
+
+
 def main() -> int:
     mock = "--mock" in sys.argv
     startup = run_at_startup.STARTUP_FLAG in sys.argv  # launched at sign-in
@@ -102,7 +159,7 @@ def main() -> int:
             # show the window instead. Gated off Windows so the Windows sign-in
             # path is provably unchanged (it always has a tray regardless).
             if sys.platform != "win32" and not getattr(win, "tray_available", True):
-                win.show_initial()
+                show_unless_tray_appears(win)
         else:
             win.show_initial()   # launch directly into the last-used view mode
 
