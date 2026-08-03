@@ -287,7 +287,10 @@ differences and what to do if no tray icon appears.
 ![Clawdmeter on Linux — the dashboard with three active sessions showing SEARCHING, INTEGRATING and IDLE, and the session bar in its red overage state](assets/Screenshot-linux.png)
 
 On every platform the tray/menu-bar icon carries the same menu — **Show**, the
-three view modes, **Check for updates** and **Quit**.
+three view modes, **Check for updates** and **Quit**. On macOS the icon is a
+template image, so it follows the menu bar in both light and dark appearance:
+
+![Clawdmeter's macOS menu-bar icon with its menu open — Show, Full view, Compact view, Mini view, Check for updates, Quit](assets/Screenshot-macos-menu.png)
 
 ## Download
 
