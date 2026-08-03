@@ -1,4 +1,4 @@
-# Clawdmeter-Windows
+# Clawdmeter
 
 Standalone desktop dashboard for Claude Code usage — **Windows, macOS and Linux**.
 
@@ -26,6 +26,9 @@ Standalone desktop dashboard for Claude Code usage — **Windows, macOS and Linu
   activity heatmap) — all computed locally from your transcripts
 - A slim **navigation rail** down the left edge to switch between the
   **Dashboard**, the **Stats** page, and **Settings**
+- **Themes** — 16 built-in light and dark presets, a follow-your-system mode, or
+  a custom theme you build yourself with an on-screen eyedropper and a
+  contrast checker
 - A system-tray icon whose fill arc tracks session % — **hover it for a quick
   session & weekly readout**
 
@@ -172,11 +175,46 @@ entry and is draggable (it remembers where you left it).
 
 ![Clawdmeter mini view — a tiny always-on-top readout with the mascot and session and weekly percentages](assets/Screenshot-mini.png)
 
+## Themes
+
+**Settings → Appearance.** Follow your system, pick a preset, or build your own —
+the whole app restyles live, with no restart.
+
+**Follow your system** tracks the OS light/dark setting and switches between two
+themes you choose: **Midnight Salmon** for dark and **Daybreak** for light by
+default, though any two presets will do.
+
+**16 presets**, nine dark and seven light:
+
+| Dark | Light |
+|---|---|
+| Midnight Salmon *(default)*, Obsidian, High Contrast, Nord, Dracula, Gruvbox, Terminal Green, Amber CRT, Riptide | Daybreak, Sepia, Solarized Light, Nord Light, Gruvbox Light, High Contrast Light, Riptide Light |
+
+![Clawdmeter Settings → Appearance — Follow System, Custom, and a Preset dropdown set to Midnight Salmon, each with a colour-swatch strip](assets/Screenshot-appearance.png)
+
+**Build your own** opens a custom-theme editor over eight base roles —
+**Background**, **Surface / cards**, **Borders**, **Text**, **Accent**,
+**Warning**, **Danger** and **Positive**. Every other shade in the app is derived
+from those eight, so you set a handful of colours rather than dozens.
+
+![Clawdmeter's custom theme editor — the eight editable roles with live contrast ratios, a saturation/value picker and hue slider, a hex field with an eyedropper, and a live preview of the usage bar](assets/Screenshot-custom-theme.png)
+
+- Pick a role, then set its colour on the picker or type a **hex** value.
+- Or grab a colour from **anywhere on your screen** with the **eyedropper** —
+  the whole desktop freezes and any pixel becomes the new value (on macOS this
+  is Apple's own system colour sampler).
+- Each role shows its **live contrast ratio** against the background as you go,
+  so you can see a problem before you commit it.
+- **Fix contrast** nudges the foreground roles until each clears **WCAG AA
+  (4.5:1)** — so a theme you invented is still readable.
+- The preview updates **live**; **Apply** commits it.
+- **Import** and **Export** move a theme between machines, or share one.
+
 ## Settings
 
 Open Settings from the **gear at the bottom of the left nav rail** — it's a
 full page in the same window, alongside the Dashboard and Stats, split across
-five tabs that each scroll on their own. Here's every setting, grouped by tab.
+six tabs that each scroll on their own. Here's every setting, grouped by tab.
 
 ![Clawdmeter settings panel — the General tab and the tab rail](assets/Screenshot-2-Settings.png)
 
@@ -205,6 +243,11 @@ five tabs that each scroll on their own. Here's every setting, grouped by tab.
 - **Token usage** — **Show token usage** toggles every token figure (the totals
   beside the bars, the per-session tiles and hover breakdown, and the tray line).
   On by default; read from your local transcripts, never the API.
+
+### Appearance
+
+- **Theme** — follow your system, pick one of the 16 built-in presets, or build
+  your own. See [Themes](#themes) for the full list and the custom editor.
 
 ### Connection
 
