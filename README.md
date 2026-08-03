@@ -268,6 +268,27 @@ channels are shared across every alert.
 - Version, author, and credits — the source is **MIT** licensed; the Clawd mascot
   is © Anthropic PBC and **not** covered by it; icons are Font Awesome Free.
 
+## Windows, macOS and Linux
+
+The same app, the same features, on all three — one codebase, no reduced
+edition anywhere. Each build uses its platform's own window chrome and its own
+tray, so it looks native rather than ported.
+
+**macOS** gets a real transparent title bar with the native traffic lights, and
+lives in the menu bar rather than a system tray. The download is **universal** —
+one file for both Apple Silicon and Intel.
+
+![Clawdmeter on macOS — the dashboard in a native transparent-titlebar window with traffic lights, two active sessions, and the weekly bar in its red overage state](assets/Screenshot-macos.png)
+
+**Linux** runs on X11 and Wayland, with the tray icon provided by AppIndicator /
+KStatusNotifierItem — see [Linux notes](#linux-notes) for the two Wayland
+differences and what to do if no tray icon appears.
+
+![Clawdmeter on Linux — the dashboard with three active sessions showing SEARCHING, INTEGRATING and IDLE, and the session bar in its red overage state](assets/Screenshot-linux.png)
+
+On every platform the tray/menu-bar icon carries the same menu — **Show**, the
+three view modes, **Check for updates** and **Quit**.
+
 ## Download
 
 Grab your platform's build from the [Releases](../../releases) page. Each one
