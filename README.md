@@ -1,10 +1,10 @@
 # Clawdmeter-Windows
 
-Standalone Windows desktop dashboard for Claude Code usage.
+Standalone desktop dashboard for Claude Code usage — **Windows, macOS and Linux**.
 
 <p align="center">
   <img src="assets/ClawdMeter-Windows-v2.3.0.gif" width="560"
-       alt="Clawdmeter-Windows — the Clawd mascot reacting live to Claude Code activity, with session and weekly usage">
+       alt="Clawdmeter — the Clawd mascot reacting live to Claude Code activity, with session and weekly usage">
 </p>
 
 ## What it shows
@@ -69,7 +69,7 @@ shortened to fit and **scroll into view when you hover** the label, with the ful
 title on the tooltip. The session/weekly usage bars stay account-wide (a single
 number from the API), shown once beneath the shelf.
 
-![Clawdmeter-Windows session shelf — one mascot per active Claude Code session, each with its session title, current activity and target, and per-window token totals on the bars](assets/Screenshot-shelf.png)
+![Clawdmeter session shelf — one mascot per active Claude Code session, each with its session title, current activity and target, and per-window token totals on the bars](assets/Screenshot-shelf.png)
 
 When a session spins up subagents (the Agent/Task tool), a row of small **child
 mascots** appears under that session — one per live agent, each glowing with its
@@ -138,7 +138,7 @@ A plan badge (e.g. `Max 5× · $100/mo`) sits at the top, and below it:
 - **When you work** — a 7×24 weekday-by-hour heatmap of your activity.
 - a **this-month recap** — top model, busiest day, biggest day ever, and totals.
 
-![Clawdmeter-Windows Stats page — subscription value and ROI, cache savings, value by model/project, code by language, an activity heatmap and a monthly recap](assets/Screenshot-stats.png)
+![Clawdmeter Stats page — subscription value and ROI, cache savings, value by model/project, code by language, an activity heatmap and a monthly recap](assets/Screenshot-stats.png)
 
 ## Overage
 
@@ -149,7 +149,7 @@ so **20% over reads `120%`** — and a red **OVERAGE** tag joins the title. It w
 on **both** the Session (5h) and Weekly (7d) bars — whichever window you actually
 blew through — and clears itself the moment you drop back under 100%.
 
-![Clawdmeter-Windows in overage — the Session and Weekly bars restarted in red, climbing past 100% with a red OVERAGE tag beside each title](assets/Screenshot-overage.png)
+![Clawdmeter in overage — the Session and Weekly bars restarted in red, climbing past 100% with a red OVERAGE tag beside each title](assets/Screenshot-overage.png)
 
 ## View modes
 
@@ -163,14 +163,14 @@ button** drops to the tiny readout (from there, double-click — or right-click 
 row per session: mascot, title, token total, and live activity + target — so you
 can keep tabs on several sessions in a fraction of the height.
 
-![Clawdmeter-Windows compact view — usage bars above a one-row-per-session list with mascot, title, tokens and activity](assets/Screenshot-compact-list.png)
+![Clawdmeter compact view — usage bars above a one-row-per-session list with mascot, title, tokens and activity](assets/Screenshot-compact-list.png)
 
 **Mini** shrinks all the way to a frameless, always-on-top chip — the mini mascot
 beside your session and weekly percentages, each with a thin usage bar and its
 reset time (and the same red overage restart past 100%). It keeps no taskbar
 entry and is draggable (it remembers where you left it).
 
-![Clawdmeter-Windows mini view — a tiny always-on-top readout with the mascot and session and weekly percentages](assets/Screenshot-mini.png)
+![Clawdmeter mini view — a tiny always-on-top readout with the mascot and session and weekly percentages](assets/Screenshot-mini.png)
 
 ## Settings
 
@@ -178,7 +178,7 @@ Open Settings from the **gear at the bottom of the left nav rail** — it's a
 full page in the same window, alongside the Dashboard and Stats, split across
 five tabs that each scroll on their own. Here's every setting, grouped by tab.
 
-![Clawdmeter-Windows settings panel — the General tab and the tab rail](assets/Screenshot-2-Settings.png)
+![Clawdmeter settings panel — the General tab and the tab rail](assets/Screenshot-2-Settings.png)
 
 ### General
 
@@ -188,7 +188,10 @@ five tabs that each scroll on their own. Here's every setting, grouped by tab.
   Wayland — see [Linux notes](#linux-notes).
 - **Startup** — **Start when I sign in** launches Clawdmeter automatically at
   sign-in. It comes up quietly in the system tray (the menu bar on macOS), with
-  no window — click the icon to open it.
+  no window — click the icon to open it. On a Linux desktop with **no system
+  tray at all** there would be nothing to click, so it opens the window instead;
+  because a desktop's panel can still be starting up at login, it waits a few
+  seconds for a tray to appear before deciding.
 - **Updates** — **Automatically check for updates** (on by default — checks the
   GitHub releases on launch, then about once a day) and **Check for updates now**.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
@@ -234,7 +237,7 @@ channels are shared across every alert.
   you can resume — but only when you were actually near the limit (or already
   throttled), so it stays quiet otherwise.
 
-  ![Clawdmeter-Windows limit-reset notification — "Claude limit reset: Session limit has reset, you can resume"](assets/Screenshot-Session-Limit-Reset.png)
+  ![Clawdmeter limit-reset notification — "Claude limit reset: Session limit has reset, you can resume"](assets/Screenshot-Session-Limit-Reset.png)
 
 - **When approaching a limit** warns you *before* you run out — pick a separate
   **% threshold for the 5h session and the 7d week** (50–99%; defaults 90% and
@@ -267,24 +270,45 @@ channels are shared across every alert.
 
 ## Download
 
-Grab the latest `Clawdmeter.exe` from the
-[Releases](../../releases) page — it's a single self-contained file (~29 MB,
-bundling Python + Qt), no install needed. Just run it.
+Grab your platform's build from the [Releases](../../releases) page. Each one
+bundles Python + Qt, so there's nothing else to install.
+
+| Platform | File | Size | How to run it |
+|---|---|---|---|
+| **Windows** | `Clawdmeter.exe` | ~31 MB | Single self-contained file — just run it. |
+| **macOS** | `Clawdmeter.dmg` | ~81 MB | Open it, drag **Clawdmeter** to Applications. Universal — one download for both Apple Silicon and Intel. |
+| **macOS** (zip) | `Clawdmeter-macos.zip` | ~72 MB | The same `.app`, if you'd rather not mount a disk image. |
+| **Linux** | `Clawdmeter-3.0.0-linux-x86_64.tar.gz` | ~56 MB | Unpack and run `./install.sh` — it drops the binary in `~/.local/bin` and adds a menu entry. |
+
+Every file ships with a `.sha256` beside it. Verify before running if you like:
+`sha256sum -c Clawdmeter-3.0.0-linux-x86_64.tar.gz.sha256` (or `shasum -a 256` /
+`Get-FileHash`).
 
 Clawdmeter checks the Releases page for a newer version on launch (then about
 once a day) and, when one's out, shows an **Update available** item in the tray
-menu — click it to open the download page and swap in the new `.exe`. You can
+menu — click it to open the download page and swap in the new build. You can
 turn the automatic check off, or trigger one on demand, under **Settings →
 Updates**.
 
-> **Heads up:** the exe is not code-signed, so Windows SmartScreen may show a
-> "Windows protected your PC / unknown publisher" prompt the first time you run
-> it. Click **More info → Run anyway**. If you'd rather not trust the binary,
-> [run from source](#run-from-source) or [build it yourself](#build-the-standalone-exe).
+> **Heads up: none of the builds are code-signed yet**, so each OS will question
+> them the first time:
+>
+> - **Windows** — SmartScreen shows "Windows protected your PC / unknown
+>   publisher". Click **More info → Run anyway**.
+> - **macOS** — Gatekeeper says the app "cannot be opened because the developer
+>   cannot be verified". Right-click the app → **Open** → **Open**, or allow it
+>   under **System Settings → Privacy & Security**. (The app is ad-hoc signed,
+>   which is not the same as notarized.)
+> - **Linux** — no prompt; make sure the binary is executable (`install.sh` does
+>   this for you).
+>
+> If you'd rather not trust a binary, [run from source](#run-from-source) or
+> [build it yourself](#building).
 
 ## How it works
 
-It reads your Claude Code OAuth token from `~/.claude/.credentials.json`,
+It reads your Claude Code OAuth token from `~/.claude/.credentials.json` — or
+from the **login Keychain** on macOS, where Claude Code stores it instead —
 sends a minimal 1-token request to `api.anthropic.com/v1/messages` on a
 configurable interval (60s by default), and reads the rate-limit headers from
 the response. On the same poll it also reads Anthropic's OAuth usage and profile
@@ -311,14 +335,27 @@ Both work normally on an X11 session if you need them.
 **No tray icon?** GNOME has no system tray of its own. Install the
 **AppIndicator and KStatusNotifierItem Support** extension and the icon appears.
 Clawdmeter says so on startup if it can't find a tray — the window works either
-way.
+way. A tray icon that shows up late (a panel still loading at login) is fine:
+the icon docks by itself the moment a tray host registers.
+
+**Missing Qt xcb plugin?** If the app exits with a `xcb` platform-plugin error,
+install the one system library it needs — `libxcb-cursor0` on Debian/Ubuntu,
+`xcb-util-cursor` on Fedora/Arch. `install.sh` prints this too.
 
 ## Requirements
 
-- Windows 10 or 11, macOS 13 or newer, or a current Linux desktop
-- Python 3.10 or newer (the code uses 3.10+ syntax)
+- **Windows** 10 or 11
+- **macOS** 13 or newer — universal (Apple Silicon + Intel)
+- **Linux** — a current desktop with **glibc 2.35 or newer** (Ubuntu 22.04+,
+  Fedora 36+, Debian 12+). The release binary is built on Ubuntu 22.04 so it
+  works on that floor and everything above it; older distributions need a
+  [source run](#run-from-source) instead.
+- Only to run from source or build: **Python 3.10 or newer** (the code uses
+  3.10+ syntax)
 
 ## Run from source
+
+Windows:
 
 ```powershell
 py -3 -m venv .venv
@@ -326,19 +363,46 @@ py -3 -m venv .venv
 .\.venv\Scripts\python src\main.py
 ```
 
-Add `--mock` to drive the UI with synthetic data (no API calls):
+macOS / Linux:
 
-```powershell
-.\.venv\Scripts\python src\main.py --mock
+```bash
+python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt
+./.venv/bin/python src/main.py
 ```
 
-## Build the standalone .exe
+Add `--mock` to drive the UI with synthetic data (no API calls) — handy for
+seeing every state without burning tokens.
 
-```powershell
-.\build.ps1
+## Building
+
+| Platform | Command | Output |
+|---|---|---|
+| Windows | `.\build.ps1` | `dist\Clawdmeter.exe` — single file, no console window, ~31 MB |
+| Linux | `bash build.sh` | `dist/Clawdmeter` + `Clawdmeter-<version>-linux-x86_64.tar.gz` (+ `.sha256`) |
+| macOS | `bash build-macos.sh` | `dist/Clawdmeter.app`, `Clawdmeter-macos.zip` and `Clawdmeter.dmg` (each + `.sha256`) |
+
+Each build must run **on** the platform it targets — there is no cross-compiling.
+
+**macOS: install python.org's Python first, or you get a single-arch app.** The
+`.app` is universal2 only when the interpreter carries both slices, and every
+compiled dependency (PySide6, pyobjc) already ships universal2 wheels — so the
+interpreter is the only thing that decides. `uv`-managed and Homebrew CPythons
+are single-arch. Use:
+
+```bash
+curl -LO https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg
+sudo installer -pkg python-3.12.10-macos11.pkg -target /
 ```
 
-Output: `dist\Clawdmeter.exe` — single-file, no console window, ~29 MB.
+It's picked up automatically from `/Library/Frameworks`. Confirm the result with
+`lipo -archs dist/Clawdmeter.app/Contents/MacOS/Clawdmeter` — you want
+`x86_64 arm64`.
+
+**Linux: build on the oldest glibc you intend to support.** PyInstaller vendors
+the host's system libraries, so a binary built on a newer distribution simply
+will not start on an older one. The releases are built on Ubuntu 22.04
+(glibc 2.35).
 
 `Clawdmeter.spec` prunes the parts of PySide6/Qt the app doesn't use (the
 QML/Quick stack, the ~20 MB software-OpenGL fallback, unused image-format and
@@ -351,7 +415,7 @@ now need.
 
 - **Original project** — concept, firmware, and daemon by Hermann Björgvin
   (@HermannBjorgvin): <https://github.com/HermannBjorgvin/Clawdmeter>. This is a
-  software-only Windows port of that work.
+  software-only desktop port of that work, for Windows, macOS and Linux.
 - **Clawd pixel art** — the mascot sprites originate from
   <https://claudepix.vercel.app> (as noted in `assets/sprites/manifest.json`),
   extracted from the upstream firmware's `splash_animations.h`.
