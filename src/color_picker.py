@@ -262,6 +262,11 @@ class ColorPicker(QWidget):
         if c.isValid():
             self.set_color(c.name())
             self.colorChanged.emit(c.name())
+        else:
+            # Unparseable text: snap the field back to the colour actually in
+            # effect. Without this the readout keeps showing the bad text and
+            # disagrees with the swatch until the user retypes a valid hex.
+            self.hex.setText(self._color.name().upper())
 
 
 class EyedropperOverlay(QWidget):
@@ -280,27 +285,49 @@ class EyedropperOverlay(QWidget):
         self.setCursor(Qt.CrossCursor)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
-        # Freeze the whole virtual desktop (all screens) as one pixmap BEFORE we
-        # show, so the overlay never appears in its own capture. (macOS uses the
-        # native NSColorSampler instead and never reaches this overlay.)
+        # Freeze the desktop BEFORE we show, so the overlay never appears in its
+        # own capture. (macOS uses the native NSColorSampler instead and never
+        # reaches this overlay.)
+        #
+        # Grab each screen SEPARATELY: on a mixed-DPI desktop every screen has
+        # its own device-pixel ratio, so one whole-desktop grab — which carries a
+        # single ratio — mis-maps logical->pixel on any screen scaled differently
+        # from the primary, and the error grows with distance from that screen's
+        # origin. Each shot keeps the ratio it was actually taken at.
         vg = QRect()
+        self._shots: list[tuple[QRect, object, object, float]] = []
         for s in QGuiApplication.screens():
-            vg = vg.united(s.geometry())
+            geo = s.geometry()
+            vg = vg.united(geo)
+            pm = s.grabWindow(0)
+            # Derive the ratio from the capture itself rather than trusting the
+            # pixmap's own devicePixelRatio: what grabWindow() stamps on it has
+            # varied across Qt versions, and pixels/logical-size is ground truth.
+            dpr = (pm.width() / geo.width()) if geo.width() else 1.0
+            pm.setDevicePixelRatio(dpr or 1.0)
+            self._shots.append((geo, pm, pm.toImage(), dpr or 1.0))
         self._vg = vg
-        self._pm = QGuiApplication.primaryScreen().grabWindow(
-            0, vg.x(), vg.y(), vg.width(), vg.height())
-        self._dpr = self._pm.devicePixelRatio() or 1.0
-        self._img = self._pm.toImage()
         self.setGeometry(vg)
         self._gpos = vg.topLeft()
         self._hex = "#000000"
 
+    def _shot_at(self, gpos: QPoint):
+        """The (geometry, pixmap, image, dpr) shot whose screen holds `gpos`."""
+        for shot in self._shots:
+            if shot[0].contains(gpos):
+                return shot
+        return self._shots[0] if self._shots else None
+
     def _sample(self, gpos: QPoint) -> QColor:
-        x = int((gpos.x() - self._vg.x()) * self._dpr)
-        y = int((gpos.y() - self._vg.y()) * self._dpr)
-        x = min(self._img.width() - 1, max(0, x))
-        y = min(self._img.height() - 1, max(0, y))
-        return QColor(self._img.pixelColor(x, y))
+        shot = self._shot_at(gpos)
+        if shot is None:
+            return QColor(0, 0, 0)
+        geo, _pm, img, dpr = shot
+        x = int((gpos.x() - geo.x()) * dpr)
+        y = int((gpos.y() - geo.y()) * dpr)
+        x = min(img.width() - 1, max(0, x))
+        y = min(img.height() - 1, max(0, y))
+        return QColor(img.pixelColor(x, y))
 
     def showEvent(self, e) -> None:
         super().showEvent(e)
@@ -332,7 +359,11 @@ class EyedropperOverlay(QWidget):
 
     def paintEvent(self, e) -> None:
         p = QPainter(self)
-        p.drawPixmap(0, 0, self._pm)
+        # One blit per screen; each pixmap carries its own ratio so a
+        # differently-scaled monitor draws at its true logical size.
+        for geo, pm, _img, _dpr in self._shots:
+            o = geo.topLeft() - self._vg.topLeft()
+            p.drawPixmap(o.x(), o.y(), pm)
         lp = self._gpos - self._vg.topLeft()
         # Crosshair — dark stroke under a light one so it reads on any colour.
         for pen in (QPen(QColor(0, 0, 0, 150), 3), QPen(QColor(255, 255, 255, 235), 1)):
