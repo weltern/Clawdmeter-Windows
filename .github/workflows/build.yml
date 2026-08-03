@@ -87,14 +87,31 @@ jobs:
           else
             echo "::error::libqwayland.so missing from the bundle (Clawdmeter.spec keep-list regression)"; exit 1
           fi
-      # The release tarball (Clawdmeter-<ver>-linux-x86_64.tar.gz + .sha256) is
-      # built by build.sh above, so there's no separate packaging step here.
+      - name: Assert the AppImage was built and runs
+        # build.sh SKIPS the AppImage (with a warning, not an error) when
+        # appimagetool can't be fetched, so that a no-network build still yields
+        # a tarball. That must never pass silently in CI -- a release missing an
+        # advertised asset is worse than a failed build.
+        run: |
+          img="$(ls Clawdmeter-*-x86_64.AppImage 2>/dev/null | head -1)"
+          if [ -z "$img" ]; then
+            echo "::error::no AppImage produced — build.sh skipped it (appimagetool fetch or checksum failed)"; exit 1
+          fi
+          sha256sum -c "$img.sha256"
+          set +e
+          QT_QPA_PLATFORM=offscreen timeout 8 "./$img" --mock >/tmp/ai 2>&1
+          [ $? -eq 124 ] && echo "OK — AppImage still running after 8s" || { echo "FAILED:"; cat /tmp/ai; exit 1; }
+      # Both Linux release assets (Clawdmeter-<ver>-linux-x86_64.tar.gz and
+      # Clawdmeter-<ver>-x86_64.AppImage, each + .sha256) are built by build.sh
+      # above, so there's no separate packaging step here.
       - uses: actions/upload-artifact@v4
         with:
           name: clawdmeter-linux
           path: |
             Clawdmeter-*-linux-x86_64.tar.gz
             Clawdmeter-*-linux-x86_64.tar.gz.sha256
+            Clawdmeter-*-x86_64.AppImage
+            Clawdmeter-*-x86_64.AppImage.sha256
 
   launch-matrix:
     # Prove the built binary starts on a spread of distros/glibc versions. Bare

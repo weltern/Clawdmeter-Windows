@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metainfo. NOT CURRENTLY SHIPPED — see the note in build.sh.
+
+  It cannot be installed as-is: appimagetool looks for it at
+  usr/share/metainfo/<desktop-basename>.appdata.xml, then runs `appstreamcli
+  validate`, which fails with metainfo-filename-cid-mismatch unless the filename
+  equals the component id below. Reconciling them means renaming
+  clawdmeter.desktop to com.clawdmeter.Clawdmeter.desktop — which run_at_startup.py
+  (autostart entry) and main.py (setDesktopFileName, Wayland icon matching) both
+  depend on, with tests. That rename is worth doing as its own piece of work, most
+  obviously alongside a Flatpak, which wants the same reverse-DNS convention.
+
+  Until then this file is groundwork, not a build input. Keep <releases> in step
+  with APP_VERSION in src/app_settings.py if you do wire it up.
+-->
+<component type="desktop-application">
+  <id>com.clawdmeter.Clawdmeter</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>Clawdmeter</name>
+  <summary>Claude Code usage dashboard in your system tray</summary>
+
+  <description>
+    <p>
+      Clawdmeter is a desktop dashboard for Claude Code usage. It shows your
+      session (5h) and weekly (7d) limits with reset countdowns, the tokens each
+      window has actually used, and a shelf of mascots — one per active Claude
+      Code session — that animate to match what Claude is doing right now.
+    </p>
+    <p>
+      A Stats page values your local transcripts against a bundled rate card to
+      show what your subscription is worth, where that value came from, and how
+      you work. Everything on it is computed locally; no extra API calls.
+    </p>
+    <p>
+      It lives in the system tray, with a full dashboard, a compact list and a
+      tiny always-on-top readout to choose between, and 16 built-in themes plus
+      a custom theme editor.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">clawdmeter.desktop</launchable>
+
+  <url type="homepage">https://github.com/weltern/Clawdmeter-Windows</url>
+  <url type="bugtracker">https://github.com/weltern/Clawdmeter-Windows/issues</url>
+
+  <provides>
+    <binary>Clawdmeter</binary>
+  </provides>
+
+  <categories>
+    <category>Utility</category>
+    <category>Monitor</category>
+  </categories>
+
+  <keywords>
+    <keyword>Claude</keyword>
+    <keyword>Anthropic</keyword>
+    <keyword>usage</keyword>
+    <keyword>tokens</keyword>
+    <keyword>monitor</keyword>
+  </keywords>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="3.0.0" date="2026-08-03"/>
+  </releases>
+</component>

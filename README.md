@@ -328,7 +328,10 @@ one file for both Apple Silicon and Intel.
 
 **Linux** runs on X11 and Wayland, with the tray icon provided by AppIndicator /
 KStatusNotifierItem — see [Linux notes](#linux-notes) for the two Wayland
-differences and what to do if no tray icon appears.
+differences and what to do if no tray icon appears. It ships **two ways**, and
+neither supersedes the other: the **AppImage** is a single file you make
+executable and run, while the **tarball**'s `install.sh` registers a proper
+menu entry. Pick by whether you'd rather have zero install steps or a launcher.
 
 ![Clawdmeter on Linux — the dashboard with three active sessions showing SEARCHING, INTEGRATING and IDLE, and the session bar in its red overage state](assets/Screenshot-linux.png)
 
@@ -348,7 +351,8 @@ bundles Python + Qt, so there's nothing else to install.
 | **Windows** | `Clawdmeter.exe` | ~31 MB | Single self-contained file — just run it. |
 | **macOS** | `Clawdmeter.dmg` | ~81 MB | Open it, drag **Clawdmeter** to Applications. Universal — one download for both Apple Silicon and Intel. |
 | **macOS** (zip) | `Clawdmeter-macos.zip` | ~72 MB | The same `.app`, if you'd rather not mount a disk image. |
-| **Linux** | `Clawdmeter-3.0.0-linux-x86_64.tar.gz` | ~56 MB | Unpack and run `./install.sh` — it drops the binary in `~/.local/bin` and adds a menu entry. |
+| **Linux** | `Clawdmeter-3.0.0-x86_64.AppImage` | ~57 MB | `chmod +x` it and run. One file, no install, delete it to uninstall. |
+| **Linux** (tarball) | `Clawdmeter-3.0.0-linux-x86_64.tar.gz` | ~56 MB | Unpack and run `./install.sh` — it drops the binary in `~/.local/bin` and **adds a menu entry**. |
 
 Every file ships with a `.sha256` beside it. Verify before running if you like:
 `sha256sum -c Clawdmeter-3.0.0-linux-x86_64.tar.gz.sha256` (or `shasum -a 256` /
@@ -449,7 +453,7 @@ seeing every state without burning tokens.
 | Platform | Command | Output |
 |---|---|---|
 | Windows | `.\build.ps1` | `dist\Clawdmeter.exe` — single file, no console window, ~31 MB |
-| Linux | `bash build.sh` | `dist/Clawdmeter` + `Clawdmeter-<version>-linux-x86_64.tar.gz` (+ `.sha256`) |
+| Linux | `bash build.sh` | `dist/Clawdmeter`, `Clawdmeter-<version>-linux-x86_64.tar.gz` **and** `Clawdmeter-<version>-x86_64.AppImage` (each + `.sha256`) |
 | macOS | `bash build-macos.sh` | `dist/Clawdmeter.app`, `Clawdmeter-macos.zip` and `Clawdmeter.dmg` (each + `.sha256`) |
 
 Each build must run **on** the platform it targets — there is no cross-compiling.
@@ -472,7 +476,15 @@ It's picked up automatically from `/Library/Frameworks`. Confirm the result with
 **Linux: build on the oldest glibc you intend to support.** PyInstaller vendors
 the host's system libraries, so a binary built on a newer distribution simply
 will not start on an older one. The releases are built on Ubuntu 22.04
-(glibc 2.35).
+(glibc 2.35). **This applies to the AppImage too** — an AppImage bundles the
+app's libraries, not glibc, so it does not widen compatibility.
+
+`build.sh` fetches a pinned `appimagetool` (never the rolling `continuous` tag)
+and verifies its checksum. If it can't, the AppImage is **skipped with a
+warning** and the tarball is still produced — CI turns that skip into a hard
+failure so a release can't quietly ship without it. The AppImage embeds the
+type2 runtime, which links libfuse statically: users need neither `libfuse2` nor
+`libfuse3` installed.
 
 `Clawdmeter.spec` prunes the parts of PySide6/Qt the app doesn't use (the
 QML/Quick stack, the ~20 MB software-OpenGL fallback, unused image-format and
