@@ -8,6 +8,22 @@ time. `Dashboard.closeEvent` already re-queries for exactly this reason
 (dashboard.py, "a tray host can register after startup"); the startup decision
 did not.
 
+CONFIRMED ON HARDWARE 2026-08-03, VM 113 (Ubuntu 22.04, real GNOME console
+session, ubuntu-appindicators as the tray host). The race was staged by
+disabling the extension, launching with --startup, then re-enabling it:
+
+    stage                       un-fixed        fixed
+    t+3s  (no tray yet)         VISIBLE         hidden
+    t+7s  (tray now up)         VISIBLE         hidden
+    t+15s (past the grace)      VISIBLE         hidden
+
+The un-fixed build popped its window before the tray had even appeared and
+never returned to the tray. Controls run immediately before: clean baseline 0
+visible, a normal launch 1, and --startup WITH a tray 0 -- so the check
+distinguishes shown from hidden. (An earlier attempt measured nothing: two
+autostarted Clawdmeter processes owned /tmp/Clawdmeter.singleton.1000, so every
+launch handed off to them and exited. Kill those and delete the socket first.)
+
 These drive the real QTimer, so they measure the wait rather than assert its
 shape. Headless via QT_QPA_PLATFORM=offscreen.
 """
