@@ -3180,6 +3180,7 @@ class Dashboard(QMainWindow):
         self._titlebar_anim_group = QParallelAnimationGroup(self)
         for _a in (self._tb_max_anim, self._tb_min_anim, self._win_size_anim):
             self._titlebar_anim_group.addAnimation(_a)
+        self._titlebar_anim_group.finished.connect(self._on_titlebar_anim_finished)
 
         self._mouse_poll = QTimer(self)
         self._mouse_poll.setInterval(80)
@@ -4517,6 +4518,26 @@ class Dashboard(QMainWindow):
         # height only reached disk if the user happened to quit cleanly. That
         # made double-click-to-fit -- now the ONLY way to fix a bad height --
         # the one change most likely to be lost.
+        self._remember_settled_size()
+        self._size_save_timer.start()
+
+    def _on_titlebar_anim_finished(self) -> None:
+        """Snapshot once the title bar has finished collapsing.
+
+        A resize made while the bar was revealed is unsettled, so resizeEvent
+        skips the snapshot. The hide animation then lands the window on the
+        right height -- resizeEvent kept `_collapsed_window_height` in step
+        during the drag, and that is what the hide targets -- but the
+        animation's final QResizeEvent is delivered while the group is still
+        Running, so nothing records the new height. In practice a later content
+        reflow usually does, which is why the loss is intermittent rather than
+        reliable; this makes it deterministic instead of a race.
+
+        Safe in the reveal direction: that ends with the bar shown, which
+        `_size_is_settled` rejects, so the snapshot is a no-op. An animation
+        interrupted by `stop()` never emits `finished`, so a mid-tween height
+        can't be recorded either.
+        """
         self._remember_settled_size()
         self._size_save_timer.start()
 

@@ -321,3 +321,125 @@ def test_the_fit_animation_snapshots_and_schedules_a_save():
     src = inspect.getsource(dashboard.Dashboard._on_fit_anim_finished)
     assert "_remember_settled_size()" in src, "the snapped height is never captured"
     assert "_size_save_timer.start()" in src, "the snapped height is never scheduled"
+
+
+# --- F1: a resize made while the bar was revealed ----------------------------
+
+class _AutoHideWin:
+    """A window that can actually move between revealed / animating / at rest.
+
+    _Win above is frozen at construction; this one runs the gesture sequence so
+    the snapshot behaviour can be asserted rather than pattern-matched.
+    """
+
+    _size_is_settled = dashboard.Dashboard._size_is_settled
+    _remember_settled_size = dashboard.Dashboard._remember_settled_size
+    _on_titlebar_anim_finished = dashboard.Dashboard._on_titlebar_anim_finished
+
+    def __init__(self, resting_height):
+        self._auto_hide_enabled = True
+        self._w, self._h = 668, resting_height
+        self._bar_h = 0
+        self._anim = QAbstractAnimation.Stopped
+        self._last_settled_size = None
+        self._collapsed_window_height = resting_height
+        self.saves_scheduled = 0
+        win = self
+
+        class _Bar:
+            def maximumHeight(_s):
+                return win._bar_h
+        self.title_bar = _Bar()
+
+        class _Group:
+            def state(_s):
+                return win._anim
+        self._titlebar_anim_group = _Group()
+
+        class _Timer:
+            def start(_s):
+                win.saves_scheduled += 1
+        self._size_save_timer = _Timer()
+
+    def isVisible(self):
+        return True
+
+    def isMaximized(self):
+        return False
+
+    def isFullScreen(self):
+        return False
+
+    def height(self):
+        return self._h
+
+    def width(self):
+        return self._w
+
+    # -- gestures, each ending where Qt would leave the window --
+
+    def reveal_bar(self):
+        self._h += H
+        self._bar_h = H
+
+    def drag_bottom_edge_to(self, h):
+        """A manual resize: what Dashboard.resizeEvent does, in order."""
+        self._h = h
+        if self._anim == QAbstractAnimation.Stopped:
+            self._collapsed_window_height = self._h - self._bar_h
+        self._remember_settled_size()
+
+    def collapse_bar(self):
+        """The hide animation: lands on collapsed+0, THEN emits finished.
+
+        Qt delivers the animation's last QResizeEvent while the group is still
+        Running, which is why resizeEvent alone cannot record the new height.
+        """
+        self._anim = QAbstractAnimation.Running
+        self._h = self._collapsed_window_height
+        self._bar_h = 0
+        self._remember_settled_size()          # the final in-flight resizeEvent
+        self._anim = QAbstractAnimation.Stopped
+        self._on_titlebar_anim_finished()      # QParallelAnimationGroup.finished
+
+
+def test_a_resize_made_while_the_bar_was_revealed_survives_the_collapse():
+    """Reveal, drag the bottom edge, let the bar hide, quit. No content reflow
+    happens in between -- so nothing but the animation's own finished signal can
+    record the new height."""
+    w = _AutoHideWin(resting_height=400)
+    w.reveal_bar()                    # 448 tall, bar showing
+    w.drag_bottom_edge_to(548)        # user drags: resting height is now 500
+    w.collapse_bar()                  # back to 500 tall, bar collapsed
+
+    assert w._last_settled_size == (668, 548), (
+        "the resize made while the bar was revealed was never recorded "
+        f"(got {w._last_settled_size}, the pre-drag height was (668, 448))")
+    assert w.saves_scheduled == 1, "the new height was never scheduled for disk"
+
+
+def test_finishing_a_REVEAL_does_not_record_the_revealed_height():
+    """finished fires for both directions; only the collapse is at rest."""
+    w = _AutoHideWin(resting_height=400)
+    w.reveal_bar()
+    w._on_titlebar_anim_finished()
+    assert w._last_settled_size is None, "the 48px bar leaked into the saved height"
+
+
+def test_the_titlebar_animation_group_is_wired_to_the_snapshot():
+    """The handler is useless unless __init__ connects it. Matched on the AST,
+    not the source text: a name in a comment or docstring must not satisfy it."""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(dashboard.Dashboard.__init__)))
+    wired = any(
+        isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute) and n.func.attr == "connect"
+        and isinstance(n.func.value, ast.Attribute) and n.func.value.attr == "finished"
+        and isinstance(n.func.value.value, ast.Attribute)
+        and n.func.value.value.attr == "_titlebar_anim_group"
+        for n in ast.walk(tree)
+    )
+    assert wired, "_titlebar_anim_group.finished is never connected"
