@@ -4591,6 +4591,22 @@ class Dashboard(QMainWindow):
         # style() no-ops without pyobjc and returns False, in which case
         # FullScreenNone was never applied and fullscreen IS reachable. Keep the
         # guard so that build doesn't re-style mid-transition.
+        #
+        # style() only, NOT _macos_apply_native_chrome() — deliberately, and it
+        # is not the always-on-top bug it looks like. A code review flagged that
+        # this omits set_level(), so always-on-top would be lost on a state
+        # change. Measured on the Intel VM (macOS 15.7.7, 2026-08-02) against
+        # the live NSWindow level, with a control proving the reader could see a
+        # forced 0: the level held at NSFloatingWindowLevel (3) through
+        # minimise/restore AND zoom/unzoom. Two reasons, and they differ per
+        # transition:
+        #   - restore: showEvent fires and runs _macos_apply_native_chrome(),
+        #     which DOES set_level(). Confirmed by call-count, 1 -> 2.
+        #   - zoom/unzoom: set_level() is never called (count unchanged) and the
+        #     level still holds — that transition doesn't disturb it at all.
+        # style() itself never touches the level (macos_window.style), so there
+        # is nothing here to undo. Adding set_level() would be harmless but
+        # unverifiable: no test could fail on its absence.
         if sys.platform == "darwin":
             from PySide6.QtCore import QEvent
             if event.type() == QEvent.Type.WindowStateChange and not self.isFullScreen():
