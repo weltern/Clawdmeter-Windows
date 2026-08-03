@@ -283,7 +283,7 @@ channels are shared across every alert.
   you can resume — but only when you were actually near the limit (or already
   throttled), so it stays quiet otherwise.
 
-  ![Clawdmeter limit-reset notification — "Claude limit reset: Session limit has reset, you can resume"](assets/Screenshot-Session-Limit-Reset.png)
+  ![Clawdmeter limit-reset notification — "Claude limit reset" over "Session limit has reset — you can resume."](assets/Screenshot-Session-Limit-Reset.png)
 
 - **When approaching a limit** warns you *before* you run out — pick a separate
   **% threshold for the 5h session and the 7d week** (50–99%; defaults 90% and
