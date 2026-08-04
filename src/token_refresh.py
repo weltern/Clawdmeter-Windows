@@ -30,6 +30,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+import macos_keychain
+
 OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
 # Public Claude Code OAuth client id (the same value Claude Code itself uses).
 CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -60,10 +62,46 @@ def _oauth_block(data: dict) -> dict | None:
     return None
 
 
-def token_expiry_ms(path: Path) -> int | None:
+def _macos_keychain_active() -> bool:
+    """True when credentials come from the macOS Keychain, not a file.
+
+    An explicit CLAUDE_CREDENTIALS_PATH override always means a real file, even
+    on macOS, so it opts back into the file path.
+    """
+    return macos_keychain.is_macos() and not os.environ.get("CLAUDE_CREDENTIALS_PATH")
+
+
+def _read_credentials_raw(path: Path, *, blocking: bool = True) -> str | None:
+    """Raw credentials JSON — from the macOS Keychain, else the file at ``path``.
+
+    Read-only: this never writes. Used by the expiry helpers so the Settings
+    token-status line shows the real expiry on macOS too.
+
+    ``blocking=False`` is for callers on the UI thread. The macOS Keychain read
+    can hang indefinitely on an authorisation dialog, so those callers take the
+    last blob a worker cached and accept None until the poller has run once. It
+    is a keyword argument with a safe default so a new caller has to opt into
+    the blocking behaviour deliberately.
+    """
+    if _macos_keychain_active():
+        blob = (macos_keychain.read_credentials() if blocking
+                else macos_keychain.cached_credentials())
+        if blob is not None:
+            return blob
+        # Fall through to the file on the off chance one exists.
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def token_expiry_ms(path: Path, *, blocking: bool = True) -> int | None:
+    raw = _read_credentials_raw(path, blocking=blocking)
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
         return None
     blk = _oauth_block(data)
     if blk and isinstance(blk.get("expiresAt"), (int, float)):
@@ -128,6 +166,19 @@ def _write_tokens_safely(path: Path, original_raw: str, data: dict,
 
 def refresh(path: Path, *, timeout: float = 20.0) -> RefreshResult:
     """Refresh the access token in `path`. Safe: backs up + reverts on failure."""
+    # macOS: the token lives in the login Keychain and writing the rotated token
+    # back there isn't implemented yet (deliberate — a Keychain write mutates the
+    # user's real Claude Code auth). Re-authenticating in Claude Code updates the
+    # Keychain and Clawdmeter re-reads it on the next poll, so guide the user
+    # there instead of failing on a credentials file that doesn't exist on Mac.
+    if _macos_keychain_active():
+        return RefreshResult(
+            False,
+            "Token auto-refresh isn't supported on macOS yet — run `claude` to "
+            "re-authenticate. Clawdmeter reads the refreshed token from the "
+            "Keychain automatically.",
+            None,
+        )
     try:
         original_raw = path.read_text(encoding="utf-8")
         data = json.loads(original_raw)

@@ -205,7 +205,11 @@ def test_existing_tile_sprite_resizes_with_count():
     ])
     QTest.qWait(SETTLE_MS)
     assert tile_a.sprite._size == 130          # 3 sessions -> 130, survivor re-scaled
-    assert tile_a.sprite.maximumWidth() == 130
+    # maximumWidth is no longer pinned: the shelf mascot is scale-to-fit, so the
+    # count sets its PREFERRED size and the layout decides the real one. Pinning
+    # it was what let the mascots drive the window's height.
+    assert tile_a.sprite._scale_to_fit
+    assert tile_a.sprite.sizeHint().width() == 130
 
     shelf.set_sessions([_state("a", Activity.CODING)])
     QTest.qWait(SETTLE_MS)

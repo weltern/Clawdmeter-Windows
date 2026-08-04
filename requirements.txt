@@ -1,2 +1,16 @@
 PySide6==6.11.1
 httpx==0.27.2
+# macOS only: the native NSColorSampler system eyedropper (AppKit) for the theme
+# editor's colour picker. The marker keeps it off Windows/Linux, where the DIY
+# screenshot-overlay eyedropper is used instead.
+pyobjc-framework-Cocoa>=10.3 ; sys_platform == "darwin"
+# macOS only: SecItemCopyMatching, so the Keychain read happens in-process. Via
+# the `security` CLI the authorisation dialog names *security* instead of
+# Clawdmeter, and an "Always Allow" grant attaches to that shared binary rather
+# than to us. Falls back to the CLI if this isn't bundled.
+pyobjc-framework-Security>=10.3 ; sys_platform == "darwin"
+# macOS only: SMAppService run-at-login, so the entry appears in System
+# Settings as "Clawdmeter" under Open at Login instead of a raw launchd
+# label under Allow in the Background. Falls back to a hand-written
+# LaunchAgent plist if this is not bundled.
+pyobjc-framework-ServiceManagement>=10.3 ; sys_platform == "darwin"

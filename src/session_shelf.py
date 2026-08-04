@@ -12,6 +12,7 @@ owns the multiplied mascot/activity layer.
 
 from __future__ import annotations
 
+import sys
 import time
 from datetime import datetime
 
@@ -33,6 +34,8 @@ from PySide6.QtWidgets import (
     QLayout,
     QMenu,
     QScrollArea,
+    QSizePolicy,
+    QSpacerItem,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -41,10 +44,13 @@ from PySide6.QtGui import (
     QAction, QColor, QFont, QFontMetrics, QIcon, QPainter,
 )
 
+import macos_window
+import theme
 import winutil
 from mood import GROUP_ANIMS
 from sprite_player import SpritePlayer, assets_root
-from uiutil import format_minutes, heat
+from uiutil import (WARN_PCT_DEFAULT, bar_warn_thresholds, make_popup,
+                    format_minutes, heat)
 from transcript import (
     ACTIVITY_ANIMS,
     ACTIVITY_COLORS,
@@ -60,14 +66,18 @@ from transcript import (
 # leads with the sleep expression, matching the dashboard's empty-state mood.
 _IDLE_ANIMS = GROUP_ANIMS[0]
 
-# Local copy of the dashboard's visual tokens. Kept here (rather than imported
-# from dashboard.py) so the shelf has no back-dependency on its host window.
-_BG = "#0e1116"
-_TEXT = "#e6edf3"
-_MUTED = "#9ca3af"
-_IDLE_COLOR = ACTIVITY_COLORS[Activity.IDLE]
+# Chrome tokens from the app palette (Phase 1 theming). Frozen at import for
+# now; Phase 2 adds a refresh hook so a live theme switch restyles the shelf.
+_P = theme.active()
+_BG = _P.bg
+_TEXT = _P.text
+_MUTED = _P.text_dim
+# Idle indicator (label/dot/glow): a theme role so it stays readable on every
+# background — unlike the other activity hues, which are fixed & meaning-bearing.
+_IDLE_COLOR = _P.idle
 
-SHELF_STYLESHEET = f"""
+def _build_shelf_qss() -> str:
+    return f"""
 QWidget#shelfRoot {{ background-color: {_BG}; }}
 QScrollArea#shelfScroll {{ background: transparent; border: none; }}
 QWidget#shelfRow {{ background: transparent; }}
@@ -79,20 +89,32 @@ QLabel#tileActivity {{
     font-size: 11px; font-weight: 600; letter-spacing: 1px;
 }}
 QLabel#tileDot {{ font-size: 11px; }}
+QLabel#tileAgentsText {{ font-size: 10px; color: {_MUTED}; }}
 QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 0 2px; }}
 QScrollBar::handle:horizontal {{
-    background: #374151; border-radius: 4px; min-width: 24px;
+    background: {_P.border}; border-radius: 4px; min-width: 24px;
 }}
-QScrollBar::handle:horizontal:hover {{ background: #4b5563; }}
+QScrollBar::handle:horizontal:hover {{ background: {_P.border_dim}; }}
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
 """
+
+
+SHELF_STYLESHEET = _build_shelf_qss()
 
 
 # Top padding inside a tile so the mascot's glow (drop-shadow blur ~38) isn't
 # clipped at the tile's top edge. The mascot sits with internal margin now
 # (consistent-crop), so the glow only needs a little extra room above.
 _GLOW_PAD = 14
+
+# The tile column's vertical padding: _GLOW_PAD above, 4 below.
+_TILE_V_MARGINS = _GLOW_PAD + 4
+
+# The shelf row's own padding (4 top + 4 bottom, see _row's margins). The
+# tile is given the viewport MINUS this, so sizing against the raw viewport
+# height over-commits every tile by exactly this much.
+_ROW_V_MARGINS = 8
 
 
 def _ago_text(last_event_ts: float | None) -> str:
@@ -143,6 +165,10 @@ _LABEL_MIN_W = 150
 AGENT_SPRITE = 38
 # Column spacing above the agents row (matches the tile's QVBoxLayout spacing).
 AGENTS_ROW_SPACING = 4
+
+# Gap between a tile's stacked rows. Named so _content_h and the column that
+# lays those rows out cannot drift apart.
+TILE_ROW_SPACING = 4
 # Height reserved for the agents row before a real one can be measured; once a
 # tile has agents the true measured height is used instead (see _agent_extra).
 AGENT_ROW_FALLBACK = 46
@@ -163,7 +189,8 @@ class ScrollingLabel(QWidget):
     _END_GAP_PX = 12         # trailing gap so the last glyph isn't flush to edge
 
     def __init__(self, parent=None, *, px: int = 13, bold: bool = True,
-                 color: str = _TEXT, letter_spacing: float = 0.5,
+                 color: str | None = None, role: str = "text",
+                 letter_spacing: float = 0.5,
                  max_w: int = _LABEL_MIN_W, align=Qt.AlignHCenter) -> None:
         super().__init__(parent)
         self._full = ""
@@ -177,11 +204,27 @@ class ScrollingLabel(QWidget):
         if letter_spacing:
             self._font.setLetterSpacing(QFont.AbsoluteSpacing, letter_spacing)
         self._fm = QFontMetrics(self._font)
-        self._color = QColor(color)
+        # A themed role ("text"/"muted") re-reads the live palette on a theme
+        # switch (see refresh_theme_color). An explicit `color` is fixed and
+        # opts out. Default is "text" so a bare ScrollingLabel() follows the
+        # primary text colour rather than baking it at import.
+        self._role = None if color else role
+        self._color = QColor(color if color else self._role_color(role))
         self.setFixedHeight(self._fm.height())
         self.setMaximumWidth(max_w)
         self._anim = QPropertyAnimation(self, b"scrollOffset", self)
         self._anim.setEasingCurve(QEasingCurve.InOutSine)
+
+    @staticmethod
+    def _role_color(role: str) -> str:
+        return _MUTED if role == "muted" else _TEXT
+
+    def refresh_theme_color(self) -> None:
+        """Re-read the palette for this label's role (called on a theme switch).
+        No-op for labels created with an explicit fixed colour."""
+        if self._role is not None:
+            self._color = QColor(self._role_color(self._role))
+            self.update()
 
     # --- public API (QLabel-like) -------------------------------------------
     def setText(self, text: str, tooltip: str | None = None) -> None:
@@ -298,10 +341,37 @@ class ScrollingLabel(QWidget):
 
 # Usage-bar palette (was QProgressBar QSS; now painted so the bar can render
 # past 100% with a distinct overage colour).
-_BAR_TRACK = "#1f2937"
-_BAR_BORDER = "#374151"
-_BAR_OVERAGE = "#A50F1A"   # deep fire-truck red — the overage overflow
-_BAR_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
+_BAR_TRACK = _P.surface
+_BAR_BORDER = _P.border
+
+# The usage-bar fill tracks the theme so the bar reads as part of the palette.
+# Sub-100% it ramps from the accent (low usage) through amber to red near the
+# limit; over 100% it flips to an alarm red. The shipped default keeps its exact
+# hand-tuned salmon ramp and deep overage red so it doesn't change.
+_DEFAULT_HEAT = {"cool": "#CE7D6B", "warm": "#B85C42", "hot": "#8B2E1A"}
+_DEFAULT_OVERAGE = "#A50F1A"   # deep fire-truck red
+
+
+def _heat_ramp(p) -> dict:
+    if p is theme.MIDNIGHT_SALMON:
+        return dict(_DEFAULT_HEAT)
+    return {"cool": p.accent, "warm": p.warn, "hot": p.danger}
+
+
+def _overage_color(p) -> str:
+    """The fill once a window is past 100%.
+
+    danger_strong, not danger: the "hot" band below 100% is already p.danger, so
+    reusing it left the red band and the overage bar the exact same colour on
+    every theme but the shipped default. danger_strong is the darker shade each
+    preset already curates (and which custom themes derive as danger blended 20%
+    toward black), so overage reads as "past danger" without inventing a colour.
+    Midnight Salmon keeps its hand-tuned deep red."""
+    return _DEFAULT_OVERAGE if p is theme.MIDNIGHT_SALMON else p.danger_strong
+
+
+_BAR_HEAT = _heat_ramp(_P)
+_BAR_OVERAGE = _overage_color(_P)
 
 
 class UsageBar(QWidget):
@@ -353,14 +423,18 @@ class UsageBar(QWidget):
         p.end()
 
 
-def apply_overage_bar(title_label, pct_label, bar, title: str, pct: int) -> None:
+def apply_overage_bar(title_label, pct_label, bar, title: str, pct: int,
+                      warn_at: int = WARN_PCT_DEFAULT) -> None:
     """Render one usage bar's title, percentage and fill with per-window overage.
 
     Under 100% the bar fills in its heat colour and the title is plain. At/over
     100% the window is in overage: the bar restarts red (the amount past 100),
     the title gains a red OVERAGE tag, and the percent shows the full figure
     (e.g. 120%). Shared by the full window's SESSION/WEEKLY bars and the compact
-    view's rows so both behave identically."""
+    view's rows so both behave identically.
+
+    ``warn_at`` is this window's yellow point — see uiutil.bar_warn_thresholds;
+    it differs between the 5h and 7d bars, so callers must pass the right one."""
     pct = max(0, int(pct))
     over = max(0, pct - 100)
     if over > 0:
@@ -370,7 +444,7 @@ def apply_overage_bar(title_label, pct_label, bar, title: str, pct: int) -> None
         bar.set_values(0, over, "cool")
     else:
         title_label.setText(title)
-        bar.set_values(pct, 0, heat(pct))
+        bar.set_values(pct, 0, heat(pct, warn_at))
     pct_label.setText(f"{pct}%")
 
 
@@ -407,7 +481,22 @@ class AgentMascot(QWidget):
 
 class SessionTile(QWidget):
     """One session: glowing mascot + project name + activity + status dot,
-    plus a row of small child mascots when the session has live subagents."""
+    plus a row of small child mascots when the session has live subagents.
+
+    The mascot and the subagent row are ELASTIC — they scale with the tile and
+    drop out when it gets short. The name, activity and status rows are not:
+    they are the facts you read at a glance, so they are what survives.
+
+    Dropping something out is a discrete decision, which Qt's continuous layout
+    cannot express on its own — a sprite told to shrink just keeps shrinking,
+    which is how the mascots ended up 20px tall instead of gone. Hence the two
+    thresholds below, with a deliberate gap between them: hiding a child changes
+    the layout, which changes the height, so without hysteresis the tile would
+    sit on the boundary flickering the mascot in and out forever.
+    """
+
+    # Height the mascot needs before it is worth drawing at all, and the (higher)
+    # height at which it comes back. The gap is the hysteresis band.
 
     # A single status dot reused for both states — the glyph stays, only its
     # color changes (warm/active accent when live, dim grey when idle).
@@ -427,7 +516,7 @@ class SessionTile(QWidget):
         # child widgets are clipped to the tile, so without it the glow's upper
         # halo is sliced off at the tile's top edge.
         col.setContentsMargins(12, _GLOW_PAD, 12, 4)
-        col.setSpacing(4)
+        col.setSpacing(TILE_ROW_SPACING)
         col.setAlignment(Qt.AlignHCenter)
         # SetNoConstraint + a zero minimum let the enter/leave width animation
         # shrink the tile below the mascot's fixed size (the content is clipped),
@@ -435,8 +524,21 @@ class SessionTile(QWidget):
         # layout still allocates the tile its sizeHint width when unconstrained.
         col.setSizeConstraint(QLayout.SetNoConstraint)
         self.setMinimumWidth(0)
+        # Fill the shelf's height. Without this the tile sized itself to its
+        # CONTENT and sat at the top of the strip, so the density check read a
+        # ~70px tile inside a 500px shelf, concluded there was no room for a
+        # mascot, and left the rest as a void above the bars. The tile has to
+        # occupy the space before it can decide what fits in it.
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
-        self.sprite = SpritePlayer(size=sprite_size)
+        # Scale-to-fit: the mascot renders into whatever height the layout
+        # gives it, rather than pinning a size that the window then has to grow
+        # to accommodate. min_size 0 is what makes "collapse to text-only" a
+        # LAYOUT outcome instead of a special case — when the shelf runs out of
+        # room the sprite shrinks away and the name / activity / status rows,
+        # which have real minimums of their own, are what survive.
+        self.sprite = SpritePlayer(size=sprite_size, scale_to_fit=True,
+                                   min_size=0)
         # The drop shadow is the colored "glow" behind the mascot. Offset 0 so
         # it haloes evenly; the color is swapped per activity in update_state.
         self._glow = QGraphicsDropShadowEffect(self)
@@ -444,7 +546,25 @@ class SessionTile(QWidget):
         self._glow.setOffset(0, 0)
         self._glow.setColor(QColor(_IDLE_COLOR))
         self.sprite.setGraphicsEffect(self._glow)
-        col.addWidget(self.sprite, 0, Qt.AlignHCenter)
+        # NO alignment flag: like Qt.AlignTop on the tile, Qt.AlignHCenter here
+        # pinned the sprite's WIDTH to its sizeHint, so the mascot could never
+        # render wider than 110px however wide the tile got. The QLabel already
+        # centres its own pixmap (setAlignment in SpritePlayer), so the flag
+        # bought nothing and cost the whole horizontal axis.
+        # Leading spacer, inert while a mascot is drawn so the rows stay
+        # top-aligned under it. In text-only mode it is made expanding, which
+        # pairs it with the trailing stretch below and centres the rows in the
+        # space the mascot vacated — rather than leaving all of it underneath,
+        # which read as a dead band between the session text and the usage bars.
+        #
+        # Two matched stretches rather than a computed half-leftover: the
+        # trailing stretch also absorbs the column's own margins, so arithmetic
+        # here came out 41px above against 55px below. Letting the layout
+        # divide it is exact, and it stays exact if the margins ever change.
+        self._top_pad = QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Fixed)
+        col.insertItem(0, self._top_pad)
+
+        col.addWidget(self.sprite, 0)   # FIXED box; the shelf sizes it
 
         # Title label: elides at rest, scrolls on hover, full text in a tooltip.
         self.project_label = ScrollingLabel()
@@ -459,6 +579,13 @@ class SessionTile(QWidget):
         act_row.setAlignment(Qt.AlignHCenter)
         self.status_dot = QLabel(self._DOT, objectName="tileDot")
         self.activity_label = QLabel("", objectName="tileActivity")
+        # Fixed height: a QLabel defaults to Preferred and will happily absorb
+        # spare vertical space, which pushed the name / activity / status lines
+        # apart whenever the mascot was hidden and its stretch went unused.
+        # ScrollingLabel already pins its own height; these two did not.
+        for _lbl in (self.status_dot, self.activity_label):
+            _lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            _lbl.setFixedHeight(_lbl.sizeHint().height())
         act_row.addWidget(self.status_dot)
         act_row.addWidget(self.activity_label)
         col.addLayout(act_row)
@@ -466,9 +593,17 @@ class SessionTile(QWidget):
         # Secondary line — the target being acted on (file/pattern/…, else the
         # tool name) when live, "last active Nm ago" when idle. Scrolls on hover
         # like the title, since file paths/queries can be long.
-        self.sub_label = ScrollingLabel(px=10, bold=False, color=_MUTED,
+        self.sub_label = ScrollingLabel(px=10, bold=False, role="muted",
                                         letter_spacing=0, max_w=self._label_max_w)
         col.addWidget(self.sub_label, 0, Qt.AlignHCenter)
+
+        # Text stand-in for the subagent mascots, used when the tile is too short
+        # to draw them: "3 subagents" says the same thing in one line.
+        self.agents_label = QLabel("", objectName="tileAgentsText")
+        self.agents_label.setAlignment(Qt.AlignHCenter)
+        self.agents_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.agents_label.hide()
+        col.addWidget(self.agents_label, 0, Qt.AlignHCenter)
 
         # Row of child mascots for live subagents — hidden until the session has any.
         self._agents: dict[str, AgentMascot] = {}
@@ -479,6 +614,11 @@ class SessionTile(QWidget):
         self._agents_row.setAlignment(Qt.AlignHCenter)
         self._agents_box.hide()
         col.addWidget(self._agents_box)
+        # Slack collects HERE, below everything. With the sprite taking it
+        # instead, a tile with two text rows gave its mascot more height than a
+        # tile with three, so the session names started at different heights and
+        # the activity/status lines under them never lined up.
+        col.addStretch(1)
 
     def has_agents(self) -> bool:
         return bool(self._agents)
@@ -504,7 +644,111 @@ class SessionTile(QWidget):
                 self._agents[aid] = m
                 self._agents_row.addWidget(m, 0, Qt.AlignVCenter)
             m.update_state(agent)
-        self._agents_box.setVisible(bool(self._agents))
+        # Presentation is decided shelf-wide; ask the shelf to re-run it rather
+        # than deciding locally, or a tile gaining agents overrides the uniform
+        # sizing and hides its own mascot.
+        shelf = self.parent()
+        while shelf is not None and not hasattr(shelf, "_layout_tiles"):
+            shelf = shelf.parent()
+        if shelf is not None:
+            shelf._layout_tiles()
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        # Sizing is decided shelf-wide (SessionShelf._layout_tiles) so every tile
+        # agrees; the tile only applies what it is told.
+        pass
+
+    def _content_h(self) -> int:
+        """Exact height of this tile's visible text rows, spacing included.
+
+        Computed the way the column actually lays them out — the sum of the
+        shown rows plus one spacing between each — rather than an approximation.
+        Approximating it left the centred names up to 7px apart, and the status
+        line is hidden when a session has nothing to put there, so tiles
+        genuinely differ.
+        """
+        rows = [l for l in (self.project_label, self.activity_label,
+                            self.sub_label) if not l.isHidden()]
+        if not rows:
+            return 0
+        return (sum(l.sizeHint().height() for l in rows)
+                + TILE_ROW_SPACING * (len(rows) - 1))
+
+    def _row_span(self):
+        """(top, bottom) of this tile's visible text rows, in tile coords.
+
+        Real geometry rather than sizeHints — the rows render about 15px
+        shorter than they advertise, which is enough to leave "centred" text
+        visibly low.
+        """
+        rows = [l for l in (self.project_label, self.activity_label,
+                            self.sub_label, self.agents_label)
+                if not l.isHidden()]
+        if not rows:
+            return None
+        top = min(l.mapTo(self, l.rect().topLeft()).y() for l in rows)
+        bottom = max(l.mapTo(self, l.rect().bottomLeft()).y() for l in rows)
+        return top, bottom
+
+    def _text_rows_height(self) -> int:
+        """Content height plus the column's own vertical padding — what the
+        shelf must reserve for a tile that shows text only."""
+        return self._content_h() + 16
+
+    def set_text_centered(self, on: bool, top_pad: int = 0) -> None:
+        """Centre the rows (text-only) or top-align them under the mascot.
+
+        ``top_pad`` comes from the shelf and is the SAME for every tile, so all
+        the first rows land on one line. Letting each tile centre its own
+        content with a stretch staggered them, because tiles carry different
+        numbers of rows.
+
+        The generous top margin exists to give the mascot's drop-shadow glow
+        room; with no mascot it only pushes the text low, so it drops to match
+        the bottom margin.
+        """
+        lay = self.layout()
+        lay.setContentsMargins(12, 4 if on else _GLOW_PAD, 12, 4)
+        self._top_pad.changeSize(0, top_pad if on else 0,
+                                 QSizePolicy.Minimum, QSizePolicy.Fixed)
+        lay.invalidate()
+        lay.activate()
+
+    def _agents_line_height(self) -> int:
+        """What the "N subagents" fallback row costs, including its spacing.
+
+        Measured from the real label rather than assumed: it is only shown when
+        the subagent mascots don't fit, and the shelf has to reserve it or the
+        line lands below the viewport and is clipped away.
+        """
+        h = self.agents_label.sizeHint().height()
+        return h + AGENTS_ROW_SPACING if h > 0 else 0
+
+    def set_presentation(self, show_sprite: bool, agents_as_mascots: bool) -> None:
+        """Apply the shelf's shelf-wide decision. The tile no longer decides for
+        itself — each tile has a different amount of text and a different agent
+        count, so per-tile decisions produced a row that disagreed with itself."""
+        self._sprite_shown = show_sprite
+        self.sprite.setVisible(show_sprite)
+        n = len(self._agents)
+        self._agents_box.setVisible(bool(n) and agents_as_mascots)
+        self.agents_label.setVisible(bool(n) and not agents_as_mascots)
+        if n and not agents_as_mascots:
+            self.agents_label.setText(f"{n} subagent{'s' if n != 1 else ''}")
+
+    def set_sprite_box(self, px: int) -> None:
+        """Fix the mascot's box to ``px``, uniform across the shelf.
+
+        The shelf computes ONE value for every tile from the worst case, so the
+        mascots are identical and every tile's text starts at the same y —
+        including tiles carrying a subagent row, which used to steal height from
+        their own mascot and leave it smaller than its neighbours'.
+        """
+        if px <= 0:
+            self.sprite.setFixedHeight(0)
+            return
+        self.sprite.setFixedHeight(px)
 
     def set_sprite_size(self, px: int) -> None:
         # set_size (not setFixedSize) so the mascot pixmap re-scales too; it
@@ -559,6 +803,10 @@ class SessionTile(QWidget):
             anims = ACTIVITY_ANIMS.get(state.activity) or _IDLE_ANIMS
             self.sprite.set_anims(f"{self._session_id}:{state.activity.value}", anims)
 
+        # An empty sub-line keeps its row height and leaves a blank gap above
+        # whatever follows it (the "N subagents" line), so hide it outright.
+        self.sub_label.setVisible(bool(self.sub_label.text()))
+
     def stop(self) -> None:
         self.sprite.stop()
         for m in self._agents.values():
@@ -608,6 +856,30 @@ class SessionTile(QWidget):
 class SessionShelf(QWidget):
     """Header + horizontal scroll row of SessionTiles, diffed by session id."""
 
+    # Smallest mascot worth drawing. Below this the whole shelf goes text-only
+    # rather than rendering something unreadable.
+    #
+    # This threshold is also what governs dead space: any room between 0 and
+    # MIN_MASCOT is room the shelf holds and then cannot use, so it shows as an
+    # empty band under the session text. Measured on macOS across a 360-720px
+    # sweep, worst-case blank against the smallest mascot ever rendered:
+    #
+    #     72 -> 81px blank, no small mascot ever drawn
+    #     64 -> 81px blank, smallest 72px
+    #     56 -> 71px blank, smallest 60px
+    #     48 ->   0px blank, smallest 52px      <- here
+    #     40 ->   0px blank, smallest 52px      (no further gain)
+    #
+    # 48 removes the blank entirely while never actually drawing a mascot below
+    # 52px, which is well clear of the unreadably-small ones this guard exists
+    # to prevent. Note the reserved floor's 1.5x headroom is NOT the cause and
+    # is deliberately left alone — dropping it moved the worst case 81px -> 81px.
+    MIN_MASCOT = 64
+
+    # Mascot size the parent must still reach for subagent mascots to be worth
+    # drawing alongside it. Below this the tile shows "N subagents" instead.
+    AGENTS_NEED_MASCOT = 144
+
     # Uniform sprite size by session count — one big mascot looks great solo,
     # but a row of six must stay compact enough to fit the scroll viewport.
     @staticmethod
@@ -643,10 +915,9 @@ class SessionShelf(QWidget):
         # quota bars below glide to their new position instead of jumping.
         self._height_anim: QPropertyAnimation | None = None
         # Per-tile height beyond the mascot (labels + margins), measured once.
-        self._tile_oh: int | None = None
         # Measured height an agents row adds to a tile (sprite + padding + the
         # column spacing). Cached the first time a tile actually has agents so
-        # the reserve's add-back and _tile_overhead's subtraction always agree.
+        # every tile is measured the same way, so rows line up across the shelf.
         self._agent_oh: int | None = None
 
         outer = QVBoxLayout(self)
@@ -725,6 +996,7 @@ class SessionShelf(QWidget):
         # animations running as they're repositioned.
         self._reorder_live(incoming)
 
+        self._layout_tiles()
         self._sync_height(old_size, size)
         self.header.setText(f"ACTIVE SESSIONS — {len(self._tiles)}")
 
@@ -800,10 +1072,10 @@ class SessionShelf(QWidget):
             if w is None or w in leaving:
                 continue
             if seen == logical_index:
-                self._row.insertWidget(i, tile, 0, Qt.AlignTop)
+                self._row.insertWidget(i, tile, 1)
                 return
             seen += 1
-        self._row.addWidget(tile, 0, Qt.AlignTop)
+        self._row.addWidget(tile, 1)
 
     def _reorder_live(self, incoming) -> None:
         desired = [self._tiles[sid] for sid in incoming if sid in self._tiles]
@@ -816,7 +1088,7 @@ class SessionShelf(QWidget):
         for w in current:
             self._row.removeWidget(w)
         for i, tile in enumerate(desired):
-            self._row.insertWidget(i, tile, 0, Qt.AlignTop)
+            self._row.insertWidget(i, tile, 1)
 
     def _sync_height(self, old_size: int | None, new_size: int) -> None:
         """Keep the reserved shelf height in step with the tile size so the quota
@@ -825,7 +1097,11 @@ class SessionShelf(QWidget):
         changes. The height is derived analytically from the target sprite size,
         not from the live layout, so a tile mid enter-animation (width clamped to
         0) can't report a stale, clipped height."""
-        target = self._reserved_height_for(new_size)
+        # The shelf no longer RESERVES height for the mascots: they scale into
+        # whatever the layout hands them (SpritePlayer scale_to_fit). Reserving
+        # a mascot-derived height is what made the window grow and shrink as
+        # sessions came and went, and left dead space when it could not.
+        target = self._reserved_height_for(0)
         start = self._scroll.minimumHeight()
         if old_size is None:
             # First fill — snap, no animation.
@@ -858,8 +1134,8 @@ class SessionShelf(QWidget):
 
     def _agent_extra(self) -> int:
         """Measured height an agents row adds to a tile. Taken from a real tile
-        that has agents (so the reserve's add-back and the _tile_overhead
-        subtraction use the SAME number and can't drift), cached once."""
+        that has agents, so every tile budgets the same row and they cannot
+        drift apart. Cached once."""
         if self._agent_oh is None:
             tile = next((t for t in self._tiles.values() if t.has_agents()), None)
             if tile is None:
@@ -867,39 +1143,145 @@ class SessionShelf(QWidget):
             self._agent_oh = tile.agents_box_height() + AGENTS_ROW_SPACING
         return self._agent_oh
 
-    def _tile_overhead(self) -> int:
-        """Tile height beyond the mascot AND the (optional) agents row — i.e. the
-        labels + spacing + margins. Measured once from a real, already-styled
-        tile (sizeHint minus the sprite size, minus the agents row if that tile
-        has one). Width animations don't affect height, so a tile mid-enter
-        measures fine."""
-        if self._tile_oh is None:
-            tile = next(iter(self._tiles.values()), None)
-            if tile is None or self._sprite_size is None:
-                return 64  # not cached — recompute once a real tile exists
-            h = tile.sizeHint().height() - self._sprite_size
-            if tile.has_agents():
-                h -= self._agent_extra()
-            self._tile_oh = max(0, h)
-        return self._tile_oh
 
-    def _reserved_height_for(self, sprite_size: int) -> int:
-        # mascot + label overhead + an agents row (when any tile has subagents)
-        # + row margins (8) + horizontal-scrollbar room (14). Kept uniform across
-        # tiles so rows line up and labels are never clipped.
-        agents_extra = self._agent_extra() if self._any_agents() else 0
-        return sprite_size + self._tile_overhead() + agents_extra + 8 + 14
+    def _reserved_height_for(self, sprite_size: int = 0) -> int:
+        # Text-only floor: the name / activity / status rows. The mascot is
+        # elastic above this; these rows are not.
+        #
+        # Measured from a real tile's text rows. Deriving it instead from the
+        # tile's sizeHint minus the sprite size stopped holding once the sprite
+        # became scale-to-fit — that subtraction returned 0, so this floor
+        # silently evaluated to 33px instead of the intended ~130 and the last
+        # line clipped. Instrumentation caught it; arithmetic had not.
+        #
+        # `sprite_size` is vestigial: the shelf no longer reserves any
+        # mascot-derived height, so every caller passes 0. It is kept only so
+        # the one existing test that names it still reads naturally.
+        #
+        # TILE_V_MARGINS is the column's own padding (_GLOW_PAD top + 4
+        # bottom); 14 is horizontal-scrollbar allowance. The 1.5x is
+        # deliberate headroom (Nick's call 2026-07-26).
+        tile = next(iter(self._tiles.values()), None)
+        rows = tile._text_rows_height() if tile is not None else 60
+        return int((rows + _TILE_V_MARGINS + 14) * 1.5)
+
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
+        self._layout_tiles()
+
+    def _layout_tiles(self) -> None:
+        """Size every mascot identically, from ONE calculation for the shelf.
+
+        Per-tile sizing could never satisfy "all the same size" or "the names
+        line up": each tile carries a different amount of text (an idle session
+        has a "last active" line, a live one may not) and a different number of
+        subagents, so each was left a different amount of room for its mascot.
+        Computing the box once from the WORST case and handing it to every tile
+        fixes both at their source.
+
+        One pure function of (container, count), applied in a single place —
+        rather than per-widget arithmetic scattered through resize handlers.
+        """
+        tiles = list(self._tiles.values())
+        if not tiles:
+            return
+        # Measure the VIEWPORT, not the tiles. A tile's height depends on the
+        # sprite box we are about to set, so feeding it back in makes this
+        # function's output its own input — it converged on one value, then
+        # collapsed to 0 on a second pass. The viewport is fixed by the window
+        # and is genuinely independent.
+        vp = self._scroll.viewport()
+        h = vp.height()
+        w = vp.width() // max(1, len(tiles))
+        if h <= 0 or w <= 0:
+            return                      # not laid out yet; nothing to size
+        text_h = max(t._text_rows_height() for t in tiles)
+        # Subagent mascots are drawn only if they fit WITHOUT eating into the
+        # mascot box — otherwise every tile falls back to the "N subagents"
+        # line, so one session sprouting agents cannot shrink its own mascot
+        # below its neighbours'.
+        agents_h = self._agent_extra() if self._any_agents() else 0
+        # _ROW_V_MARGINS is the row layout's own 4px top + 4px bottom: the tile
+        # never gets the whole viewport, and handing the sprite that difference
+        # is what pushed the last row out of view.
+        room = h - text_h - _TILE_V_MARGINS - _ROW_V_MARGINS
+        # Subagent mascots have to EARN their space: they are only drawn if the
+        # parent mascot is still comfortably sized afterwards, not merely above
+        # the bare legibility floor. Otherwise a tile with agents spent its
+        # height on three tiny children and a shrunken parent.
+        agents_as_mascots = (bool(agents_h)
+                             and (room - agents_h) >= self.AGENTS_NEED_MASCOT)
+        if agents_as_mascots:
+            room -= agents_h
+        elif agents_h:
+            # Falling back to the "N subagents" line — budget for it. Without
+            # this the sprite took the space the line needed, the tile ended up
+            # ~14px taller than the viewport, and since the shelf's vertical
+            # scrollbar is always off the line was silently cut. The mascots
+            # were dropped and their replacement never appeared, so a session
+            # with subagents showed no sign of them at all.
+            room -= max(t._agents_line_height() for t in tiles)
+        edge = min(w - 8, room)
+        edge = max(0, edge - (edge % 4))     # quantised: exactly equal, crisper
+        if edge < self.MIN_MASCOT:
+            edge = 0                          # text-only
+        # Text-only: centre the rows in the space the mascot vacated rather than
+        # leaving all of it underneath, which read as a dead band between the
+        # session text and the usage bars. Every tile is told the same thing and
+        # every tile has the same height, so the rows still line up across the
+        # row — the property that made the shelf worth reworking in the first
+        # place.
+        for t in tiles:
+            t.set_sprite_box(edge)
+            t.set_presentation(bool(edge), agents_as_mascots)
+            t.set_text_centered(edge == 0, 0)
+        if edge:
+            return
+        # Text-only: centre the rows in the space the mascot vacated, rather
+        # than leaving all of it underneath as a dead band above the usage bars.
+        #
+        # Measured, not modelled. Deriving the block from the labels' sizeHints
+        # was wrong by a constant 15px — they render shorter than they advertise
+        # — which left the text visibly low. So lay out once with no pad, read
+        # where the rows actually are, and pad from that. The pad is fixed and
+        # does not affect content height, so this settles in one extra pass.
+        self._row_widget.layout().activate()
+        spans = [s for s in (t._row_span() for t in tiles) if s is not None]
+        if not spans:
+            return
+        first_top = min(s[0] for s in spans)
+        block = max(s[1] for s in spans) - first_top
+        # Available height comes from the viewport, not from tile.height():
+        # mid-relayout a tile can still report a stale height, and using it
+        # produced a 145px pad that shoved the subagents line clean out of view.
+        avail = h - _ROW_V_MARGINS
+        # ONE pad for every tile, so the first rows stay on a single line no
+        # matter how many rows each carries. Capped at the slack that actually
+        # exists, so a bad measurement can never push content out of the tile.
+        pad = max(0, min((avail - block) // 2 - first_top, avail - block))
+        if pad:
+            for t in tiles:
+                t.set_text_centered(True, pad)
 
     def reserved_current(self) -> int:
         """Currently reserved scroll height (may be mid height-animation)."""
         return self._scroll.minimumHeight()
 
     def reserved_target(self) -> int:
-        """Settled reserved scroll height for the current tile size — lets the
-        host window aim at the final size while this is still animating."""
+        """Settled reserved scroll height — lets the host window aim at the
+        final size while this is still animating.
+
+        Must agree with what ``_sync_height`` actually sets, which is the
+        text-only floor: the shelf stopped reserving mascot-derived height when
+        sprites became scale-to-fit. While this still returned the old
+        mascot-derived figure, ``Dashboard._target_window_height`` added a
+        difference that could never settle to zero, so the window grew by it on
+        every fit. Measured on Windows: 799px tall against develop's 430, with
+        reserved_target=497 versus reserved_current=127, permanently.
+        """
         if self._sprite_size is None:
             return self._scroll.minimumHeight()
-        return self._reserved_height_for(self._sprite_size)
+        return self._reserved_height_for(0)
 
     def stop_all(self) -> None:
         if self._height_anim is not None:
@@ -920,15 +1302,16 @@ class SessionShelf(QWidget):
 
 COMPACT_MASCOT = 38
 
-COMPACT_STYLESHEET = f"""
+def _build_compact_qss() -> str:
+    return f"""
 QWidget#compactRoot {{ background: {_BG}; }}
-QWidget#compactTitleBar {{ background: #0b0e13; }}
+QWidget#compactTitleBar {{ background: {_P.bg_deepest}; }}
 QLabel#compactTitle {{ font-size: 12px; font-weight: 700; color: {_TEXT};
                        letter-spacing: 1.5px; }}
-QToolButton#compactBtn {{ background: transparent; color: #CE7D6B; border: none;
+QToolButton#compactBtn {{ background: transparent; color: {_P.accent}; border: none;
                           font-size: 13px; padding: 2px 7px; }}
-QToolButton#compactBtn:hover {{ background: #1f2937; }}
-QWidget#compactRow:hover {{ background: #161b22; }}
+QToolButton#compactBtn:hover {{ background: {_P.surface}; }}
+QWidget#compactRow:hover {{ background: {_P.surface_dim}; }}
 QLabel#compactBarLabel {{ font-size: 10px; font-weight: 600; color: {_MUTED};
                           letter-spacing: 1px; }}
 QLabel#compactPctLbl {{ font-size: 11px; font-weight: 700; color: {_TEXT}; }}
@@ -939,9 +1322,34 @@ QLabel#compactRowActivity {{ font-size: 10px; font-weight: 600; letter-spacing: 
 QLabel#compactRowAgents {{ font-size: 10px; font-weight: 700; color: {_MUTED}; }}
 QScrollArea#compactScroll {{ background: transparent; border: none; }}
 QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px 0; }}
-QScrollBar::handle:vertical {{ background: #374151; border-radius: 4px; min-height: 24px; }}
+QScrollBar::handle:vertical {{ background: {_P.border}; border-radius: 4px; min-height: 24px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """
+
+
+COMPACT_STYLESHEET = _build_compact_qss()
+
+
+def refresh_theme() -> None:
+    """Recompute cached chrome colours + rebuild the shelf/compact stylesheets
+    from the now-active palette (for a live theme switch). The app's
+    apply_theme() re-applies SHELF_STYLESHEET/COMPACT_STYLESHEET to the live
+    widgets and repaints them afterward. This includes the palette-derived
+    _IDLE_COLOR, _BAR_HEAT ramp and _BAR_OVERAGE (they track the theme); only
+    the semantic ACTIVITY_COLORS glow map stays fixed across themes."""
+    global _P, _BG, _TEXT, _MUTED, _IDLE_COLOR, _BAR_TRACK, _BAR_BORDER
+    global _BAR_HEAT, _BAR_OVERAGE, SHELF_STYLESHEET, COMPACT_STYLESHEET
+    _P = theme.active()
+    _BG = _P.bg
+    _TEXT = _P.text
+    _MUTED = _P.text_dim
+    _IDLE_COLOR = _P.idle
+    _BAR_TRACK = _P.surface
+    _BAR_BORDER = _P.border
+    _BAR_HEAT = _heat_ramp(_P)
+    _BAR_OVERAGE = _overage_color(_P)
+    SHELF_STYLESHEET = _build_shelf_qss()
+    COMPACT_STYLESHEET = _build_compact_qss()
 
 
 class CompactRow(QWidget):
@@ -975,7 +1383,7 @@ class CompactRow(QWidget):
 
         top = QHBoxLayout()
         top.setSpacing(8)
-        self.title = ScrollingLabel(px=12, bold=True, color=_TEXT, max_w=230,
+        self.title = ScrollingLabel(px=12, bold=True, role="text", max_w=230,
                                     align=Qt.AlignLeft)
         self.tokens = QLabel("", objectName="compactRowTokens")
         self.tokens.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -988,7 +1396,7 @@ class CompactRow(QWidget):
         self.dot = QLabel(self._DOT, objectName="compactRowDot")
         self.activity = QLabel("", objectName="compactRowActivity")
         self.sep = QLabel("·", objectName="compactRowActivity")
-        self.target = ScrollingLabel(px=10, bold=False, color=_MUTED,
+        self.target = ScrollingLabel(px=10, bold=False, role="muted",
                                      letter_spacing=0, max_w=170, align=Qt.AlignLeft)
         self.agents = QLabel("", objectName="compactRowAgents")
         bot.addWidget(self.dot, 0)
@@ -1066,9 +1474,18 @@ class CompactView(QWidget):
         self.setWindowTitle("Clawdmeter")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(COMPACT_STYLESHEET)
-        self.setWindowFlags(
-            Qt.Window | Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
-        )
+        if sys.platform == "darwin":
+            # macOS: a rounded HUD panel like the mini (NOT a native window with
+            # traffic lights) -- keeps our own title bar (mascot/title/view
+            # buttons/✕). round_window() rounds + shadows it on show; drop Qt.Tool
+            # (which auto-hides on focus loss). Round the border to match.
+            self.setStyleSheet(
+                COMPACT_STYLESHEET + "\nQWidget#compactRoot{border-radius:13px}")
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint
+                                | Qt.WindowStaysOnTopHint)
+        else:
+            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint | Qt.Tool
+                                | Qt.WindowStaysOnTopHint)
         icon_path = assets_root() / "icon.png"
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
@@ -1130,18 +1547,32 @@ class CompactView(QWidget):
         self._scroll.setWidget(self._list_widget)
         outer.addWidget(self._scroll, 1)
 
-        menu = QMenu(self)
-        act_full = QAction("Full view", self)
-        act_full.triggered.connect(self.grow_requested.emit)
-        act_quit = QAction("Quit", self)
-        act_quit.triggered.connect(self.quit_requested.emit)
-        menu.addAction(act_full)
-        menu.addSeparator()
-        menu.addAction(act_quit)
+        # ThemedPopup, not QMenu — see uiutil.ThemedPopup.
+        menu = make_popup(self)
+        menu.set_items([("Full view", self.grow_requested.emit),
+                        ("Quit", self.quit_requested.emit)])
         self._menu = menu
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(
-            lambda p: self._menu.exec(self.mapToGlobal(p)))
+            lambda p: self._menu.popup_at(self.mapToGlobal(p)))
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        # macOS: round the HUD panel + give it a native shadow (no traffic lights).
+        if sys.platform == "darwin" and not getattr(self, "_macos_rounded", False):
+            self._macos_rounded = True
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: macos_window.round_window(self, 13))
+
+    def apply_theme_style(self) -> None:
+        """Re-apply the (theme-updated) COMPACT_STYLESHEET + repaint. apply_theme's
+        generic swap misses us on macOS because the radius append changes our
+        stylesheet so it no longer matches the module global it's looking for."""
+        qss = COMPACT_STYLESHEET
+        if sys.platform == "darwin":
+            qss += "\nQWidget#compactRoot{border-radius:13px}"
+        self.setStyleSheet(qss)
+        self.update()
 
     def _tbtn(self, glyph: str, tip: str) -> QToolButton:
         b = QToolButton()
@@ -1178,19 +1609,24 @@ class CompactView(QWidget):
 
     @staticmethod
     def _apply_bar(label, pct, bar, reset, title, value,
-                   reset_min, tokens, show_tokens) -> None:
+                   reset_min, tokens, show_tokens, warn_at) -> None:
         # Title + % + fill (overage handled per-window when value > 100).
-        apply_overage_bar(label, pct, bar, title, value)
+        apply_overage_bar(label, pct, bar, title, value, warn_at)
         line = f"resets in {format_minutes(reset_min)}"
         if show_tokens:
             line += f" · {fmt_tokens(tokens)}"
         reset.setText(line)
 
     def update_usage(self, s, sr: int, wr: int, show_tokens: bool) -> None:
+        # The 5h and 7d bars turn yellow at different points — each follows its
+        # own approaching-limit notification threshold.
+        s_warn, w_warn = bar_warn_thresholds()
         self._apply_bar(self.s_label, self.s_pct, self.s_bar, self.s_reset,
-                        "SESSION 5h", s.session_pct, sr, s.tokens_5h, show_tokens)
+                        "SESSION 5h", s.session_pct, sr, s.tokens_5h, show_tokens,
+                        s_warn)
         self._apply_bar(self.w_label, self.w_pct, self.w_bar, self.w_reset,
-                        "WEEKLY 7d", s.weekly_pct, wr, s.tokens_7d, show_tokens)
+                        "WEEKLY 7d", s.weekly_pct, wr, s.tokens_7d, show_tokens,
+                        w_warn)
 
     def set_show_tokens(self, on: bool) -> None:
         self._show_tokens = bool(on)
@@ -1253,7 +1689,7 @@ class CompactView(QWidget):
             moved = (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
             if moved >= QApplication.startDragDistance():
                 self._press_pos = None
-                winutil.start_native_move(int(self.winId()))
+                winutil.start_move(self)
             e.accept()
 
     def mouseReleaseEvent(self, e) -> None:

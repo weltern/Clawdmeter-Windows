@@ -15,10 +15,13 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 
+import plan_pricing
 from pricing import model_rates
 from transcript import account_tokens_by_model, scan_events
 
 # Monthly subscription price (USD) keyed by organization.rate_limit_tier.
+# Static fallback only -- plan_monthly_usd() prefers plan_pricing's live
+# refresh (see plan_pricing.py) when one's available.
 PLAN_PRICES = {
     "default_claude_max_20x": 200.0,
     "default_claude_max_5x": 100.0,
@@ -88,7 +91,11 @@ def language_for_path(path: str) -> str:
 
 
 def plan_monthly_usd(tier: str | None) -> float | None:
-    """Monthly subscription price for a rate_limit_tier, or None if unknown."""
+    """Monthly subscription price for a rate_limit_tier, or None if unknown.
+    Prefers a live-refreshed price (plan_pricing) over the static fallback."""
+    live = plan_pricing.plan_amount(tier or "")
+    if live is not None:
+        return live
     return PLAN_PRICES.get(tier or "")
 
 

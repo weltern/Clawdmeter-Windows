@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import plan_pricing  # noqa: E402
 import stats  # noqa: E402
 from transcript import account_tokens_by_model  # noqa: E402
 
@@ -56,6 +57,20 @@ def test_plan_monthly_usd():
     assert stats.plan_monthly_usd("default_claude_pro") == 20.0
     assert stats.plan_monthly_usd("mystery_tier") is None
     assert stats.plan_monthly_usd(None) is None
+
+
+def test_plan_monthly_usd_prefers_live_override(tmp_path):
+    cache = tmp_path / "plan_prices.json"
+    plan_pricing.write_plan_prices(
+        {"default_claude_pro": {"amount": 25.0, "source": "live"}}, cache)
+    plan_pricing.set_override_path(cache)
+    try:
+        assert stats.plan_monthly_usd("default_claude_pro") == 25.0
+        # A tier the live refresh doesn't know about still falls back to the
+        # static dict rather than reporting unknown.
+        assert stats.plan_monthly_usd("default_claude_max_5x") == 100.0
+    finally:
+        plan_pricing.set_override_path(None)
 
 
 def test_month_start_ts():

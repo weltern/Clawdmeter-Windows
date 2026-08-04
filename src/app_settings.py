@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
+
 from PySide6.QtCore import QSettings
 
 ORG = "Clawdmeter"
 APP = "Clawdmeter"
-APP_VERSION = "2.4.1"
+APP_VERSION = "3.0.0"
 
 KEY_CRED_PATH = "credentials/path"
 KEY_ALWAYS_ON_TOP = "window/always_on_top"
@@ -14,7 +16,12 @@ KEY_AUTO_HIDE_TITLEBAR = "window/auto_hide_titlebar"
 KEY_QUIT_ON_CLOSE = "window/quit_on_close"
 KEY_MINI_POS = "window/mini_pos"
 KEY_COMPACT_POS = "window/compact_pos"
+KEY_MAIN_SIZE = "window/main_size"
 KEY_VIEW_MODE = "window/view_mode"
+KEY_THEME = "ui/theme"
+KEY_CUSTOM_THEME = "ui/custom_theme"
+KEY_SYSTEM_DARK = "ui/system_dark"
+KEY_SYSTEM_LIGHT = "ui/system_light"
 KEY_SHOW_MULTIPLE_SESSIONS = "sessions/show_multiple"
 KEY_SHOW_SUBAGENTS = "sessions/show_subagents"
 KEY_SHOW_TOKEN_USAGE = "tokens/show_usage"
@@ -46,6 +53,7 @@ KEY_OVERAGE_ALERT_ENABLED = "notify/overage_alert_enabled"
 KEY_AUTO_CHECK_UPDATES = "updates/auto_check"
 KEY_LAST_UPDATE_CHECK = "updates/last_check"
 KEY_SKIP_VERSION = "updates/skip_version"
+KEY_LAST_PRICING_REFRESH = "pricing/last_refresh"
 
 PUSH_PROVIDERS = ("ntfy", "telegram", "discord", "slack", "pushover", "gotify",
                   "webhook")
@@ -154,6 +162,30 @@ def set_compact_pos(x: int, y: int) -> None:
     _settings().setValue(KEY_COMPACT_POS, f"{int(x)},{int(y)}")
 
 
+def get_main_size() -> tuple[int, int] | None:
+    """Last size the main window was left at, or None if never resized.
+
+    Stored as "w,h" to match the position keys above rather than a
+    QByteArray from saveGeometry(): only the size is wanted here (position
+    is left to the window manager), and a plain string stays readable in
+    the registry and survives a Qt version change, which an opaque
+    geometry blob does not.
+    """
+    v = _settings().value(KEY_MAIN_SIZE, "")
+    if not v:
+        return None
+    try:
+        w, h = str(v).split(",")
+        w, h = int(w), int(h)
+    except (ValueError, TypeError):
+        return None
+    return (w, h) if w > 0 and h > 0 else None
+
+
+def set_main_size(w: int, h: int) -> None:
+    _settings().setValue(KEY_MAIN_SIZE, f"{int(w)},{int(h)}")
+
+
 def get_view_mode() -> str:
     """Last-used view mode: 'full', 'compact', or 'mini' (defaults to full)."""
     v = _settings().value(KEY_VIEW_MODE, "full")
@@ -164,6 +196,46 @@ def get_view_mode() -> str:
 def set_view_mode(mode: str) -> None:
     if mode in ("full", "compact", "mini"):
         _settings().setValue(KEY_VIEW_MODE, mode)
+
+
+def get_theme() -> str:
+    """Saved appearance-theme name (defaults to the default preset). Validated
+    against the catalogue at apply time, so an unknown/removed name falls back
+    to the default rather than erroring."""
+    return str(_settings().value(KEY_THEME, "Midnight Salmon"))
+
+
+def set_theme(name: str) -> None:
+    _settings().setValue(KEY_THEME, name)
+
+
+def get_custom_base() -> dict | None:
+    """The saved custom-theme base colours ({role: hex}), or None if the user
+    has never created a custom theme (so it can be seeded from the current one)."""
+    raw = _settings().value(KEY_CUSTOM_THEME, "")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:   # noqa: BLE001 - a corrupt persisted value (incl. deeply
+        return None     # nested JSON -> RecursionError) must never block startup
+
+
+def set_custom_base(base: dict) -> None:
+    _settings().setValue(KEY_CUSTOM_THEME, json.dumps(base))
+
+
+def get_system_targets() -> tuple:
+    """Saved (dark, light) Follow System target preset names; either may be ""
+    if never set (the app then keeps the built-in default)."""
+    s = _settings()
+    return (str(s.value(KEY_SYSTEM_DARK, "")), str(s.value(KEY_SYSTEM_LIGHT, "")))
+
+
+def set_system_targets(dark: str, light: str) -> None:
+    _settings().setValue(KEY_SYSTEM_DARK, dark)
+    _settings().setValue(KEY_SYSTEM_LIGHT, light)
 
 
 def get_show_multiple_sessions() -> bool:
@@ -314,7 +386,11 @@ def set_reset_notify_sound(on: bool) -> None:
 
 
 def get_reset_notify_popup() -> bool:
-    v = _settings().value(KEY_RESET_NOTIFY_POPUP, True)  # on by default
+    # Off by default. This raises the MAIN window, which steals focus from
+    # whatever the user is doing — and it fires on approaching-limit alerts too,
+    # not just the rare reset it was written for. The toast (always on top) and
+    # the tray flash are the notification; this is opt-in on top of them.
+    v = _settings().value(KEY_RESET_NOTIFY_POPUP, False)
     if isinstance(v, str):
         return v.lower() in ("true", "1", "yes")
     return bool(v)
@@ -502,6 +578,19 @@ def get_last_update_check() -> float:
 
 def set_last_update_check(ts: float) -> None:
     _settings().setValue(KEY_LAST_UPDATE_CHECK, float(ts))
+
+
+def get_last_pricing_refresh() -> float:
+    """Unix timestamp of the last completed live pricing refresh (0.0 if never).
+    Used to throttle PricingRefresher to roughly once a day."""
+    try:
+        return float(_settings().value(KEY_LAST_PRICING_REFRESH, 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def set_last_pricing_refresh(ts: float) -> None:
+    _settings().setValue(KEY_LAST_PRICING_REFRESH, float(ts))
 
 
 def get_skip_version() -> str:

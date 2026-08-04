@@ -58,6 +58,7 @@ UNIT = "per_mtok"
 NAME_TO_ID: dict[str, str] = {
     "Claude Fable 5": "claude-fable-5",
     "Claude Mythos 5": "claude-mythos-5",
+    "Claude Sonnet 5": "claude-sonnet-5",
     "Claude Opus 4.8": "claude-opus-4-8",
     "Claude Opus 4.7": "claude-opus-4-7",
     "Claude Opus 4.6": "claude-opus-4-6",
@@ -256,6 +257,103 @@ def parse_rate_card(markdown: str) -> dict[str, dict[str, Any]]:
     return out
 
 
+# --- time-boxed variant resolution ------------------------------------------
+#
+# Anthropic sometimes announces a scheduled repricing by listing the SAME model
+# twice under qualified names -- e.g. "Claude Sonnet 5 through August 31, 2026"
+# and "Claude Sonnet 5 starting September 1, 2026" -- rather than one row. Left
+# alone, both would map to the same API id and the second one parsed would
+# silently clobber the first in `by_id`. This section collapses such pairs into
+# one base-name row: whichever variant is in effect as of `today` becomes that
+# row's own fields, and any not-yet-effective variant is attached under
+# `rate_changes` so `pricing.model_rates()` can promote it automatically once
+# its date arrives -- no code change and no human mapping needed when that day
+# comes, even offline.
+
+_TIME_BOX_RE = re.compile(
+    r"^(?P<base>.+?)\s+(?:through|starting|beginning|from)\s+(?P<date>.+?)\.?$",
+    re.IGNORECASE,
+)
+_TIME_BOX_DATE_FORMATS = ("%B %d, %Y", "%B %d %Y", "%Y-%m-%d")
+
+
+def _parse_time_box_date(phrase: str) -> str | None:
+    """'August 31, 2026' -> '2026-08-31'. None if the phrase isn't a date --
+    callers must NOT guess in that case, since a wrong effective date would
+    silently apply the wrong rate on the wrong day."""
+    phrase = phrase.strip().rstrip(".")
+    for fmt in _TIME_BOX_DATE_FORMATS:
+        try:
+            return _dt.datetime.strptime(phrase, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def resolve_time_boxed_variants(parsed: dict[str, dict[str, Any]], *,
+                                today: str | None = None) -> dict[str, dict[str, Any]]:
+    """Collapse '<Model> through/starting <date>' rows into one entry per base
+    display name. Rows with no time-box qualifier, or with a qualifier whose
+    date phrase doesn't parse, pass through unchanged under their original
+    name (an unparseable date is treated as "not a time-box" rather than
+    dropped, so it still surfaces via the normal unmapped-name path instead of
+    vanishing silently).
+    """
+    today = today or _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+    groups: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    out: dict[str, dict[str, Any]] = {}
+
+    for name, fields in parsed.items():
+        m = _TIME_BOX_RE.match(name)
+        eff = _parse_time_box_date(m.group("date")) if m else None
+        if not m or eff is None:
+            out[name] = fields
+            continue
+        groups.setdefault(m.group("base").strip(), []).append((eff, fields))
+
+    for base, variants in groups.items():
+        variants.sort(key=lambda v: v[0])
+        current = next((v for v in reversed(variants) if v[0] <= today), None)
+        upcoming = [v for v in variants if v[0] > today]
+        if current is None:            # every variant is still in the future
+            existing = out.get(base)
+            if existing is not None:
+                # A same-named unqualified current price already exists -- keep
+                # it as the active price and attach the future variants as
+                # scheduled changes, rather than promoting a not-yet-effective
+                # price over today's real one (would misreport actual spend).
+                existing["rate_changes"] = [
+                    {"effective_from": eff,
+                     **{k: v for k, v in fields.items()
+                        if k not in ("display_name", "status")}}
+                    for eff, fields in variants
+                ]
+                continue
+            # No current price at all -> fall back to the earliest future variant
+            # so the model doesn't silently vanish (lesser evil; the documented
+            # paired through+starting format never reaches this branch).
+            current = variants[0]
+            upcoming = variants[1:]
+
+        row = dict(current[1])
+        row["display_name"] = base
+        if upcoming:
+            # display_name/status belong to the model as a whole, not to an
+            # individual scheduled change -- an upcoming row's raw, still-
+            # qualified name ("Claude Sonnet 5 starting September 1, 2026")
+            # must never ride along, or it clobbers the clean name the moment
+            # pricing.model_rates() promotes this change (see that function's
+            # own belt-and-suspenders filter for the same reason).
+            row["rate_changes"] = [
+                {"effective_from": eff,
+                 **{k: v for k, v in fields.items() if k not in ("display_name", "status")}}
+                for eff, fields in upcoming
+            ]
+        out[base] = row   # a same-named unqualified row, if any, loses to this
+
+    return out
+
+
 # --- name -> id, validation, assembly --------------------------------------
 
 def _slugify(name: str) -> str:
@@ -265,8 +363,20 @@ def _slugify(name: str) -> str:
     return f"unmapped-{slug}" if slug else "unmapped-model"
 
 
-def map_name_to_id(display_name: str) -> str:
-    """Map a display name to its API model ID, or a slugified fallback (logged)."""
+def map_name_to_id(display_name: str, registry: dict[str, str] | None = None) -> str:
+    """Map a display name to its API model ID.
+
+    ``registry`` -- {display_name: api_id} straight from Anthropic's own Models
+    API (see pricing_refresh.fetch_model_registry) -- wins when it has this
+    name, since that's a first-party fact, not a guess: it also carries the
+    exact dated ID (``claude-opus-4-5-20251101``) real usage/billing reports,
+    which NAME_TO_ID's hand-maintained undated guesses (``claude-opus-4-5``)
+    have historically gotten wrong. Falls back to NAME_TO_ID, then to a
+    slugified, logged placeholder -- unchanged, for CI/offline runs and tests
+    that have no registry (no OAuth session) to pass.
+    """
+    if registry and display_name in registry:
+        return registry[display_name]
     api_id = NAME_TO_ID.get(display_name)
     if api_id is None:
         api_id = _slugify(display_name)
@@ -290,6 +400,17 @@ def _validate_model(api_id: str, fields: dict[str, Any]) -> list[str]:
             val = fields[key]
             if not isinstance(val, (int, float)) or isinstance(val, bool) or val <= 0:
                 problems.append(f"{api_id}.{key} is not a positive number ({val!r})")
+    for i, change in enumerate(fields.get("rate_changes") or []):
+        eff = change.get("effective_from")
+        if not isinstance(eff, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", eff):
+            problems.append(f"{api_id}.rate_changes[{i}].effective_from is not a "
+                             f"YYYY-MM-DD date ({eff!r})")
+        for key in _REQUIRED_FIELDS:
+            val = change.get(key)
+            if not isinstance(val, (int, float)) or isinstance(val, bool):
+                problems.append(f"{api_id}.rate_changes[{i}].{key} is not numeric ({val!r})")
+            elif val <= 0:
+                problems.append(f"{api_id}.rate_changes[{i}].{key} is not positive ({val!r})")
     return problems
 
 
@@ -310,20 +431,34 @@ def _ordered_model_fields(api_id: str, parsed: dict[str, Any]) -> dict[str, Any]
         out["fast_mode_input"] = parsed["fast_mode_input"]
     if "fast_mode_output" in parsed:
         out["fast_mode_output"] = parsed["fast_mode_output"]
+    if "rate_changes" in parsed:
+        out["rate_changes"] = parsed["rate_changes"]
     return out
 
 
 def build_price_map(parsed: dict[str, dict[str, Any]], *,
-                    fetched_at: str | None = None) -> dict[str, Any]:
+                    fetched_at: str | None = None,
+                    registry: dict[str, str] | None = None) -> dict[str, Any]:
     """Assemble a complete, validated price map from parsed rows.
 
     Raises ``ValueError`` if the parse yields zero models or any required field is
     non-numeric/non-positive — so a page-format change can never blank or corrupt
-    the bundled map. ``fetched_at`` defaults to today's UTC date.
+    the bundled map. ``fetched_at`` defaults to today's UTC date, and also serves
+    as "today" for resolving any time-boxed variants (see
+    ``resolve_time_boxed_variants``) so a fixed ``fetched_at`` in tests makes the
+    whole resolution deterministic too. ``registry`` -- Anthropic's own
+    {display_name: api_id} map, when the live caller has one -- takes priority
+    over NAME_TO_ID in ``map_name_to_id``; omitted (as CI/tests do), behavior is
+    unchanged.
     """
+    if fetched_at is None:
+        fetched_at = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+
+    parsed = resolve_time_boxed_variants(parsed, today=fetched_at)
+
     by_id: dict[str, dict[str, Any]] = {}
     for display_name, fields in parsed.items():
-        by_id[map_name_to_id(display_name)] = fields
+        by_id[map_name_to_id(display_name, registry)] = fields
 
     if not by_id:
         raise ValueError("parsed zero models from the rate card — refusing to write")
@@ -341,9 +476,6 @@ def build_price_map(parsed: dict[str, dict[str, Any]], *,
 
     models = {api_id: _ordered_model_fields(api_id, by_id[api_id])
               for api_id in ordered_ids}
-
-    if fetched_at is None:
-        fetched_at = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
 
     return {
         "currency": CURRENCY,
@@ -407,11 +539,14 @@ def format_diff(diff: dict[str, Any]) -> str:
 # --- file I/O --------------------------------------------------------------
 
 def load_existing(path: Path | None = None) -> dict[str, Any]:
-    """Load the bundled price map, or {} if it doesn't exist yet."""
+    """Load the bundled price map, or {} if it doesn't exist yet or is corrupt
+    (e.g. a live cache file truncated by a crash mid-write) -- callers treat
+    the "existing" map as a diff baseline, so {} (== "everything looks new")
+    is always a safe degrade, never a crash."""
     path = path or price_map_path()
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
+    except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 
