@@ -94,9 +94,12 @@ def test_about_uses_the_product_name_not_the_repo_name(monkeypatch):
     # the real repository, or it 404s. Nothing reads this string, so changing
     # it cannot break update checking -- that risk belongs to update_check.REPO,
     # which builds the releases API URL and gates which release URLs are
-    # trusted. Both move in the same commit as the rename, for different reasons.
-    assert "github.com/weltern/Clawdmeter-Windows" in joined, \
+    # trusted. Both moved together when the repo was renamed to `Clawdmeter`
+    # on 2026-08-03, for those two different reasons.
+    assert "github.com/weltern/Clawdmeter\n" in joined, \
         "the About link must keep pointing at the real repository"
+    assert "Clawdmeter-Windows" not in joined, \
+        "About still names the pre-2026-08-03 repo, which now only 301-redirects"
 
 
 def _token_line(monkeypatch, *, keychain: bool, secs_left: float) -> str:

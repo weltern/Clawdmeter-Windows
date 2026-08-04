@@ -1,4 +1,4 @@
-"""Main dashboard window for Clawdmeter-Windows.
+"""Main dashboard window for Clawdmeter.
 
 Frameless top-level window with a custom title bar (drag-to-move, in-app
 min/max/close buttons), a sprite player driven by Claude usage rate, and a
@@ -2230,7 +2230,7 @@ class SettingsPanel(QWidget):
             # in the same commit as the rename or update checking breaks.
             f"Clawdmeter  v{app_settings.APP_VERSION}\n"
             "by Nick Welter (@weltern) & Claude\n"
-            "github.com/weltern/Clawdmeter-Windows\n\n"
+            "github.com/weltern/Clawdmeter\n\n"
             "MIT licensed · the Clawd mascot is © Anthropic PBC and is "
             "not covered by the MIT license · unofficial, not affiliated "
             "with Anthropic.\n\n"

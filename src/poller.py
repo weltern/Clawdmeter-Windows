@@ -1,4 +1,4 @@
-"""Claude usage polling for Clawdmeter-Windows.
+"""Claude usage polling for Clawdmeter.
 
 Ported from HermannBjorgvin/Clawdmeter daemon. The BLE/asyncio plumbing is
 gone; this is a QThread that posts UsageSample objects via a Qt signal.

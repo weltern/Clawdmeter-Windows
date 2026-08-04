@@ -1,4 +1,4 @@
-"""Update checking for Clawdmeter-Windows (Path 1: notify only).
+"""Update checking for Clawdmeter (Path 1: notify only).
 
 We ship a single, unsigned, self-contained Clawdmeter.exe via GitHub Releases.
 There's no installer or package manager, so this module just *detects* a newer
@@ -28,7 +28,7 @@ from PySide6.QtCore import QThread, Signal
 
 import app_settings
 
-REPO = "weltern/Clawdmeter-Windows"
+REPO = "weltern/Clawdmeter"
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{REPO}/releases/latest"
 

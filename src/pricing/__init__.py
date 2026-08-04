@@ -1,4 +1,4 @@
-"""USD pricing for Claude models, for Clawdmeter-Windows.
+"""USD pricing for Claude models, for Clawdmeter.
 
 The bundled ``price_map.json`` is the source of truth: a metadata header plus a
 ``models`` object **keyed by Claude API model ID** so it joins directly with the
