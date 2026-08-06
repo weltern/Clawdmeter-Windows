@@ -141,6 +141,140 @@ def test_account_window_tokens_sums_5h_and_7d(tmp_path):
     assert w7 == 40          # + the now-6h event (5+5); 8-day-old event excluded
 
 
+def _usage_line(ts_iso, msg_id, uuid, inp, out, cache_read=0, cache_write=0,
+                blocks=None):
+    """One assistant JSONL record, shaped like Claude Code writes them.
+
+    Claude Code splits ONE assistant message across several records — one per
+    content block — and every record repeats the same `message.id`. Early
+    records carry a PARTIAL `output_tokens` (the running total at that point in
+    the stream); the last record carries the final figure.
+    """
+    import json
+    return json.dumps({
+        "type": "assistant", "timestamp": ts_iso, "uuid": uuid,
+        "message": {
+            "role": "assistant", "id": msg_id,
+            "content": blocks if blocks is not None else [{"type": "text"}],
+            "usage": {"input_tokens": inp, "output_tokens": out,
+                      "cache_read_input_tokens": cache_read,
+                      "cache_creation_input_tokens": cache_write},
+        },
+    })
+
+
+def _iso(epoch):
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def test_account_window_tokens_collapses_one_message_across_its_records(tmp_path):
+    """One message split across 3 records must be counted ONCE.
+
+    Summing per record multiplies the total by the block count. The final
+    output figure is the LARGEST one (output_tokens is a running total), so the
+    message is worth input(2) + output(328) = 330, not 344.
+    """
+    from transcript import account_window_tokens, _TOKEN_EVENT_CACHE
+    _TOKEN_EVENT_CACHE.clear()
+    now = time.time()
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "s.jsonl").write_text("\n".join([
+        _usage_line(_iso(now - 60), "msg_A", "u1", 2, 5),      # partial
+        _usage_line(_iso(now - 59), "msg_A", "u2", 2, 5),      # partial
+        _usage_line(_iso(now - 58), "msg_A", "u3", 2, 328),    # final
+    ]), encoding="utf-8")
+
+    w5, w7 = account_window_tokens(now, root=tmp_path)
+    assert w5 == 330, "one message counted once, at its final output figure"
+    assert w7 == 330
+
+
+def test_account_window_tokens_ignores_records_replayed_into_another_file(tmp_path):
+    """Resuming a session replays the same records into a NEW transcript file.
+
+    Both files live under ~/.claude/projects and both get scanned, so a
+    per-file-only dedup still double-counts every replayed message.
+    """
+    from transcript import account_window_tokens, _TOKEN_EVENT_CACHE
+    _TOKEN_EVENT_CACHE.clear()
+    now = time.time()
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    records = "\n".join([
+        _usage_line(_iso(now - 60), "msg_A", "u1", 2, 5),
+        _usage_line(_iso(now - 58), "msg_A", "u2", 2, 328),
+        _usage_line(_iso(now - 40), "msg_B", "u3", 7, 11),
+    ])
+    (proj / "original.jsonl").write_text(records, encoding="utf-8")
+    (proj / "resumed.jsonl").write_text(records, encoding="utf-8")   # the replay
+
+    w5, _w7 = account_window_tokens(now, root=tmp_path)
+    assert w5 == 330 + 18, "a replayed message is the same message, not a second one"
+
+
+def test_account_window_tokens_keeps_the_richest_copy_of_a_message(tmp_path):
+    """Guards the FIX, not the bug: a replay copy can carry all-zero usage.
+
+    Keeping whichever copy is seen first would zero out real usage whenever the
+    zeroed file happens to be walked first, so the collapse must keep the
+    largest value per bucket.
+    """
+    from transcript import account_window_tokens, _TOKEN_EVENT_CACHE
+    _TOKEN_EVENT_CACHE.clear()
+    now = time.time()
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    # "a" sorts before "b": the zeroed copy is walked first.
+    (proj / "a-zeroed.jsonl").write_text(
+        _usage_line(_iso(now - 60), "msg_A", "u1", 0, 0), encoding="utf-8")
+    (proj / "b-real.jsonl").write_text(
+        _usage_line(_iso(now - 60), "msg_A", "u1", 2, 667), encoding="utf-8")
+
+    w5, _w7 = account_window_tokens(now, root=tmp_path)
+    assert w5 == 669, "the real numbers must survive, whatever the walk order"
+
+
+def test_session_tail_collapses_one_message_across_its_records():
+    """Per-session shelf total: same collapse, but streaming record by record."""
+    tail = _SessionTail(Path("/p/proj/sess.jsonl"))
+    for uuid, out in (("u1", 5), ("u2", 5), ("u3", 328)):
+        tail._consume_event({
+            "type": "assistant", "timestamp": "2026-06-14T03:00:00Z", "uuid": uuid,
+            "message": {"role": "assistant", "id": "msg_A",
+                        "content": [{"type": "text"}],
+                        "usage": {"input_tokens": 2, "output_tokens": out,
+                                  "cache_read_input_tokens": 500}},
+        })
+    assert tail.tokens.work == 330      # 2 + 328, not (2+5)+(2+5)+(2+328)
+    assert tail.tokens.cache_read == 500  # cache counted once, not 3x
+
+
+def test_session_tail_clears_dedup_state_when_the_file_is_truncated(tmp_path):
+    """A rotated/truncated transcript is re-read from the top.
+
+    `poll` resets the additive tally on truncation; the dedup bookkeeping must
+    reset with it, or every re-read record looks like an already-counted
+    duplicate and the tally stays stuck at zero.
+    """
+    f = tmp_path / "sess.jsonl"
+    f.write_text("\n".join([
+        _usage_line("2026-06-14T03:00:00Z", "msg_A", "u1", 2, 328),
+        _usage_line("2026-06-14T03:01:00Z", "msg_B", "u2", 7, 11),
+    ]) + "\n", encoding="utf-8")
+    tail = _SessionTail(f)
+    tail.poll(time.time())
+    assert tail.tokens.work == 330 + 18
+
+    # Rotated: shorter file, msg_A only -> triggers the truncation reset.
+    f.write_text(
+        _usage_line("2026-06-14T03:00:00Z", "msg_A", "u1", 2, 328) + "\n",
+        encoding="utf-8")
+    tail.poll(time.time())
+    assert tail.tokens.work == 330, "re-read after truncation must re-count msg_A"
+
+
 def test_sum_token_windows_respects_5h_and_7d():
     now = 1_000_000.0
     events = [
