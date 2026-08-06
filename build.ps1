@@ -1,4 +1,4 @@
-# Build script for Clawdmeter-Windows.
+# Build script for Clawdmeter (Windows build).
 # Creates a venv, installs deps, and produces dist/Clawdmeter.exe.
 
 $ErrorActionPreference = "Stop"

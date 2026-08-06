@@ -102,6 +102,41 @@ def test_about_uses_the_product_name_not_the_repo_name(monkeypatch):
         "About still names the pre-2026-08-03 repo, which now only 301-redirects"
 
 
+# Files that carry the repo name OUTWARD — into the shipped exe's version
+# resource, the Linux AppStream metadata, and the licence notice. The About
+# test above reads only the Settings hints, so it is blind to every one of
+# these: all three still named `Clawdmeter-Windows` for three days after the
+# rename, with the suite green.
+_REPO_NAME_FILES = (
+    "Clawdmeter.spec",                    # StringStruct('Comments', ...) -> exe properties
+    "packaging/clawdmeter.appdata.xml",   # <url type="homepage"|"bugtracker">
+    "NOTICE",
+    "build.ps1",
+)
+
+
+def test_shipped_metadata_names_the_current_repo():
+    """The repo became `weltern/Clawdmeter` on 2026-08-03.
+
+    `Clawdmeter-Windows` only 301-redirects now, and it is also just wrong:
+    the app ships for macOS and Linux too.
+    """
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    for rel in _REPO_NAME_FILES:
+        p = root / rel
+        assert p.exists(), f"{rel} moved -- update _REPO_NAME_FILES"
+        text = p.read_text(encoding="utf-8")
+        assert "Clawdmeter-Windows" not in text, (
+            f"{rel} still names the pre-2026-08-03 repo")
+        if "github.com/weltern/" in text:
+            assert "github.com/weltern/Clawdmeter/" in text \
+                or "github.com/weltern/Clawdmeter'" in text \
+                or "github.com/weltern/Clawdmeter<" in text \
+                or "github.com/weltern/Clawdmeter\n" in text, (
+                    f"{rel} links github.com/weltern/<something else>")
+
+
 def _token_line(monkeypatch, *, keychain: bool, secs_left: float) -> str:
     """The token-validity line as a user on that platform would read it."""
     import time as _time

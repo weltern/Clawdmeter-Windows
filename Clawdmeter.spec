@@ -1,4 +1,4 @@
-# PyInstaller spec for Clawdmeter-Windows.
+# PyInstaller spec for Clawdmeter.
 # Build with:  pyinstaller Clawdmeter.spec
 # Output:      dist/Clawdmeter.exe (single-file, no console)
 
@@ -209,7 +209,7 @@ if sys.platform == 'win32':
                     StringStruct('ProductVersion', _ver_str),
                     StringStruct('Comments',
                                  'Unofficial; not affiliated with Anthropic. '
-                                 'github.com/weltern/Clawdmeter-Windows'),
+                                 'github.com/weltern/Clawdmeter'),
                 ]),
             ]),
             VarFileInfo([VarStruct('Translation', [0x0409, 0x04B0])]),
