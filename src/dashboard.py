@@ -3632,7 +3632,14 @@ class Dashboard(QMainWindow):
         self._stats_worker.start()
 
     def _mock_aggregate(self) -> dict:
-        """Synthetic Stats aggregate for --mock (no transcript scan)."""
+        """Synthetic Stats aggregate for --mock (no transcript scan).
+
+        `turns` counts assistant MESSAGES, not JSONL records — one message is
+        written as several records (one per content block), so a figure lifted
+        from a pre-2026-08-06 build reads ~2.4x too high. Scale any new value
+        against `activity_counts` (roughly one to two tool calls per turn), not
+        against an old screenshot.
+        """
         from datetime import date, timedelta
         today = date.today()
         series = [(today - timedelta(days=n), round(80 + abs(8 - (n % 17)) * 35.0, 2))
@@ -3644,11 +3651,11 @@ class Dashboard(QMainWindow):
             "by_model_value": {"claude-opus-4-8": 2500.0, "claude-sonnet-4-6": 880.0},
             "top_model": ("claude-opus-4-8", 2500.0),
             "busiest_day": (today - timedelta(days=3), 412.0),
-            "turns": 16704, "active_days": 12,
+            "turns": 6_960, "active_days": 12,
             "cache_savings_usd": 16999.36,
             "cache_read_tokens": 3_470_000_000, "input_tokens": 12_400_000,
             "cache_hit_rate": 3_470_000_000 / (3_470_000_000 + 12_400_000),
-            "by_project_value": {"Clawdmeter-Windows": 1880.0, "ReadyUp-Dev": 960.0,
+            "by_project_value": {"Clawdmeter": 1880.0, "ReadyUp-Dev": 960.0,
                                  "Watchlist-Dev": 540.0},
             "lifetime_value_usd": 48231.0,
             "record_day": (today - timedelta(days=21), 612.0),
