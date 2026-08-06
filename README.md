@@ -351,11 +351,11 @@ bundles Python + Qt, so there's nothing else to install.
 | **Windows** | `Clawdmeter.exe` | ~31 MB | Single self-contained file — just run it. |
 | **macOS** | `Clawdmeter.dmg` | ~81 MB | Open it, drag **Clawdmeter** to Applications. Universal — one download for both Apple Silicon and Intel. |
 | **macOS** (zip) | `Clawdmeter-macos.zip` | ~72 MB | The same `.app`, if you'd rather not mount a disk image. |
-| **Linux** | `Clawdmeter-3.0.0-x86_64.AppImage` | ~57 MB | `chmod +x` it and run. One file, no install, delete it to uninstall. |
-| **Linux** (tarball) | `Clawdmeter-3.0.0-linux-x86_64.tar.gz` | ~56 MB | Unpack and run `./install.sh` — it drops the binary in `~/.local/bin` and **adds a menu entry**. |
+| **Linux** | `Clawdmeter-3.0.1-x86_64.AppImage` | ~57 MB | `chmod +x` it and run. One file, no install, delete it to uninstall. |
+| **Linux** (tarball) | `Clawdmeter-3.0.1-linux-x86_64.tar.gz` | ~56 MB | Unpack and run `./install.sh` — it drops the binary in `~/.local/bin` and **adds a menu entry**. |
 
 Every file ships with a `.sha256` beside it. Verify before running if you like:
-`sha256sum -c Clawdmeter-3.0.0-linux-x86_64.tar.gz.sha256` (or `shasum -a 256` /
+`sha256sum -c Clawdmeter-3.0.1-linux-x86_64.tar.gz.sha256` (or `shasum -a 256` /
 `Get-FileHash`).
 
 Clawdmeter checks the Releases page for a newer version on launch (then about
