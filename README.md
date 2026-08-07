@@ -369,10 +369,18 @@ Updates**.
 >
 > - **Windows** — SmartScreen shows "Windows protected your PC / unknown
 >   publisher". Click **More info → Run anyway**.
-> - **macOS** — Gatekeeper says the app "cannot be opened because the developer
->   cannot be verified". Right-click the app → **Open** → **Open**, or allow it
->   under **System Settings → Privacy & Security**. (The app is ad-hoc signed,
->   which is not the same as notarized.)
+> - **macOS** — Gatekeeper refuses to open it: *"Apple could not verify
+>   Clawdmeter is free of malware."* Open **System Settings → Privacy &
+>   Security**, scroll to **Security**, and click **Open Anyway** next to
+>   Clawdmeter, then authenticate. The button only appears *after* a blocked
+>   launch attempt, so try to open the app first.
+>
+>   Right-clicking the app and choosing **Open** does **not** work on macOS 15
+>   (Sequoia) or later — Apple removed that bypass, and it now leads to the same
+>   refusal with no way through (verified on 15.7.7). System Settings is the
+>   only route on current macOS, and it also works on older versions.
+>
+>   (The app is ad-hoc signed, which is not the same as notarized.)
 > - **Linux** — no prompt; make sure the binary is executable (`install.sh` does
 >   this for you).
 >
