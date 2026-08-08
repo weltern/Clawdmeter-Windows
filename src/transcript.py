@@ -161,9 +161,69 @@ ACTIVITY_COLORS: dict[Activity, str] = {
 }
 
 
+def usage_counts(usage: dict) -> tuple[int, int, int, int]:
+    """The four token buckets from a `message.usage` block, missing/garbage -> 0.
+
+    Order is (input, output, cache_read, cache_write) throughout.
+    """
+    def n(key: str) -> int:
+        try:
+            return int(usage.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+    return (n("input_tokens"), n("output_tokens"),
+            n("cache_read_input_tokens"), n("cache_creation_input_tokens"))
+
+
+def record_key(ev: dict, fallback: str) -> str:
+    """Stable identity for ONE transcript record (one JSONL line).
+
+    Resuming a session replays its records verbatim into a new transcript file,
+    reusing the event `uuid`, so this is what tells a replayed copy apart from a
+    genuinely new record. Namespaced, and falling back to a caller-supplied
+    positional token, so a value arriving as a uuid on one record and as
+    something else on another can never merge two different records.
+    """
+    uid = ev.get("uuid")
+    return f"uuid:{uid}" if isinstance(uid, str) and uid else fallback
+
+
+def message_key(msg: dict, fallback: str) -> str:
+    """Stable identity for one assistant MESSAGE.
+
+    Claude Code writes a single assistant message as several records — one per
+    content block (thinking / text / tool_use) — and every one of them repeats
+    the same `message.id` and its own snapshot of `message.usage`. Usage must
+    therefore be collapsed per message id, never summed per record.
+    """
+    mid = msg.get("id")
+    return f"id:{mid}" if isinstance(mid, str) and mid else fallback
+
+
+def merge_counts(prev: tuple[int, int, int, int] | None,
+                 new: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """Fold another record of the SAME message into the running figure.
+
+    Per-bucket max, because the records of one message do not agree:
+
+      * `output_tokens` is a running total — early records carry a partial
+        count and the last carries the final one (measured across a ~50-day
+        corpus: 3,716 such messages, every one non-decreasing, no exceptions).
+      * a replayed copy can carry an all-zero usage block while the original
+        carries the real figures.
+
+    Keeping whichever copy is seen first therefore under-counts in both cases,
+    badly — a 328-token message would land as 5.
+    """
+    if prev is None:
+        return new
+    return (max(prev[0], new[0]), max(prev[1], new[1]),
+            max(prev[2], new[2]), max(prev[3], new[3]))
+
+
 @dataclass
 class TokenUsage:
-    """Running token tally for a session (summed from each assistant turn's
+    """Running token tally for a session (collapsed per assistant message from
     `message.usage`). `work` (input+output) is the headline figure; the cache
     buckets are shown in the per-session hover breakdown."""
     input: int = 0
@@ -182,16 +242,19 @@ class TokenUsage:
         return self.input + self.output + self.cache_read + self.cache_write
 
     def add_usage(self, usage: dict) -> None:
-        """Accumulate one assistant turn's `message.usage` block."""
-        def n(key: str) -> int:
-            try:
-                return int(usage.get(key) or 0)
-            except (TypeError, ValueError):
-                return 0
-        self.input += n("input_tokens")
-        self.output += n("output_tokens")
-        self.cache_read += n("cache_read_input_tokens")
-        self.cache_write += n("cache_creation_input_tokens")
+        """Accumulate one assistant message's `message.usage` block.
+
+        Callers are responsible for collapsing a message's several records
+        first (see `merge_counts`) — this only adds what it is given.
+        """
+        self.add_counts(usage_counts(usage))
+
+    def add_counts(self, counts: tuple[int, int, int, int]) -> None:
+        """Accumulate an (input, output, cache_read, cache_write) tuple."""
+        self.input += counts[0]
+        self.output += counts[1]
+        self.cache_read += counts[2]
+        self.cache_write += counts[3]
 
 
 @dataclass
@@ -348,24 +411,33 @@ def sum_token_windows(events, now: float) -> tuple[int, int]:
     return w5, w7
 
 
-# Per-file cache of parsed (timestamp, work) token events, keyed by path and
-# invalidated when (size, mtime) change. Most files modified within 7d are NOT
-# being actively appended (only the 1–2 live sessions are), so this skips
-# re-reading/parsing dozens of recent-but-idle transcripts on every poll.
-_TOKEN_EVENT_CACHE: dict[str, tuple[int, float, list[tuple[float, int]]]] = {}
+# Per-file cache of parsed (timestamp, work, record_key, message_key) token
+# events, keyed by path and invalidated when (size, mtime) change. Most files
+# modified within 7d are NOT being actively appended (only the 1–2 live sessions
+# are), so this skips re-reading/parsing dozens of recent-but-idle transcripts on
+# every poll. The two keys ride along so the ACCOUNT-WIDE caller can collapse
+# duplicates across files, which a per-file parse cannot see.
+_TOKEN_EVENT_CACHE: dict[
+    str, tuple[int, float, list[tuple[float, int, str, str]]]] = {}
 # account_window_tokens() is called from BOTH the poll thread and (on a
 # Show-token-usage toggle) the GUI thread; serialise their reads/writes/evicts
 # of the plain-dict cache so they can't race into a KeyError mid-eviction.
 _TOKEN_CACHE_LOCK = threading.Lock()
 
 
-def _file_token_events(fp: Path) -> list[tuple[float, int]]:
-    """Parse one transcript into a list of (timestamp, input+output) for every
-    assistant turn that has usage + a timestamp."""
-    events: list[tuple[float, int]] = []
+def _file_token_events(fp: Path) -> list[tuple[float, int, str, str]]:
+    """Parse one transcript into (timestamp, input+output, record_key,
+    message_key) for every assistant record that has usage + a timestamp.
+
+    Deliberately does NOT collapse: one message's records can be split across
+    two files by a session resume, so the collapse belongs to the account-wide
+    caller. The positional fallbacks embed the file path, so a record with no
+    uuid / no message id can never merge with one from another file.
+    """
+    events: list[tuple[float, int, str, str]] = []
     try:
         with fp.open(encoding="utf-8", errors="replace") as fh:
-            for line in fh:
+            for lineno, line in enumerate(fh):
                 line = line.strip()
                 if not line:
                     continue
@@ -382,13 +454,9 @@ def _file_token_events(fp: Path) -> list[tuple[float, int]]:
                 ts = parse_iso_ts(ev.get("timestamp"))
                 if ts is None:
                     continue
-                work = 0
-                for k in ("input_tokens", "output_tokens"):
-                    try:
-                        work += int(usage.get(k) or 0)
-                    except (TypeError, ValueError):
-                        pass
-                events.append((ts, work))
+                inp, out, _cr, _cw = usage_counts(usage)
+                rkey = record_key(ev, f"pos:{fp}:{lineno}")
+                events.append((ts, inp + out, rkey, message_key(msg, rkey)))
     except OSError:
         return []
     return events
@@ -401,12 +469,18 @@ def account_window_tokens(now: float, root: Path | None = None) -> tuple[int, in
     Only files modified within 7d are read (an older file can't hold an in-window
     event), and each file's parsed events are cached by (size, mtime) so an
     unchanged file isn't re-parsed. Does disk I/O — call it off the UI thread.
+
+    Records are collapsed per assistant message across the WHOLE scan before
+    summing: one message is written as several records, and a resumed session
+    replays those records into a second transcript file, so both kinds of
+    duplicate have to be resolved here rather than per file.
     """
     if root is None:
         root = Path.home() / ".claude" / "projects"
     cut7 = now - 7 * 24 * 3600
 
-    all_events: list[tuple[float, int]] = []
+    # message_key -> (earliest timestamp seen, largest work figure seen)
+    per_message: dict[str, tuple[float, int]] = {}
     seen: set[str] = set()
     with _TOKEN_CACHE_LOCK:
         for fp in root.rglob("*.jsonl"):
@@ -424,13 +498,26 @@ def account_window_tokens(now: float, root: Path | None = None) -> tuple[int, in
             else:
                 events = _file_token_events(fp)
                 _TOKEN_EVENT_CACHE[key] = (st.st_size, st.st_mtime, events)
-            all_events.extend(events)
+            # Deliberately NOT filtered by record key first: a replayed copy of
+            # a record can be the RICHER one (the original may carry an all-zero
+            # usage block), so dropping it on sight would keep the zeros. Folding
+            # every record into its message with a per-bucket max makes a replay
+            # contribute nothing new while still letting it win where it is
+            # larger.
+            for ts, work, _rkey, mkey in events:
+                prev = per_message.get(mkey)
+                if prev is None:
+                    per_message[mkey] = (ts, work)
+                else:
+                    # Earliest timestamp (the message's start) with the largest
+                    # work figure — output_tokens grows across the records.
+                    per_message[mkey] = (min(prev[0], ts), max(prev[1], work))
 
         # Drop cache entries for files that aged out of the 7d window / rotated away.
         for key in [k for k in _TOKEN_EVENT_CACHE if k not in seen]:
             del _TOKEN_EVENT_CACHE[key]
 
-    return sum_token_windows(all_events, now)
+    return sum_token_windows(per_message.values(), now)
 
 
 # File-mutating tools whose target path feeds the "code by language" breakdown
@@ -451,14 +538,18 @@ _MODEL_EVENT_CACHE: dict[str, tuple[int, float, list, list, list]] = {}
 def _file_model_events(fp: Path) -> tuple[list, list, list]:
     """Parse one transcript once into three parallel streams:
 
-      * rows  — (ts, model, project, input, output, cache_read, cache_write) for
-                every assistant turn with a model + usage + timestamp. The project
-                (cwd leaf, captured once per file) lets value bucket by project.
-      * acts  — (ts, activity_str) for every tool_use block (one per call, so
-                parallel tool calls each count), classified via TOOL_MAP. Drives
-                the activity breakdown.
-      * files — (ts, file_path) for every file-mutating tool call (Write/Edit/…).
-                Drives the code-by-language breakdown.
+      * rows  — (ts, model, project, input, output, cache_read, cache_write,
+                record_key, message_key) for every assistant record with a model
+                + usage + timestamp. The project (cwd leaf, captured once per
+                file) lets value bucket by project.
+      * acts  — (ts, activity_str, record_key) for every tool_use block (one per
+                call, so parallel tool calls each count), classified via TOOL_MAP.
+                Drives the activity breakdown.
+      * files — (ts, file_path, record_key) for every file-mutating tool call
+                (Write/Edit/…). Drives the code-by-language breakdown.
+
+    The trailing keys are bookkeeping for `scan_events`, which dedups across the
+    whole scan and strips them before returning.
     """
     rows: list = []
     acts: list = []
@@ -466,7 +557,7 @@ def _file_model_events(fp: Path) -> tuple[list, list, list]:
     cwd: str | None = None
     try:
         with fp.open(encoding="utf-8", errors="replace") as fh:
-            for line in fh:
+            for lineno, line in enumerate(fh):
                 line = line.strip()
                 if not line:
                     continue
@@ -484,41 +575,40 @@ def _file_model_events(fp: Path) -> tuple[list, list, list]:
                 ts = parse_iso_ts(ev.get("timestamp"))
                 if ts is None:
                     continue
+                rkey = record_key(ev, f"pos:{fp}:{lineno}")
 
                 content = msg.get("content")
                 if isinstance(content, list):
-                    for block in content:
+                    # Key each call by record AND block position: one record can
+                    # carry several tool_use blocks (parallel calls), and each of
+                    # them is a genuine, separately-counted call.
+                    for pos, block in enumerate(content):
                         if not isinstance(block, dict) or block.get("type") != "tool_use":
                             continue
                         name = block.get("name")
                         if not isinstance(name, str) or not name:
                             continue
-                        acts.append((ts, _activity_for_tool(name).value))
+                        bkey = f"{rkey}#{pos}"
+                        acts.append((ts, _activity_for_tool(name).value, bkey))
                         if name.lower() in _FILE_MUTATION_TOOLS:
                             inp = block.get("input")
                             if isinstance(inp, dict):
                                 p = inp.get("file_path") or inp.get("notebook_path")
                                 if isinstance(p, str) and p:
-                                    files.append((ts, p))
+                                    files.append((ts, p, bkey))
 
                 usage = msg.get("usage")
                 model = msg.get("model")
                 if not isinstance(usage, dict) or not model:
                     continue
 
-                def n(k: str) -> int:
-                    try:
-                        return int(usage.get(k) or 0)
-                    except (TypeError, ValueError):
-                        return 0
-
-                rows.append((ts, model, n("input_tokens"), n("output_tokens"),
-                             n("cache_read_input_tokens"),
-                             n("cache_creation_input_tokens")))
+                i, o, cr, cw = usage_counts(usage)
+                rows.append((ts, model, i, o, cr, cw, rkey, message_key(msg, rkey)))
     except OSError:
         return [], [], []
     project = project_name_from_cwd(cwd, fp)
-    rows = [(ts, model, project, i, o, cr, cw) for (ts, model, i, o, cr, cw) in rows]
+    rows = [(ts, model, project, i, o, cr, cw, rk, mk)
+            for (ts, model, i, o, cr, cw, rk, mk) in rows]
     return rows, acts, files
 
 
@@ -534,13 +624,23 @@ def scan_events(since_ts: float, root: Path | None = None,
     hold an in-window turn), reusing the (size, mtime) per-file cache so one disk
     read feeds every aggregate. Does disk I/O — call it off the UI thread. Pass
     `since_ts=0` for a lifetime scan.
+
+    Duplicates are resolved across the whole scan before returning: a record
+    replayed into a second transcript file by a session resume is dropped from
+    all three streams, and the several records of one assistant message collapse
+    to a single token row. The returned tuples keep their original shapes
+    (7 / 2 / 2) — the dedup bookkeeping is stripped here.
     """
     if root is None:
         root = Path.home() / ".claude" / "projects"
     detail = since_ts if detail_since is None else detail_since
-    out_rows: list = []
     out_acts: list = []
     out_files: list = []
+    # message_key -> row, keeping the earliest timestamp and the largest figure
+    # per bucket (output_tokens grows across a message's records).
+    per_message: dict[str, tuple] = {}
+    seen_acts: set[str] = set()
+    seen_files: set[str] = set()
     seen: set[str] = set()
     for fp in root.rglob("*.jsonl"):
         try:
@@ -557,12 +657,33 @@ def scan_events(since_ts: float, root: Path | None = None,
         else:
             rows, acts, files = _file_model_events(fp)
             _MODEL_EVENT_CACHE[key] = (st.st_size, st.st_mtime, rows, acts, files)
-        out_rows.extend(e for e in rows if e[0] >= since_ts)
-        out_acts.extend(a for a in acts if a[0] >= detail)
-        out_files.extend(f for f in files if f[0] >= detail)
+        # Not filtered by record key first — see `account_window_tokens`: a
+        # replayed copy can hold the real figures where the original holds zeros,
+        # so every record folds into its message under a per-bucket max.
+        for ts, model, project, i, o, cr, cw, _rkey, mkey in rows:
+            if ts < since_ts:
+                continue
+            prev = per_message.get(mkey)
+            counts = merge_counts(None if prev is None else prev[3:7], (i, o, cr, cw))
+            if prev is None:
+                per_message[mkey] = (ts, model, project) + counts
+            else:
+                per_message[mkey] = (min(prev[0], ts), prev[1], prev[2]) + counts
+        # A tool call is identified by its record, not its message: two tool_use
+        # records under one message are two genuine parallel calls.
+        for ts, activity, rkey in acts:
+            if ts < detail or rkey in seen_acts:
+                continue
+            seen_acts.add(rkey)
+            out_acts.append((ts, activity))
+        for ts, path, rkey in files:
+            if ts < detail or rkey in seen_files:
+                continue
+            seen_files.add(rkey)
+            out_files.append((ts, path))
     for key in [k for k in _MODEL_EVENT_CACHE if k not in seen]:
         del _MODEL_EVENT_CACHE[key]
-    return out_rows, out_acts, out_files
+    return list(per_message.values()), out_acts, out_files
 
 
 def iter_model_events(since_ts: float, root: Path | None = None) -> list:
@@ -773,6 +894,13 @@ class _SessionTail:
         self.ai_title: str | None = None
         self.custom_title: str | None = None
         self.tokens = TokenUsage()
+        # message_key -> the figures already folded into `tokens` for that
+        # message, so its later records add only what they add (see
+        # `_consume_event`). Reset in lockstep with `tokens`.
+        self._counted: dict[str, tuple[int, int, int, int]] = {}
+        # Monotonic record counter, used only to give a record with neither a
+        # uuid nor a message id an identity that can't collide with another's.
+        self._record_seq = 0
 
     def poll(self, now: float) -> TranscriptState:
         """Read any newly-appended bytes and return this session's current state."""
@@ -792,8 +920,12 @@ class _SessionTail:
             # additive token tally too — without this, re-reading the whole file
             # re-adds every usage block on top of the existing total (the
             # activity/title fields are idempotent on re-read; tokens are not).
+            # The per-message bookkeeping MUST reset with it: left behind, every
+            # re-read record looks like an already-counted duplicate and the
+            # tally stays stuck at zero.
             self.offset = 0
             self.tokens = TokenUsage()
+            self._counted = {}
         if size > self.offset:
             self._read_new(size)
 
@@ -860,11 +992,23 @@ class _SessionTail:
             return
         if msg.get("role") != "assistant":
             return
-        # Token usage rides EVERY assistant turn (text/thinking turns too, not
-        # just tool calls), so accumulate it before the activity early-return.
+        # Token usage rides EVERY record of an assistant message — Claude Code
+        # writes one message as several records, one per content block, each
+        # repeating the same `message.id` with its own snapshot of `usage`. So
+        # fold per message rather than summing per record, and do it before the
+        # activity early-return (a text/thinking record carries usage too).
         usage = msg.get("usage")
         if isinstance(usage, dict):
-            self.tokens.add_usage(usage)
+            self._record_seq += 1
+            rkey = record_key(ev, f"seq:{self._record_seq}")
+            mkey = message_key(msg, rkey)
+            new = merge_counts(self._counted.get(mkey), usage_counts(usage))
+            if new != self._counted.get(mkey):
+                # Add only the increase, so the running tally stays correct
+                # without re-reading anything already counted.
+                old = self._counted.get(mkey) or (0, 0, 0, 0)
+                self.tokens.add_counts(tuple(n - o for n, o in zip(new, old)))
+                self._counted[mkey] = new
         content = msg.get("content")
         if not isinstance(content, list):
             return

@@ -147,7 +147,7 @@ def test_fetch_latest_parses_release():
     h = "d" * 64
     payload = {
         "tag_name": "v2.2.0",
-        "html_url": "https://github.com/weltern/Clawdmeter-Windows/releases/tag/v2.2.0",
+        "html_url": "https://github.com/weltern/Clawdmeter/releases/tag/v2.2.0",
         "body": f"Clawdmeter.exe  {h}\nShiny new things.",
         "assets": [
             {"name": "Clawdmeter.exe",
@@ -209,7 +209,7 @@ def test_fetch_latest_macos_picks_zip_asset():
     h_mac = "f" * 64
     payload = {
         "tag_name": "v2.5.0",
-        "html_url": "https://github.com/weltern/Clawdmeter-Windows/releases/tag/v2.5.0",
+        "html_url": "https://github.com/weltern/Clawdmeter/releases/tag/v2.5.0",
         "body": f"Clawdmeter.exe  {h_win}\nClawdmeter-macos.zip  {h_mac}\n",
         "assets": [
             {"name": "Clawdmeter.exe",
@@ -237,7 +237,7 @@ def test_fetch_latest_macos_default_asset_name_when_absent():
     h_mac = "2" * 64
     payload = {
         "tag_name": "v2.5.0",
-        "html_url": "https://github.com/weltern/Clawdmeter-Windows/releases/tag/v2.5.0",
+        "html_url": "https://github.com/weltern/Clawdmeter/releases/tag/v2.5.0",
         "body": f"Clawdmeter.exe  {h_win}\nClawdmeter-macos.zip  {h_mac}\n",
         "assets": [],
     }
@@ -274,7 +274,7 @@ def test_fetch_latest_linux_picks_tarball_asset():
     h_lin = "b" * 64
     payload = {
         "tag_name": "v3.0.0",
-        "html_url": "https://github.com/weltern/Clawdmeter-Windows/releases/tag/v3.0.0",
+        "html_url": "https://github.com/weltern/Clawdmeter/releases/tag/v3.0.0",
         "body": (f"Clawdmeter.exe  {h_win}\n"
                  f"Clawdmeter-3.0.0-linux-x86_64.tar.gz  {h_lin}\n"),
         "assets": [
@@ -302,7 +302,7 @@ def test_download_url_opens_release_page():
     direct artifact URL (macOS can't self-replace a running .app)."""
     info = UpdateInfo(
         version="2.5.0", tag="v2.5.0",
-        url="https://github.com/weltern/Clawdmeter-Windows/releases/tag/v2.5.0",
+        url="https://github.com/weltern/Clawdmeter/releases/tag/v2.5.0",
         notes="", asset_url="https://example.com/Clawdmeter-macos.zip",
         sha256="f" * 64,
     )

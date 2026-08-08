@@ -1,5 +1,5 @@
-Clawdmeter-Windows
-==================
+Clawdmeter
+==========
 
 The MIT License (see LICENSE) covers the SOURCE CODE in this repository.
 
@@ -19,7 +19,8 @@ Attribution
 
   * Original project — concept, firmware, and daemon by Hermann Bjorgvin
     (@HermannBjorgvin): https://github.com/HermannBjorgvin/Clawdmeter.
-    Clawdmeter-Windows is a software-only Windows port of that work.
+    Clawdmeter is a software-only port of that work, for Windows, macOS and
+    Linux.
   * Clawd pixel art — https://claudepix.vercel.app
   * Clawd mascot — (c) Anthropic PBC.
   * Icons — Font Awesome Free (https://fontawesome.com). The bundled font

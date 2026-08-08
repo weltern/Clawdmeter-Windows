@@ -1,4 +1,4 @@
-"""Entry point for Clawdmeter-Windows."""
+"""Entry point for Clawdmeter."""
 
 from __future__ import annotations
 

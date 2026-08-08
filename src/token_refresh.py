@@ -1,4 +1,4 @@
-"""OAuth access-token refresh for Clawdmeter-Windows  (BETA).
+"""OAuth access-token refresh for Clawdmeter  (BETA).
 
 Claude Code OAuth access tokens live ~8 hours. When one expires the usage API
 returns 401 and the dashboard goes blank. This module refreshes the access

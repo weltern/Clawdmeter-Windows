@@ -298,6 +298,71 @@ def test_scan_events_streams(tmp_path):
     assert [p for _, p in files] == ["/home/u/myproj/app.py"]   # only the mutating Edit
 
 
+def _assistant_record(ts_iso, msg_id, uuid, out, blocks, cwd=None):
+    """One assistant JSONL record as Claude Code writes them: several records
+    per message, all sharing `message.id`, `output_tokens` a running total."""
+    ev = {"type": "assistant", "timestamp": ts_iso, "uuid": uuid,
+          "message": {"role": "assistant", "id": msg_id,
+                      "model": "claude-opus-4-8",
+                      "usage": {"input_tokens": 10, "output_tokens": out},
+                      "content": blocks}}
+    if cwd:
+        ev["cwd"] = cwd
+    return json.dumps(ev)
+
+
+def test_scan_events_collapses_one_message_across_its_records(tmp_path):
+    """Stats prices these rows, so one message must yield exactly one row —
+    at its final output figure. Tool calls are NOT collapsed: two tool_use
+    records under one message are two real calls."""
+    from transcript import scan_events, _MODEL_EVENT_CACHE
+    _MODEL_EVENT_CACHE.clear()
+    iso = datetime.now(timezone.utc).isoformat()
+    f = tmp_path / "myproj" / "s.jsonl"
+    f.parent.mkdir(parents=True)
+    f.write_text("\n".join([
+        _assistant_record(iso, "msg_A", "u1", 5, [{"type": "thinking"}],
+                          cwd="/home/u/myproj"),
+        _assistant_record(iso, "msg_A", "u2", 5, [
+            {"type": "tool_use", "name": "Edit",
+             "input": {"file_path": "/home/u/myproj/app.py"}}]),
+        _assistant_record(iso, "msg_A", "u3", 328, [
+            {"type": "tool_use", "name": "Read",
+             "input": {"file_path": "/home/u/myproj/readme.md"}}]),
+    ]), encoding="utf-8")
+
+    rows, acts, files = scan_events(0.0, root=tmp_path)
+    assert len(rows) == 1, "one message -> one priced row"
+    _ts, model, project, i, o, _cr, _cw = rows[0]
+    assert (model, project, i, o) == ("claude-opus-4-8", "myproj", 10, 328)
+    assert sorted(a for _, a in acts) == ["coding", "reading"]   # both calls kept
+    assert [p for _, p in files] == ["/home/u/myproj/app.py"]
+
+
+def test_scan_events_drops_records_replayed_into_another_file(tmp_path):
+    """A resumed session replays its records into a new transcript file. The
+    token rows, the activity events and the mutated-file events must each be
+    counted once, not once per copy."""
+    from transcript import scan_events, _MODEL_EVENT_CACHE
+    _MODEL_EVENT_CACHE.clear()
+    iso = datetime.now(timezone.utc).isoformat()
+    records = "\n".join([
+        _assistant_record(iso, "msg_A", "u1", 328, [
+            {"type": "tool_use", "name": "Edit",
+             "input": {"file_path": "/home/u/myproj/app.py"}}],
+            cwd="/home/u/myproj"),
+    ])
+    for name in ("original.jsonl", "resumed.jsonl"):
+        p = tmp_path / "myproj" / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(records, encoding="utf-8")
+
+    rows, acts, files = scan_events(0.0, root=tmp_path)
+    assert len(rows) == 1, "the replay is the same message, not a second one"
+    assert len(acts) == 1, "the replayed Edit is the same call"
+    assert [p for _, p in files] == ["/home/u/myproj/app.py"]
+
+
 def test_cap_eta():
     pts = [(0.0, 10.0), (1200.0, 30.0)]          # +20% over 1200s
     eta = stats.cap_eta(pts, current=30.0, now=1200.0)

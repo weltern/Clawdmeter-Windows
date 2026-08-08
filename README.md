@@ -351,11 +351,11 @@ bundles Python + Qt, so there's nothing else to install.
 | **Windows** | `Clawdmeter.exe` | ~31 MB | Single self-contained file — just run it. |
 | **macOS** | `Clawdmeter.dmg` | ~81 MB | Open it, drag **Clawdmeter** to Applications. Universal — one download for both Apple Silicon and Intel. |
 | **macOS** (zip) | `Clawdmeter-macos.zip` | ~72 MB | The same `.app`, if you'd rather not mount a disk image. |
-| **Linux** | `Clawdmeter-3.0.0-x86_64.AppImage` | ~57 MB | `chmod +x` it and run. One file, no install, delete it to uninstall. |
-| **Linux** (tarball) | `Clawdmeter-3.0.0-linux-x86_64.tar.gz` | ~56 MB | Unpack and run `./install.sh` — it drops the binary in `~/.local/bin` and **adds a menu entry**. |
+| **Linux** | `Clawdmeter-3.0.1-x86_64.AppImage` | ~57 MB | `chmod +x` it and run. One file, no install, delete it to uninstall. |
+| **Linux** (tarball) | `Clawdmeter-3.0.1-linux-x86_64.tar.gz` | ~56 MB | Unpack and run `./install.sh` — it drops the binary in `~/.local/bin` and **adds a menu entry**. |
 
 Every file ships with a `.sha256` beside it. Verify before running if you like:
-`sha256sum -c Clawdmeter-3.0.0-linux-x86_64.tar.gz.sha256` (or `shasum -a 256` /
+`sha256sum -c Clawdmeter-3.0.1-linux-x86_64.tar.gz.sha256` (or `shasum -a 256` /
 `Get-FileHash`).
 
 Clawdmeter checks the Releases page for a newer version on launch (then about
@@ -369,10 +369,18 @@ Updates**.
 >
 > - **Windows** — SmartScreen shows "Windows protected your PC / unknown
 >   publisher". Click **More info → Run anyway**.
-> - **macOS** — Gatekeeper says the app "cannot be opened because the developer
->   cannot be verified". Right-click the app → **Open** → **Open**, or allow it
->   under **System Settings → Privacy & Security**. (The app is ad-hoc signed,
->   which is not the same as notarized.)
+> - **macOS** — Gatekeeper refuses to open it: *"Apple could not verify
+>   Clawdmeter is free of malware."* Open **System Settings → Privacy &
+>   Security**, scroll to **Security**, and click **Open Anyway** next to
+>   Clawdmeter, then authenticate. The button only appears *after* a blocked
+>   launch attempt, so try to open the app first.
+>
+>   Right-clicking the app and choosing **Open** does **not** work on macOS 15
+>   (Sequoia) or later — Apple removed that bypass, and it now leads to the same
+>   refusal with no way through (verified on 15.7.7). System Settings is the
+>   only route on current macOS, and it also works on older versions.
+>
+>   (The app is ad-hoc signed, which is not the same as notarized.)
 > - **Linux** — no prompt; make sure the binary is executable (`install.sh` does
 >   this for you).
 >

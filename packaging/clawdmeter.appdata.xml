@@ -43,8 +43,8 @@
 
   <launchable type="desktop-id">clawdmeter.desktop</launchable>
 
-  <url type="homepage">https://github.com/weltern/Clawdmeter-Windows</url>
-  <url type="bugtracker">https://github.com/weltern/Clawdmeter-Windows/issues</url>
+  <url type="homepage">https://github.com/weltern/Clawdmeter</url>
+  <url type="bugtracker">https://github.com/weltern/Clawdmeter/issues</url>
 
   <provides>
     <binary>Clawdmeter</binary>
@@ -66,6 +66,7 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="3.0.1" date="2026-08-06"/>
     <release version="3.0.0" date="2026-08-03"/>
   </releases>
 </component>
